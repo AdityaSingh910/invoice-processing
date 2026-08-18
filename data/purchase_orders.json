@@ -1,0 +1,47 @@
+[
+  {
+    "po_number": "PO-1001",
+    "vendor": "Acme Office Supplies",
+    "amount": 1240.00,
+    "currency": "USD",
+    "issued_date": "2026-07-01",
+    "status": "open",
+    "description": "Q3 office supplies restock"
+  },
+  {
+    "po_number": "PO-1002",
+    "vendor": "Globex Logistics",
+    "amount": 5000.00,
+    "currency": "USD",
+    "issued_date": "2026-07-05",
+    "status": "open",
+    "description": "July freight services"
+  },
+  {
+    "po_number": "PO-1003",
+    "vendor": "Initech Consulting",
+    "amount": 8200.00,
+    "currency": "USD",
+    "issued_date": "2026-06-15",
+    "status": "open",
+    "description": "System migration consulting, phase 2"
+  },
+  {
+    "po_number": "PO-1004",
+    "vendor": "Umbrella Cleaning Co",
+    "amount": 600.00,
+    "currency": "USD",
+    "issued_date": "2026-05-01",
+    "status": "closed",
+    "description": "Monthly office cleaning — Q2"
+  },
+  {
+    "po_number": "PO-1005",
+    "vendor": "Stark Industrial Parts",
+    "amount": 15400.00,
+    "currency": "USD",
+    "issued_date": "2026-07-20",
+    "status": "open",
+    "description": "Replacement hardware batch"
+  }
+]

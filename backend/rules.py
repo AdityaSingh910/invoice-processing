@@ -1,0 +1,139 @@
+"""Decision rules: required fields, vendor approval, duplicates, and the final
+aggregation of every check into one status + reasons trail."""
+import storage
+
+REQUIRED_FIELDS = ["vendor_name", "invoice_number", "total"]
+
+
+def validate_required_fields(extracted: dict):
+    return [f for f in REQUIRED_FIELDS if not extracted.get(f)]
+
+
+def vendor_check(extracted: dict):
+    """Returns (ok, vendor_row, detail) where ok is True/False/None.
+    None means "unknown" -- e.g. no vendor name could be extracted at all -- which
+    is a review case, not a confident rejection. False means a vendor name WAS
+    extracted and it's confirmed not on the approved list."""
+    vendor_name = extracted.get("vendor_name")
+    if not vendor_name:
+        return None, None, "No vendor name could be extracted -- cannot verify approval status."
+    vendor_row = storage.find_vendor(vendor_name)
+    if vendor_row is None:
+        return False, None, f"Vendor \"{vendor_name}\" is not on the approved vendor list."
+    if vendor_row["status"] != "approved":
+        return False, vendor_row, f"Vendor \"{vendor_row['vendor_name']}\" is on file but status is \"{vendor_row['status']}\", not approved."
+    return True, vendor_row, f"Vendor \"{vendor_row['vendor_name']}\" is approved ({vendor_row['vendor_id']})."
+
+
+def duplicate_check(extracted: dict, exclude_run_id=None):
+    dup = storage.find_duplicate(extracted.get("vendor_name"), extracted.get("invoice_number"), extracted.get("total"))
+    if dup and dup["id"] != exclude_run_id:
+        return dup, (
+            f"Invoice #{extracted.get('invoice_number')} for {extracted.get('total')} from "
+            f"{extracted.get('vendor_name')} matches run #{dup['id']} processed on "
+            f"{dup['created_at'][:10]} (status {dup['status']})."
+        )
+    return None, "No prior run matches this vendor/invoice number/total combination."
+
+
+def decide(has_text, ocr_attempted, ocr_succeeded, missing_fields, vendor_ok, vendor_detail,
+           dup_row, dup_detail, po_match: dict):
+    """Aggregates every check into one status plus a severity-tagged reasoning trail.
+
+    Each reason is {"text": ..., "level": "ok"|"warn"|"fail"|"info"} so the UI can
+    colour-code the trail rather than showing a flat list of bullets. "fail" marks
+    the findings that actually drove a REJECT/REVIEW; "ok" marks checks that passed.
+    """
+    reasons = []
+    reject = False
+    review = False
+
+    def add(text, level="info"):
+        reasons.append({"text": text, "level": level})
+
+    if not has_text and not ocr_succeeded:
+        review = True
+        if ocr_attempted:
+            add(
+                "Document has no embedded text layer (looks scanned) and OCR is unavailable in this "
+                "environment — refusing to guess at field values. Route for manual entry or ask the "
+                "vendor to re-send a text-based PDF.",
+                "fail",
+            )
+        else:
+            add("Document has no embedded text layer and could not be read.", "fail")
+
+    if missing_fields:
+        review = True
+        add(f"Missing required field(s): {', '.join(missing_fields)}. Cannot safely auto-approve.", "fail")
+
+    if dup_row:
+        reject = True
+        add(dup_detail, "fail")
+
+    if vendor_ok is False:
+        reject = True
+        add(vendor_detail, "fail")
+    elif vendor_ok is None:
+        review = True
+        add(vendor_detail, "warn")
+    else:
+        add(vendor_detail, "ok")
+
+    if po_match["po_number"] is None:
+        review = True
+        add("No matching purchase order found (no explicit PO reference, and no vendor+amount match).", "fail")
+    else:
+        if po_match["po_status"] == "closed":
+            review = True
+            add(f"Matched PO {po_match['po_number']} but it is already closed.", "fail")
+
+        if po_match["matched_via"] == "inferred":
+            add(
+                f"No explicit PO reference on the invoice — inferred {po_match['po_number']} "
+                f"from vendor + amount.",
+                "warn",
+            )
+        else:
+            add(f"Matched explicit PO reference {po_match['po_number']}.", "ok")
+
+        if po_match["remaining_before"] is not None and po_match["remaining_before"] < po_match["po_amount"]:
+            add(
+                f"PO {po_match['po_number']} had ${po_match['po_amount']:.2f} total, "
+                f"${po_match['po_amount'] - po_match['remaining_before']:.2f} already consumed by prior "
+                f"approved invoices, ${po_match['remaining_before']:.2f} remaining before this invoice.",
+                "info",
+            )
+
+        if not po_match["within_tolerance"]:
+            review = True
+            add(
+                f"Invoice total is ${po_match['diff']:.2f} over the remaining PO balance of "
+                f"${po_match['remaining_before']:.2f} — outside the ${po_match['tolerance']:.2f} tolerance. "
+                f"The vendor is billing for more than is currently authorized on this PO.",
+                "fail",
+            )
+        elif po_match["is_partial"]:
+            invoice_total = po_match["remaining_before"] + po_match["diff"]
+            add(
+                f"Invoice total (${invoice_total:.2f}) is less than the remaining PO balance "
+                f"of ${po_match['remaining_before']:.2f} — treated as a partial invoice against a PO being "
+                f"split across multiple bills. ${po_match['remaining_after']:.2f} will remain on "
+                f"{po_match['po_number']} after this one.",
+                "ok",
+            )
+        else:
+            add(
+                f"Invoice total matches remaining PO balance within tolerance "
+                f"(diff ${po_match['diff']:.2f}, tolerance ${po_match['tolerance']:.2f}).",
+                "ok",
+            )
+
+    if reject:
+        status = "REJECTED"
+    elif review:
+        status = "NEEDS_REVIEW"
+    else:
+        status = "APPROVED"
+
+    return status, reasons

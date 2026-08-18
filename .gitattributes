@@ -1,0 +1,14 @@
+# Binary fixtures — never apply line-ending conversion. Without this, Git on
+# Windows can rewrite CRLF inside the sample PDFs and corrupt the test inputs.
+*.pdf binary
+*.png binary
+*.db binary
+
+# Text: normalise to LF in the repo, checkout native.
+*.py   text
+*.js   text
+*.css  text
+*.html text
+*.json text
+*.md   text
+*.ps1  text eol=crlf

@@ -1,0 +1,44 @@
+{
+  "01_happy_path_acme.pdf": {
+    "label": "Happy path",
+    "note": "Clean PDF, explicit PO, amount within tolerance",
+    "expect": "APPROVED",
+    "order": 1
+  },
+  "02_split_po_globex_a.pdf": {
+    "label": "Split PO — 1 of 2",
+    "note": "Partial invoice; leaves a balance on PO-1002",
+    "expect": "APPROVED",
+    "order": 2
+  },
+  "03_split_po_globex_b.pdf": {
+    "label": "Split PO — 2 of 2",
+    "note": "Matches the remaining balance exactly, exhausting the PO",
+    "expect": "APPROVED",
+    "order": 3
+  },
+  "03b_split_po_globex_overflow.pdf": {
+    "label": "Split PO — overflow",
+    "note": "Third invoice against an exhausted PO. Run 2 and 3 first",
+    "expect": "NEEDS_REVIEW",
+    "order": 4
+  },
+  "04_missing_invoice_number.pdf": {
+    "label": "Missing invoice number",
+    "note": "Amounts are fine, but there is no audit key",
+    "expect": "NEEDS_REVIEW",
+    "order": 5
+  },
+  "05_scanned_no_text.pdf": {
+    "label": "Scanned, no text layer",
+    "note": "Image-only PDF; process refuses to fabricate fields",
+    "expect": "NEEDS_REVIEW",
+    "order": 6
+  },
+  "06_duplicate_of_01.pdf": {
+    "label": "Duplicate submission",
+    "note": "Resubmission of INV-2201. Run the happy path first",
+    "expect": "REJECTED",
+    "order": 7
+  }
+}

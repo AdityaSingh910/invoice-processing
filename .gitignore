@@ -1,0 +1,22 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Secrets — never commit the API key
+.env
+
+# Runtime state. Seed data (data/*.json) IS tracked; the working DB is not,
+# since it is rebuilt from seed on startup and every run mutates it.
+data/app.db
+
+# Local scratch
+_shots/
+_*.py
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

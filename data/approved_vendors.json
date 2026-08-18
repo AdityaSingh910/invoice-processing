@@ -1,0 +1,7 @@
+[
+  {"vendor_name": "Acme Office Supplies", "vendor_id": "V-001", "status": "approved"},
+  {"vendor_name": "Globex Logistics", "vendor_id": "V-002", "status": "approved"},
+  {"vendor_name": "Initech Consulting", "vendor_id": "V-003", "status": "approved"},
+  {"vendor_name": "Umbrella Cleaning Co", "vendor_id": "V-004", "status": "approved"},
+  {"vendor_name": "Stark Industrial Parts", "vendor_id": "V-005", "status": "approved"}
+]

@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Invoice Processing</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark">IP</span>
+        <div class="brand-text">
+          <div class="brand-title">Invoice Processing</div>
+          <div class="brand-sub">PDF &rarr; decision, with the reasoning visible</div>
+        </div>
+      </div>
+      <nav class="tabs">
+        <button class="tab-btn active" data-tab="run">Run</button>
+        <button class="tab-btn" data-tab="dashboard">Dashboard</button>
+        <button class="tab-btn" data-tab="reference">Reference</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell">
+    <!-- ============ RUN ============ -->
+    <section id="tab-run" class="tab-panel active">
+      <div class="run-layout">
+
+        <!-- Left rail: input -->
+        <aside class="rail">
+          <div class="card">
+            <div class="card-head">
+              <h2>Input</h2>
+            </div>
+            <div id="dropzone" class="dropzone">
+              <div class="dz-icon">&#8681;</div>
+              <p><strong>Drop a PDF</strong></p>
+              <p class="dz-sub">or click to browse</p>
+              <input type="file" id="fileInput" accept="application/pdf" hidden />
+            </div>
+            <div id="selectedFile" class="selected-file hidden"></div>
+            <button id="runBtn" class="btn primary" disabled>
+              <span id="runBtnLabel">Run process</span>
+            </button>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>Sample invoices</h2>
+              <span class="hint-chip" title="Some scenarios depend on earlier runs">order matters</span>
+            </div>
+            <div id="sampleList" class="sample-list"></div>
+          </div>
+        </aside>
+
+        <!-- Right: pipeline + decision -->
+        <div class="run-main">
+
+          <div id="verdictBar" class="verdict hidden">
+            <div class="verdict-left">
+              <span id="verdictBadge" class="verdict-badge"></span>
+              <div class="verdict-meta">
+                <div id="verdictFile" class="verdict-file"></div>
+                <div id="verdictSub" class="verdict-sub"></div>
+              </div>
+            </div>
+            <div id="verdictTotals" class="verdict-totals"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>Pipeline</h2>
+              <span id="pipelineProgress" class="progress-text">idle</span>
+            </div>
+            <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+            <div id="stageList" class="stage-list">
+              <div class="empty-state">
+                <div class="empty-icon">&#9678;</div>
+                <p><strong>No run yet</strong></p>
+                <p class="empty-sub">Pick a sample invoice on the left, then hit <em>Run process</em>. Each stage reports as it executes.</p>
+              </div>
+            </div>
+          </div>
+
+          <div id="poCard" class="card hidden">
+            <div class="card-head">
+              <h2>PO balance</h2>
+              <span id="poMatchedVia" class="hint-chip"></span>
+            </div>
+            <div id="poBalance"></div>
+          </div>
+
+          <div class="two-col">
+            <div id="reasonCard" class="card hidden">
+              <div class="card-head"><h2>Reasoning</h2></div>
+              <ul id="reasonList" class="reason-list"></ul>
+            </div>
+
+            <div id="fieldsCard" class="card hidden">
+              <div class="card-head"><h2>Extracted fields</h2></div>
+              <table id="extractedTable" class="kv-table"></table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ DASHBOARD ============ -->
+    <section id="tab-dashboard" class="tab-panel">
+      <div class="dash-stats" id="dashStats"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Run history</h2>
+          <div class="dash-filters" id="dashFilters">
+            <button class="filter-btn active" data-status="ALL">All</button>
+            <button class="filter-btn" data-status="APPROVED">Approved</button>
+            <button class="filter-btn" data-status="NEEDS_REVIEW">Needs review</button>
+            <button class="filter-btn" data-status="REJECTED">Rejected</button>
+          </div>
+          <button id="refreshDash" class="btn ghost small">Refresh</button>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>ID</th><th>File</th><th>Vendor</th><th>Invoice #</th>
+                <th class="num">Total</th><th>PO</th><th>Status</th><th>When</th>
+              </tr>
+            </thead>
+            <tbody id="runsTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>PO consumption</h2></div>
+        <div id="poConsumption" class="po-consumption"></div>
+      </div>
+    </section>
+
+    <!-- ============ REFERENCE ============ -->
+    <section id="tab-reference" class="tab-panel">
+      <div class="two-col">
+        <div class="card">
+          <div class="card-head"><h2>Purchase orders</h2></div>
+          <div class="table-scroll">
+            <table class="data-table" id="poRefTable">
+              <thead><tr><th>PO #</th><th>Vendor</th><th class="num">Amount</th><th>Status</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Approved vendors</h2></div>
+          <div class="table-scroll">
+            <table class="data-table" id="vendorRefTable">
+              <thead><tr><th>Vendor</th><th>ID</th><th>Status</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="runModal" class="modal hidden">
+    <div class="modal-content">
+      <button id="closeModal" class="modal-close" aria-label="Close">&times;</button>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
