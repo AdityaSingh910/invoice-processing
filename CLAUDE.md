@@ -38,20 +38,28 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Samples | ✅ **7/7 passing** from a clean DB |
 | UI | ✅ Run view, dashboard, reference tab; light + dark |
 | Extraction route in use | **`regex`** — no `ANTHROPIC_API_KEY` set |
-| Automated tests | ❌ **None** — this is the next task (Phase 0 Step 3) |
+| Automated tests | ✅ **7/7 passing** — `tests/test_samples.py`, manifest-driven, isolated DB |
 | Known defects | **3 live bugs**, all documented, none fixed |
 | Deployed | ❌ Local only, no git remote, no hosting |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 5 commits, working tree clean.
+**Git:** local repo only, 7 commits, working tree clean.
 
 ```
+(head)  Add tests/test_samples.py — Phase 0 Step 3, 7/7 passing
+e103369 Add CLAUDE.md — session handoff document
 f521b21 Update README for the architect review
 ab1a559 Add REFACTOR_STRATEGY.md — architect review with implementation patterns
 b2db656 Rewrite README for current state; fix stale requirements.txt
 51e16b9 Reconcile main.py with extract_invoice(); pipeline runs again
 56102dc Baseline: current state, pipeline broken mid-refactor
 ```
+
+**Last verified 2026-08-18.** Re-checked against the code that session, all still
+true: every line count in §6, every code reference in §8 (all three bugs), the six
+API endpoints, the seed data, and the manifest order. The app was also run — all
+three tabs render with no JS console errors. Nothing in this file was found stale
+except its own commit count, now corrected.
 
 ---
 
@@ -62,10 +70,13 @@ b2db656 Rewrite README for current state; fix stale requirements.txt
 The user asked for Phase 0 in three steps, stopping and committing after each:
 1. ✅ git init + baseline commit
 2. ✅ reconcile `main.py`, get 7/7 green
-3. ⬜ **`tests/test_samples.py` as a real pytest file** ← next task
+3. ✅ `tests/test_samples.py` as a real pytest file — **7/7 passing**
 
-They said: *"Don't start Phase 1 until I confirm."* That still holds. Finish
-Step 3, commit, stop, and ask.
+**Phase 0 is complete.** They said: *"Don't start Phase 1 until I confirm."*
+That still holds, and was reaffirmed when Step 3 was commissioned. Phase 1
+touches decision behaviour (capping inferred PO matches, making `warn` bite),
+so the suite now exists precisely to catch regressions there — but do not
+start it unprompted.
 
 The user also prefers **one step at a time with a commit after each**, not
 batched work.
@@ -75,6 +86,9 @@ batched work.
 ## 4. Running it
 
 ```powershell
+# Tests -- no server needed, runs the pipeline in-process against a temp DB
+.\venv\Scripts\python.exe -m pytest tests/ -v
+
 # Full start (creates venv, installs deps, generates samples, opens browser)
 .\start.ps1
 
@@ -137,6 +151,12 @@ INGEST → EXTRACT_TEXT → EXTRACT_FIELDS → VALIDATE → VENDOR_CHECK
 Stages **do not short-circuit**. A missing invoice number at stage 4 does not
 stop stages 5–8; findings accumulate and only the final stage judges. An AP clerk
 should see the whole picture, not the first thing that went wrong.
+
+One wrinkle worth knowing before reading the code: the tolerance **arithmetic**
+happens in stage 6 (`PO_MATCH` → `matching.match_po`), which computes
+`remaining_before`, `tolerance`, `diff` and `within_tolerance` in one pass.
+Stage 8 (`TOLERANCE_CHECK`) only *reports* what stage 6 already decided. The
+stage split exists for the run view, not for the logic.
 
 ### Decision hierarchy
 
@@ -237,6 +257,11 @@ sample_invoices/
   generate_invoices.py Regenerates them (reportlab)
   manifest.json        Scenario labels + expected verdicts; drives the UI list
                        AND is the source of truth for tests
+tests/
+  test_samples.py  7 parametrized cases, one per sample, run sequentially in
+                   manifest order against a temp DB. Verdicts come from
+                   manifest.json; each case also pins the numbers behind the
+                   verdict (PO balances, duplicate citation, extraction route).
 AUDIT.md              What is wrong and why — the self-audit
 REFACTOR_STRATEGY.md  How to fix it — architect review, code patterns
 PROCESS_MAP.md        The on-paper design done before building
@@ -325,6 +350,8 @@ produces a wrong number rather than a wrong routing.**
 - **Reference data re-seeded from JSON on every startup**, so editing
   `purchase_orders.json` silently changes what historical runs mean.
 - No arithmetic consistency check — nothing verifies `subtotal + tax == total`.
+- `config.status()` and `config.extraction_mode()` are **dead code** — nothing
+  calls them, so the UI has no way to show which extraction route is live.
 - `_guess_vendor` (`extraction.py:238`) picks the vendor by **line position**.
 
 Full detail: [AUDIT.md](AUDIT.md). Fix patterns: [REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md).
@@ -343,17 +370,28 @@ Full detail: [AUDIT.md](AUDIT.md). Fix patterns: [REFACTOR_STRATEGY.md](REFACTOR
 - "Accept any external PDF" extraction rewrite (LLM text + vision + better regex).
 - `AUDIT.md` — honest self-audit answering 5 architecture questions.
 - `REFACTOR_STRATEGY.md` — architect review with implementation patterns.
-- Phase 0 Steps 1 & 2 (git baseline; reconciliation; 7/7 green).
+- **Phase 0 complete** — Steps 1 & 2 (git baseline; reconciliation), and
+  Step 3: `tests/test_samples.py`, 7/7 green, isolated from `data/app.db`.
 - Fixed `requirements.txt` — it was missing `pypdfium2` and would have broken a
   fresh clone.
 
 ### Remaining
 
-**Immediate — Phase 0 Step 3:** `tests/test_samples.py`. Drive the 7 samples in
-manifest order against expected verdicts. A throwaway version of this already
-worked; it needs to become a real pytest file. Consider using FastAPI
-`TestClient` instead of a live server so tests don't need uvicorn running, and
-an isolated DB per test session.
+**Immediate — nothing engineering-side is blocking.** Phase 0 is done. The two
+outstanding items are *case-study deliverables*, and they outrank every phase
+below: **record the 5-minute demo video**, and **produce a shareable link**
+(no git remote, no deployment — GitHub repo, ngrok tunnel, or Render/Railway/Fly).
+The work cannot be graded while it only runs on one laptop.
+
+Notes on the suite, for whoever changes it next:
+
+* It pins `ANTHROPIC_API_KEY` **out** of the environment, so extraction takes the
+  deterministic `regex` / `none` routes. Verdict expectations describe *decision*
+  behaviour, which must be reproducible; the LLM routes stay manually tested.
+* Cases share one DB and run in manifest order. An early failure cascades — that
+  is inherent, since the later cases are *about* the state the earlier ones left.
+* Verified to actually bite: running `-k overflow` alone turns `03b` **APPROVED**
+  and fails the suite, which is the same-bytes/opposite-verdict demo from §7.
 
 **Then (gated on user confirmation) — Phases 1-7**, per the table in README /
 REFACTOR_STRATEGY:

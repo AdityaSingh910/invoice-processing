@@ -14,3 +14,9 @@ reportlab==4.2.5
 
 # LLM extraction (optional at runtime - only used when ANTHROPIC_API_KEY is set)
 anthropic==0.122.0
+
+# Test suite (tests/test_samples.py). httpx is required by
+# fastapi.testclient.TestClient, which drives the pipeline in-process so the
+# tests never need a live uvicorn holding data/app.db open.
+pytest==9.1.1
+httpx==0.28.1

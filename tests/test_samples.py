@@ -1,0 +1,232 @@
+"""End-to-end regression suite: the 7 sample invoices, in manifest order.
+
+WHY THIS SHAPE
+
+The pipeline's headline behaviours are *history-dependent*. A PO's remaining
+balance is derived from prior APPROVED runs, and a duplicate is only a duplicate
+because something came before it. So these cases cannot be tested in isolation:
+the same `03b_split_po_globex_overflow.pdf` bytes are APPROVED against a fresh
+PO-1002 and NEEDS_REVIEW once two earlier invoices have drained it. That is the
+design, not a quirk, and the suite has to honour it.
+
+Three consequences:
+
+1. The samples run **sequentially, in manifest order**, sharing one database.
+   `pytest.mark.parametrize` preserves the order it is given.
+2. The database is **isolated per module** — `storage.DB_PATH` is monkeypatched
+   to a temp file before `init_db()`. Running against the real `data/app.db`
+   would fail immediately, since it already carries runs from manual testing.
+3. Expected verdicts are read from `sample_invoices/manifest.json`, the same
+   file that labels the samples in the UI. One source of truth, so the tests and
+   the interface cannot drift apart.
+"""
+import json
+import os
+import sys
+
+import pytest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BACKEND = os.path.join(ROOT, "backend")
+SAMPLES = os.path.join(ROOT, "sample_invoices")
+
+# The backend is a flat package of top-level modules (`import storage`, etc.),
+# matching how main.py puts its own directory on the path at import time.
+if BACKEND not in sys.path:
+    sys.path.insert(0, BACKEND)
+
+import config      # noqa: E402
+import main        # noqa: E402
+import storage     # noqa: E402
+
+
+# --------------------------------------------------------------------------
+# manifest -- the single source of truth for what each sample should produce
+# --------------------------------------------------------------------------
+
+def load_manifest():
+    """[(filename, expected_status), ...] in the manifest's declared order."""
+    with open(os.path.join(SAMPLES, "manifest.json"), encoding="utf-8") as f:
+        manifest = json.load(f)
+    ordered = sorted(manifest.items(), key=lambda kv: kv[1].get("order", 999))
+    return [(name, meta["expect"]) for name, meta in ordered]
+
+
+MANIFEST = load_manifest()
+
+
+# --------------------------------------------------------------------------
+# fixtures
+# --------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def client(tmp_path_factory):
+    """A TestClient wired to a throwaway database seeded from data/*.json.
+
+    `tmp_path_factory` rather than `tmp_path` because the DB has to outlive a
+    single test -- the whole point is that state accumulates across the seven.
+
+    Two things are patched before anything touches SQLite:
+
+    * `storage.DB_PATH` -- a module-level constant read inside `get_conn()` at
+      call time, with no environment override, so patching the attribute is the
+      only way to redirect it.
+    * `ANTHROPIC_API_KEY` -- removed from the environment so extraction takes
+      the deterministic `regex` / `none` routes. The manifest's expectations
+      describe *decision* behaviour, which must be reproducible; an LLM call is
+      non-deterministic and needs a network, so it has no place in a regression
+      suite. The routes themselves stay covered by manual testing.
+    """
+    db_path = tmp_path_factory.mktemp("invoice_db") / "test_app.db"
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(storage, "DB_PATH", str(db_path))
+    mp.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    # Fresh schema + seed reference data (POs and vendors) from data/*.json,
+    # with no run history at all.
+    storage.init_db(reset_runs=True)
+    assert storage.list_purchase_orders(), "seed POs did not load into the test DB"
+    assert storage.list_vendors(), "seed vendors did not load into the test DB"
+    assert storage.list_runs() == [], "test DB should start with no run history"
+    assert not config.has_api_key(), "tests must run the deterministic regex route"
+
+    # The context manager fires FastAPI's startup event, which calls init_db()
+    # again -- harmless, and it proves startup works against the patched path.
+    from fastapi.testclient import TestClient
+    with TestClient(main.app) as c:
+        assert storage.DB_PATH == str(db_path), "startup must not restore the real DB path"
+        yield c
+
+    mp.undo()
+
+
+# --------------------------------------------------------------------------
+# helpers
+# --------------------------------------------------------------------------
+
+def run_invoice(client, filename):
+    """POST a sample through the live SSE endpoint and return the final result.
+
+    The response is a stream of `data: {...}` lines, one per stage, terminated by
+    a `final` event carrying the verdict. Reading the last `final` rather than
+    the last line matters -- the stream ends with a blank line, so tailing it
+    yields nothing.
+    """
+    path = os.path.join(SAMPLES, filename)
+    assert os.path.isfile(path), f"missing sample fixture: {filename}"
+
+    with open(path, "rb") as fh:
+        resp = client.post(
+            "/api/runs/stream",
+            files={"file": (filename, fh, "application/pdf")},
+        )
+    assert resp.status_code == 200, f"{filename}: HTTP {resp.status_code}"
+
+    final, stage_events = None, []
+    for line in resp.text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        event = json.loads(line[len("data: "):])
+        if event.get("type") == "stage":
+            stage_events.append(event["stage"])
+        elif event.get("type") == "final":
+            final = event["result"]
+
+    assert final is not None, f"{filename}: stream produced no final event"
+    assert stage_events, f"{filename}: stream produced no stage events"
+    return final
+
+
+def po_balances(result):
+    """(remaining_before, remaining_after) for the matched PO, or (None, None)."""
+    match = result.get("po_match") or {}
+    return match.get("remaining_before"), match.get("remaining_after")
+
+
+# --------------------------------------------------------------------------
+# per-sample scenario checks
+#
+# The verdict alone would pass even if the numbers behind it were wrong, so each
+# sample that has something specific worth pinning gets an extra assertion. These
+# live here rather than in separate test functions to keep the suite at exactly
+# one test per sample.
+# --------------------------------------------------------------------------
+
+def _check_happy_path(result):
+    assert result["po_match"]["po_number"] == "PO-1001"
+    assert result["po_match"]["matched_via"] == "explicit"
+    assert result["extracted"]["invoice_number"] == "INV-2201"
+
+
+def _check_split_a(result):
+    # First bill against an untouched $5,000 PO.
+    before, after = po_balances(result)
+    assert (before, after) == (5000.00, 2000.00)
+    assert result["po_match"]["is_partial"] is True
+
+
+def _check_split_b(result):
+    # Second bill lands exactly on the remaining balance, closing it out.
+    before, after = po_balances(result)
+    assert (before, after) == (2000.00, 0.00)
+
+
+def _check_overflow(result):
+    # Third bill against a drained PO: the ledger, not the file, is what flags it.
+    before, _ = po_balances(result)
+    assert before == 0.00
+    assert result["po_match"]["within_tolerance"] is False
+
+
+def _check_missing_number(result):
+    assert not result["extracted"].get("invoice_number")
+    assert any("invoice_number" in r["text"] for r in result["reasons"]), \
+        "the missing field should be named in the reasoning trail"
+
+
+def _check_scanned(result):
+    # Refuses to guess rather than fabricating fields off an image-only PDF.
+    assert result["extracted"]["extraction_method"] == "none"
+    assert result["po_match"]["po_number"] is None
+
+
+def _check_duplicate(result):
+    assert any("matches run #" in r["text"] for r in result["reasons"]), \
+        "the rejection should cite the earlier run it collided with"
+
+
+EXTRA_CHECKS = {
+    "01_happy_path_acme.pdf": _check_happy_path,
+    "02_split_po_globex_a.pdf": _check_split_a,
+    "03_split_po_globex_b.pdf": _check_split_b,
+    "03b_split_po_globex_overflow.pdf": _check_overflow,
+    "04_missing_invoice_number.pdf": _check_missing_number,
+    "05_scanned_no_text.pdf": _check_scanned,
+    "06_duplicate_of_01.pdf": _check_duplicate,
+}
+
+
+# --------------------------------------------------------------------------
+# the suite
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("filename,expected", MANIFEST, ids=[n for n, _ in MANIFEST])
+def test_sample_invoice(client, filename, expected):
+    """Each sample, in manifest order, must produce its documented verdict.
+
+    Order-dependent by design: these share a database and build on each other.
+    A failure early in the sequence will cascade, because the later cases are
+    *about* the state the earlier ones left behind.
+    """
+    result = run_invoice(client, filename)
+
+    assert result["status"] == expected, (
+        f"{filename}: expected {expected}, got {result['status']}\n"
+        + "\n".join(f"  [{r['level']}] {r['text']}" for r in result["reasons"])
+    )
+
+    assert result["run_id"] is not None, "every run must be persisted"
+    assert result["reasons"], "a verdict with no reasoning is not auditable"
+
+    EXTRA_CHECKS[filename](result)
