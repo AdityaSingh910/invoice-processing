@@ -36,13 +36,17 @@ def duplicate_check(extracted: dict, exclude_run_id=None):
     return None, "No prior run matches this vendor/invoice number/total combination."
 
 
-def decide(has_text, ocr_attempted, ocr_succeeded, missing_fields, vendor_ok, vendor_detail,
+def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
            dup_row, dup_detail, po_match: dict):
     """Aggregates every check into one status plus a severity-tagged reasoning trail.
 
     Each reason is {"text": ..., "level": "ok"|"warn"|"fail"|"info"} so the UI can
     colour-code the trail rather than showing a flat list of bullets. "fail" marks
     the findings that actually drove a REJECT/REVIEW; "ok" marks checks that passed.
+
+    `extract_info` is the dict returned alongside the invoice by
+    extraction.extract_invoice(): which route ran, whether a text layer existed,
+    and any notes about degraded extraction.
     """
     reasons = []
     reject = False
@@ -51,17 +55,25 @@ def decide(has_text, ocr_attempted, ocr_succeeded, missing_fields, vendor_ok, ve
     def add(text, level="info"):
         reasons.append({"text": text, "level": level})
 
-    if not has_text and not ocr_succeeded:
+    route = (extract_info or {}).get("route")
+
+    if route == "none":
         review = True
-        if ocr_attempted:
-            add(
-                "Document has no embedded text layer (looks scanned) and OCR is unavailable in this "
-                "environment — refusing to guess at field values. Route for manual entry or ask the "
-                "vendor to re-send a text-based PDF.",
-                "fail",
-            )
-        else:
-            add("Document has no embedded text layer and could not be read.", "fail")
+        add(
+            "Nothing could be read from this document — it has no embedded text layer and no "
+            "vision extraction was available. Refusing to guess at field values; route for "
+            "manual entry or ask the vendor to re-send a text-based PDF.",
+            "fail",
+        )
+    elif route == "llm-vision":
+        add(
+            "No embedded text layer — fields were read from page images rather than text. "
+            "Values are worth a second look before payment.",
+            "warn",
+        )
+
+    for note in (extract_info or {}).get("notes", []):
+        add(note, "warn")
 
     if missing_fields:
         review = True

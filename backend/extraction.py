@@ -287,7 +287,13 @@ def regex_extract(text: str) -> ExtractedInvoice:
         if r and r.lower() not in seen:
             seen.add(r.lower())
             cleaned.append(r)
-    inv.po_references = cleaned
+    # "PO Number: PO-1002" yields both "1002" and "PO-1002". Drop any reference
+    # that is contained in a longer one so only the most specific form survives --
+    # a bare "1002" could otherwise collide with an unrelated PO.
+    inv.po_references = [
+        r for r in cleaned
+        if not any(other != r and r.lower() in other.lower() for other in cleaned)
+    ]
 
     inv.vendor_name = _guess_vendor(text)
 
@@ -329,16 +335,21 @@ def regex_extract(text: str) -> ExtractedInvoice:
 # orchestration
 # --------------------------------------------------------------------------
 
-def extract_invoice(pdf_bytes: bytes) -> Tuple[ExtractedInvoice, dict]:
+def extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = None
+                    ) -> Tuple[ExtractedInvoice, dict]:
     """Runs the best available extraction route.
 
     Returns (invoice, info) where info describes what actually happened so the
     pipeline can report it honestly in the run view.
+
+    `pre` is an already-computed (text, page_count, has_text_layer) tuple. The
+    pipeline reads the text layer in its own stage so it can time and report that
+    separately, and passes the result here rather than re-opening the PDF.
     """
     info = {"page_count": 0, "has_text_layer": False, "route": None,
             "vision_used": False, "notes": [], "error": None}
 
-    text, page_count, has_text = extract_text(pdf_bytes)
+    text, page_count, has_text = pre if pre is not None else extract_text(pdf_bytes)
     info["page_count"] = page_count
     info["has_text_layer"] = has_text
 

@@ -6,6 +6,26 @@ def tolerance_for(amount: float) -> float:
     return max(amount * 0.02, 25.00)
 
 
+def empty_match(invoice_total):
+    """The shape returned when no PO could be matched. Kept in one place so every
+    consumer (matching, and the unreadable-file abort path) emits the same keys."""
+    return {
+        "po_number": None,
+        "po_vendor": None,
+        "po_amount": None,
+        "po_status": None,
+        "matched_via": "none",
+        "consumed_before": None,
+        "invoice_total": invoice_total,
+        "remaining_before": None,
+        "remaining_after": None,
+        "tolerance": None,
+        "diff": None,
+        "within_tolerance": False,
+        "is_partial": False,
+    }
+
+
 def match_po(extracted: dict, exclude_run_id=None):
     """Returns a po_match dict describing what PO (if any) this invoice lines up
     against, and the remaining balance on that PO before/after this invoice."""
@@ -31,19 +51,7 @@ def match_po(extracted: dict, exclude_run_id=None):
                 matched_via = "inferred"
 
     if po_row is None:
-        return {
-            "po_number": None,
-            "matched_via": "none",
-            "consumed_before": None,
-            "invoice_total": extracted.get("total"),
-            "remaining_before": None,
-            "remaining_after": None,
-            "tolerance": None,
-            "diff": None,
-            "within_tolerance": False,
-            "is_partial": False,
-            "po_status": None,
-        }
+        return empty_match(extracted.get("total"))
 
     consumed = storage.consumed_amount_for_po(po_row["po_number"], exclude_run_id=exclude_run_id)
     remaining_before = round(po_row["amount"] - consumed, 2)

@@ -13,10 +13,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+import config
 import extraction
 import matching
 import rules
 import storage
+from schemas import ExtractedInvoice
 
 app = FastAPI(title="Invoice Processing")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -26,11 +28,45 @@ FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 
 @app.on_event("startup")
 def _startup():
+    config.load_dotenv()
     storage.init_db()
 
 
 def sse(event_type, payload):
     return f"data: {json.dumps({'type': event_type, **payload})}\n\n"
+
+
+# Stages after EXTRACT_TEXT, in order. Used to close out a run that cannot proceed.
+_REMAINING_AFTER_TEXT = ["EXTRACT_FIELDS", "VALIDATE", "VENDOR_CHECK", "PO_MATCH",
+                         "DUPLICATE_CHECK", "TOLERANCE_CHECK"]
+
+
+async def _abort_unreadable(filename, message, stages, stage):
+    """Close out a run whose file could not be opened at all.
+
+    The remaining checks are reported as skipped rather than silently dropped, so
+    the run view stays complete, and the run is still persisted -- an unreadable
+    file is an AP event worth seeing on the dashboard, not a 500.
+    """
+    for name in _REMAINING_AFTER_TEXT:
+        yield sse("stage", {"stage": stage(name, "warn", "Skipped — nothing could be read from the file.")})
+        await asyncio.sleep(0.05)
+
+    status = "NEEDS_REVIEW"
+    reasons = [{
+        "text": f"{message} Nothing was extracted, so no check could run. "
+                f"Route for manual handling or request a valid PDF from the vendor.",
+        "level": "fail",
+    }]
+    yield sse("stage", {"stage": stage("DECISION", "ok", f"Final status: {status}.")})
+
+    extracted = ExtractedInvoice(raw_text="", extraction_method="none").to_dict()
+    po_match = matching.empty_match(None)
+    run_id = storage.save_run(filename, status, extracted, po_match, stages, reasons)
+    yield sse("final", {"result": {
+        "run_id": run_id, "filename": filename, "status": status, "reasons": reasons,
+        "extracted": extracted, "po_match": po_match, "stages": stages,
+    }})
 
 
 async def run_pipeline(filename: str, pdf_bytes: bytes):
@@ -58,34 +94,42 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     await asyncio.sleep(0.25)
     mark()
 
-    # 2. EXTRACT_TEXT (+ OCR fallback)
-    text, has_text_layer, ocr_attempted, ocr_succeeded = extraction.extract_text_and_ocr_flag(pdf_bytes)
+    # 2. EXTRACT_TEXT -- read the embedded text layer only. Which extraction route
+    # that implies is decided in the next stage.
+    try:
+        text, page_count, has_text_layer = extraction.extract_text(pdf_bytes)
+    except extraction.PdfUnreadable as exc:
+        yield sse("stage", {"stage": stage("EXTRACT_TEXT", "fail", str(exc))})
+        async for evt in _abort_unreadable(filename, str(exc), stages, stage):
+            yield evt
+        return
+
+    pages_note = f"{page_count} page{'s' if page_count != 1 else ''}"
     if has_text_layer:
-        detail = f"Extracted {len(text)} characters of embedded text."
+        detail = f"{pages_note}; extracted {len(text)} characters of embedded text."
         st = "ok"
-    elif ocr_succeeded:
-        detail = f"No embedded text layer — OCR recovered {len(text)} characters."
-        st = "warn"
     else:
-        detail = "No embedded text layer, and OCR is unavailable in this environment. No text recovered."
-        st = "fail"
+        detail = f"{pages_note}; no embedded text layer (document looks scanned)."
+        st = "warn"
     yield sse("stage", {"stage": stage("EXTRACT_TEXT", st, detail)})
     await asyncio.sleep(0.25)
     mark()
 
-    # 3. EXTRACT_FIELDS
-    extracted_obj = extraction.extract_fields(text) if text else extraction.ExtractedInvoice(
-        raw_text="", extraction_method="none", has_text_layer=False,
-        ocr_attempted=ocr_attempted, ocr_succeeded=ocr_succeeded,
-    )
-    extracted_obj.has_text_layer = has_text_layer
-    extracted_obj.ocr_attempted = ocr_attempted
-    extracted_obj.ocr_succeeded = ocr_succeeded
+    # 3. EXTRACT_FIELDS -- LLM over text, LLM over page images, or regex.
+    extracted_obj, extract_info = extraction.extract_invoice(
+        pdf_bytes, pre=(text, page_count, has_text_layer))
     extracted = extracted_obj.to_dict()
     found = [k for k in ["vendor_name", "invoice_number", "invoice_date", "total"] if extracted.get(k)]
+    if extract_info["route"] == "none":
+        ef_status = "fail"
+    elif found and extract_info["route"] != "regex":
+        ef_status = "ok"
+    else:
+        ef_status = "ok" if found else "warn"
     yield sse("stage", {"stage": stage(
-        "EXTRACT_FIELDS", "ok" if found else "warn",
-        f"Method: {extracted['extraction_method']}. Found: {', '.join(found) if found else 'nothing usable'}."
+        "EXTRACT_FIELDS", ef_status,
+        f"Route: {extracted['extraction_method']}. "
+        f"Found: {', '.join(found) if found else 'nothing usable'}."
     )})
     await asyncio.sleep(0.3)
     mark()
@@ -146,8 +190,7 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
 
     # 9. DECISION
     status, reasons = rules.decide(
-        has_text_layer, ocr_attempted, ocr_succeeded, missing, vendor_ok, vendor_detail,
-        dup_row, dup_detail, po_match,
+        extract_info, missing, vendor_ok, vendor_detail, dup_row, dup_detail, po_match,
     )
     yield sse("stage", {"stage": stage("DECISION", "ok", f"Final status: {status}.")})
     await asyncio.sleep(0.15)

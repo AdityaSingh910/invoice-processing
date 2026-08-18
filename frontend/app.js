@@ -217,8 +217,8 @@ function showResult(r) {
     ${row("Tax", money(e.tax))}
     ${row("Total", e.total !== null && e.total !== undefined ? `<b>${money(e.total)}</b>` : req(null))}
     ${row("Line items", (e.line_items || []).length || "—")}
-    ${row("Extraction", esc(e.extraction_method))}
-    ${row("Text layer", e.has_text_layer ? "embedded" : (e.ocr_succeeded ? "OCR recovered" : '<span class="kv-missing">none</span>'))}`;
+    ${row("Currency", esc(e.currency || "—"))}
+    ${row("Extraction route", esc(e.extraction_method))}`;
   $("fieldsCard").classList.remove("hidden");
 }
 
