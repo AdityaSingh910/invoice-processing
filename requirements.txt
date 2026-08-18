@@ -1,8 +1,16 @@
+# Web layer
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 python-multipart==0.0.9
+
+# PDF: text extraction, and page rasterisation for the vision route.
+# pypdfium2 is a self-contained wheel - no poppler or tesseract to install.
 pdfplumber==0.11.4
-reportlab==4.2.5
+pypdfium2==5.13.0
 pillow==10.4.0
-pytesseract==0.3.13
-anthropic==0.34.2
+
+# Sample invoice generation (sample_invoices/generate_invoices.py)
+reportlab==4.2.5
+
+# LLM extraction (optional at runtime - only used when ANTHROPIC_API_KEY is set)
+anthropic==0.122.0
