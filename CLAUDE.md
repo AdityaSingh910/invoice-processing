@@ -43,10 +43,11 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Deployed | ❌ Local only, no git remote, no hosting |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 7 commits, working tree clean.
+**Git:** local repo only, 8 commits, working tree clean.
 
 ```
-(head)  Add tests/test_samples.py — Phase 0 Step 3, 7/7 passing
+21bc180 Implement pytest suite and enable API vision extraction for sample 05
+bedc0db Add tests/test_samples.py — Phase 0 Step 3, 7/7 passing
 e103369 Add CLAUDE.md — session handoff document
 f521b21 Update README for the architect review
 ab1a559 Add REFACTOR_STRATEGY.md — architect review with implementation patterns
@@ -55,11 +56,17 @@ b2db656 Rewrite README for current state; fix stale requirements.txt
 56102dc Baseline: current state, pipeline broken mid-refactor
 ```
 
-**Last verified 2026-08-18.** Re-checked against the code that session, all still
-true: every line count in §6, every code reference in §8 (all three bugs), the six
-API endpoints, the seed data, and the manifest order. The app was also run — all
-three tabs render with no JS console errors. Nothing in this file was found stale
-except its own commit count, now corrected.
+**Last verified 2026-08-18.** Re-checked against the code, all still true: every
+line count in §6, every code reference in §8 (all three bugs), the six API
+endpoints, the seed data, and the manifest order. The app was run — all three tabs
+render with no JS console errors. The test suite was added and is green, and the
+vision route's rasterisation half was proven independently.
+
+**Still unproven:** the two LLM routes have never made a real API call. There is
+no `.env` in this environment, so every green test run so far is the `regex` /
+`none` path. Sample 05's `APPROVED` expectation under vision is *reasoned* from
+the rendered page image plus seed PO-1005 — not observed. Running `pytest` with a
+real key is the outstanding check; do it before relying on that verdict in a demo.
 
 ---
 
@@ -210,7 +217,8 @@ for want of a key.
 What *has* been verified: the rasterisation half of the vision route. Running
 `render_pages_png()` on `05_scanned_no_text.pdf` produces a clean, fully legible
 1224×1584 PNG, so the pypdfium2 plumbing works. The only unproven link is the
-API call itself (`extraction.py:170`). To enable, create `.env` in the project
+API call itself (`llm_extract_vision`, `extraction.py:171`; `llm_extract_text`
+at `extraction.py:161`). To enable, create `.env` in the project
 root:
 
 ```
@@ -233,7 +241,7 @@ stages over SSE; the frontend reads it with `fetch()`.
 
 ```
 backend/
-  main.py         283 lines. FastAPI app, the 9-stage pipeline as an async
+  main.py         292 lines. FastAPI app, the 9-stage pipeline as an async
                   generator yielding SSE events, _abort_unreadable() path,
                   all endpoints.
   extraction.py   394 lines. PDF → text (pdfplumber) → fields. Three routes,
@@ -262,12 +270,15 @@ sample_invoices/
   *.pdf (7)            Test fixtures
   generate_invoices.py Regenerates them (reportlab)
   manifest.json        Scenario labels + expected verdicts; drives the UI list
-                       AND is the source of truth for tests
+                       AND is the source of truth for tests. Sample 05 carries
+                       BOTH `expect` and `expect_with_vision` — see §7.
 tests/
-  test_samples.py  7 parametrized cases, one per sample, run sequentially in
+  test_samples.py  269 lines. 7 parametrized cases, one per sample, run sequentially in
                    manifest order against a temp DB. Verdicts come from
-                   manifest.json; each case also pins the numbers behind the
-                   verdict (PO balances, duplicate citation, extraction route).
+                   manifest.json, resolved against config.has_api_key(); each
+                   case also pins the numbers behind the verdict (PO balances,
+                   duplicate citation, extraction route). Does NOT strip the API
+                   key -- with one present it runs the real LLM routes.
 AUDIT.md              What is wrong and why — the self-audit
 REFACTOR_STRATEGY.md  How to fix it — architect review, code patterns
 PROCESS_MAP.md        The on-paper design done before building
@@ -392,9 +403,12 @@ Full detail: [AUDIT.md](AUDIT.md). Fix patterns: [REFACTOR_STRATEGY.md](REFACTOR
 
 ### Remaining
 
-**Immediate — nothing engineering-side is blocking.** Phase 0 is done. The two
-outstanding items are *case-study deliverables*, and they outrank every phase
-below: **record the 5-minute demo video**, and **produce a shareable link**
+**Immediate — one cheap check, then the deliverables.** Phase 0 is done. The
+cheap check: drop a real key into `.env` and run `pytest`. It is the only way to
+learn whether the LLM routes actually work, and it costs one command.
+
+The other two outstanding items are *case-study deliverables*, and they outrank
+every phase below: **record the 5-minute demo video**, and **produce a shareable link**
 (no git remote, no deployment — GitHub repo, ngrok tunnel, or Render/Railway/Fly).
 The work cannot be graded while it only runs on one laptop.
 
