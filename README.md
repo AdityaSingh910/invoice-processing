@@ -20,11 +20,13 @@ Built for the Zamp AI Solutions Associate case study, **PS-1 (Finance / AP)**.
 | UI | Run view, dashboard, reference data — all working, light + dark |
 | Extraction route in use | **regex** (no API key set — see [Extraction routes](#extraction-routes)) |
 | Automated tests | **None yet** — next task |
-| Known defects | **2 live bugs**, documented below and in [AUDIT.md](AUDIT.md) |
+| Known defects | **3 open**, documented below — 2 from the audit, 1 concurrency race |
 | Deployed anywhere | No — runs locally only |
 
 Read [AUDIT.md](AUDIT.md) before trusting any of this in a real AP context. It
 is a deliberately unflattering self-review and it found real problems.
+[REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md) is the architect-level response:
+exact fix logic, schemas and sequencing for everything the audit surfaced.
 
 ---
 
@@ -66,7 +68,19 @@ answers are in [AUDIT.md](AUDIT.md), along with a phased refactor plan.
 - ⬜ **Step 3** — turn the throwaway verification script into a real
   `tests/test_samples.py`.
 
-Phase 1 (fixing the two live bugs) has **not** started.
+**6. Architect review.** A second pass over the audit findings, this time
+producing implementation patterns rather than just a list of problems:
+[REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md). It adds the exact fix logic for
+both live bugs, the `Tracked[T]` provenance wrapper and confidence gate, designs
+for three harder edge cases (multi-PO consolidation, FX drift, unlisted
+surcharges), a versioned `rules.yaml`, and a replayable `DecisionTrace` schema.
+
+It also found **a third defect the audit missed** — a concurrency race in the
+PO ledger (see [Known problems](#known-problems)) — and pushed back on three
+points, most importantly that FX conversion must not silently widen
+auto-approval.
+
+Phase 1 (fixing the live bugs) has **not** started.
 
 ---
 
@@ -225,7 +239,8 @@ told whether a key is present.
 
 ## Known problems
 
-From [AUDIT.md](AUDIT.md). Two are live bugs, not just design gaps:
+From [AUDIT.md](AUDIT.md) and [REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md).
+Three are live bugs, not just design gaps:
 
 🐞 **Inferred PO matches don't block approval.** When no PO reference is
 extracted, the process binds to the nearest-amount PO for that vendor with *no
@@ -236,6 +251,15 @@ process picked.
 🐞 **Currency is extracted and never read.** Zero references in `matching.py` or
 `rules.py`. The PO table has a `currency` column nobody consults. A €3,000
 invoice against a $5,000 PO is compared as `3000` vs `5000`.
+
+🐞 **The PO ledger has a concurrency race.** Every `storage` function opens and
+closes its own connection, so a transaction cannot span read-balance → decide →
+write. Two invoices for the same PO processed concurrently both read the same
+remaining balance and can both be approved, committing more than the PO
+authorises. This is the only known defect that produces a wrong **number**
+rather than a wrong routing. Fix — `BEGIN IMMEDIATE` + WAL, with the slow
+extraction step kept outside the lock — in
+[REFACTOR_STRATEGY.md §3.4](REFACTOR_STRATEGY.md).
 
 Also, by design rather than accident, and all queued for later phases:
 
@@ -254,15 +278,31 @@ Also, by design rather than accident, and all queued for later phases:
 
 ## What's next
 
-**Phase 0** — finish Step 3 (real pytest suite).
-**Phase 1** — fix the two live bugs and tighten vendor matching.
-**Phase 2** — the structural fix: wrap every extracted value in
-`{value, confidence, source, evidence, page}` and add a confidence gate to the
-rules, so a low-confidence extraction can't reach auto-approve on a technicality.
-**Phases 3–5** — move policy to versioned YAML, build a real `DecisionTrace`,
-surface confidence and evidence in the UI.
+| Phase | Work |
+|---|---|
+| **0** | Finish Step 3 — real pytest suite |
+| **1** | Cap inferred PO matches + make `warn` actually bite; currency mismatch → review; normalised vendor matching |
+| **2** | `Tracked[T]` provenance wrapper, per-route confidence, and the **confidence gate** |
+| **3** | `rules.yaml` — pull every threshold out of Python, stamp the version on each run |
+| **4** | Transaction boundaries and the `run_allocations` ledger table |
+| **5** | `DecisionTrace` + reference snapshot; stop re-seeding on startup |
+| **6** | Line-item decomposition, multi-PO consolidation, FX provider |
+| **7** | UI: confidence badges, evidence snippets, allocation view |
 
-Full plan with rationale and exit criteria: [AUDIT.md](AUDIT.md#refactor-plan).
+**If only three things get built:** the live bugs (Phase 1), the confidence gate
+(Phase 2 — it closes the low-confidence auto-approve problem as a *class* rather
+than case by case), and the transaction fix (Phase 4a — the only defect that
+corrupts a number rather than a routing).
+
+**One sequencing trap worth knowing:** multi-PO consolidation is a *ledger*
+feature, not a matching feature. The schema stores one `po_number` per run and
+consumption sums run totals, so a consolidated invoice would over-consume every
+PO it touched. It needs the allocations table, which needs transaction
+boundaries first. Phase 4 before Phase 6, always.
+
+Full plan with rationale, code patterns and exit criteria:
+[REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md) · findings behind it:
+[AUDIT.md](AUDIT.md#refactor-plan).
 
 ---
 
@@ -280,6 +320,7 @@ backend/
 frontend/         index.html, style.css, app.js — no build step
 data/             Seed POs + vendors (tracked); app.db (not tracked)
 sample_invoices/  7 PDFs, the generator, and manifest.json of scenarios
-AUDIT.md          Architecture self-audit + phased refactor plan
-PROCESS_MAP.md    The on-paper design done before building
+AUDIT.md              Architecture self-audit — what is wrong and why
+REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing
+PROCESS_MAP.md        The on-paper design done before building
 ```
