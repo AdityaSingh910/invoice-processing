@@ -203,9 +203,15 @@ Same output schema regardless, so matching and rules never know which ran.
 | `regex` | No key, or LLM call failed | No |
 | `none` | Nothing readable — returns empty fields rather than guessing | — |
 
-⚠️ **The two LLM routes are wired but never exercised.** Every test so far ran
-`regex`. Sample 05 (scanned) lands on `route=none` for this reason. To enable,
-create `.env` in the project root:
+⚠️ **The two LLM routes are wired but still never exercised end to end.**
+Every run so far took `regex`, and sample 05 (scanned) lands on `route=none`
+for want of a key.
+
+What *has* been verified: the rasterisation half of the vision route. Running
+`render_pages_png()` on `05_scanned_no_text.pdf` produces a clean, fully legible
+1224×1584 PNG, so the pypdfium2 plumbing works. The only unproven link is the
+API call itself (`extraction.py:170`). To enable, create `.env` in the project
+root:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -302,11 +308,20 @@ All five vendors are `approved` (V-001 … V-005).
 | 3 | `03_split_po_globex_b.pdf` | $2,000, exactly exhausts PO-1002 | APPROVED |
 | 4 | `03b_split_po_globex_overflow.pdf` | $2,500 against exhausted PO | NEEDS_REVIEW |
 | 5 | `04_missing_invoice_number.pdf` | Amounts fine, no audit key | NEEDS_REVIEW |
-| 6 | `05_scanned_no_text.pdf` | Image-only PDF | NEEDS_REVIEW |
+| 6 | `05_scanned_no_text.pdf` | Image-only PDF | NEEDS_REVIEW † |
 | 7 | `06_duplicate_of_01.pdf` | Resubmission of INV-2201 | REJECTED |
 
 **Run 2 → 3 → 4 in order** or the split-PO story doesn't work. **Run 1 before 7**
 or the duplicate has nothing to collide with.
+
+† **Sample 05's verdict is route-dependent, and deliberately so.** With no key
+there is nothing to read, so the process refuses to guess → NEEDS_REVIEW. With a
+key the vision route reads INV-9004 / PO-1005 / $15,400.00 off the page image,
+which matches open PO-1005 exactly → **APPROVED**. The manifest carries both:
+`expect` and `expect_with_vision`. The test suite and `/api/sample-invoices`
+both resolve against `config.has_api_key()`, so the UI badge can never
+contradict the run beside it. Verified by flipping the flag; the other six
+samples do not move.
 
 ### The demo money-shot
 
@@ -385,9 +400,12 @@ The work cannot be graded while it only runs on one laptop.
 
 Notes on the suite, for whoever changes it next:
 
-* It pins `ANTHROPIC_API_KEY` **out** of the environment, so extraction takes the
-  deterministic `regex` / `none` routes. Verdict expectations describe *decision*
-  behaviour, which must be reproducible; the LLM routes stay manually tested.
+* It does **not** strip `ANTHROPIC_API_KEY`. With a key present the suite runs the
+  real `llm (text)` and `llm (vision)` routes; without one it runs `regex` /
+  `none`. The fixture prints which mode ran, because a green suite means a
+  different thing in each. Know the tradeoff: in live mode the suite costs money,
+  needs a network, and is only as reproducible as the model. **Nobody has run it
+  in live mode yet** — there is still no `.env`.
 * Cases share one DB and run in manifest order. An early failure cascades — that
   is inherent, since the later cases are *about* the state the earlier ones left.
 * Verified to actually bite: running `-k overflow` alone turns `03b` **APPROVED**

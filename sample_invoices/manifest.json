@@ -31,8 +31,9 @@
   },
   "05_scanned_no_text.pdf": {
     "label": "Scanned, no text layer",
-    "note": "Image-only PDF; process refuses to fabricate fields",
+    "note": "Image-only PDF. Without an API key the process refuses to fabricate fields; with one, the vision route reads it.",
     "expect": "NEEDS_REVIEW",
+    "expect_with_vision": "APPROVED",
     "order": 6
   },
   "06_duplicate_of_01.pdf": {

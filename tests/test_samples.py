@@ -44,15 +44,37 @@ import storage     # noqa: E402
 # manifest -- the single source of truth for what each sample should produce
 # --------------------------------------------------------------------------
 
-def load_manifest():
-    """[(filename, expected_status), ...] in the manifest's declared order."""
+def load_manifest(vision_available):
+    """[(filename, expected_status), ...] in the manifest's declared order.
+
+    One expectation is **route-dependent**, and it has to be, because the verdict
+    genuinely differs: `05_scanned_no_text.pdf` is an image-only PDF. With no API
+    key there is nothing to read, so the process refuses to guess and the invoice
+    goes to review. With a key, the vision route reads INV-9004 / PO-1005 /
+    $15,400.00 off the page image, which matches open PO-1005 exactly and
+    approves. Same bytes, different verdict, because a different route ran.
+
+    Samples carrying an `expect_with_vision` key use it when a key is live. The
+    manifest stays the single source of truth for both modes.
+    """
     with open(os.path.join(SAMPLES, "manifest.json"), encoding="utf-8") as f:
         manifest = json.load(f)
     ordered = sorted(manifest.items(), key=lambda kv: kv[1].get("order", 999))
-    return [(name, meta["expect"]) for name, meta in ordered]
+
+    out = []
+    for name, meta in ordered:
+        expected = meta["expect"]
+        if vision_available and meta.get("expect_with_vision"):
+            expected = meta["expect_with_vision"]
+        out.append((name, expected))
+    return out
 
 
-MANIFEST = load_manifest()
+# Resolved at import time so parametrize ids reflect the mode actually running.
+# config.load_dotenv() is what picks up a key from .env; the real environment wins.
+config.load_dotenv()
+LIVE_LLM = config.has_api_key()
+MANIFEST = load_manifest(LIVE_LLM)
 
 
 # --------------------------------------------------------------------------
@@ -66,22 +88,30 @@ def client(tmp_path_factory):
     `tmp_path_factory` rather than `tmp_path` because the DB has to outlive a
     single test -- the whole point is that state accumulates across the seven.
 
-    Two things are patched before anything touches SQLite:
+    `storage.DB_PATH` is a module-level constant read inside `get_conn()` at call
+    time, with no environment override, so patching the attribute is the only way
+    to redirect it.
 
-    * `storage.DB_PATH` -- a module-level constant read inside `get_conn()` at
-      call time, with no environment override, so patching the attribute is the
-      only way to redirect it.
-    * `ANTHROPIC_API_KEY` -- removed from the environment so extraction takes
-      the deterministic `regex` / `none` routes. The manifest's expectations
-      describe *decision* behaviour, which must be reproducible; an LLM call is
-      non-deterministic and needs a network, so it has no place in a regression
-      suite. The routes themselves stay covered by manual testing.
+    `ANTHROPIC_API_KEY` is deliberately **not** stripped. When a key is present
+    the suite exercises the real `llm (text)` and `llm (vision)` routes end to
+    end, which is what makes it deployment/demo readiness rather than a mock.
+    The tradeoff is real and worth stating: in that mode the suite costs money,
+    needs a network, and is only as reproducible as the model is. The verdicts
+    should still be stable, because the decision logic downstream of extraction
+    is deterministic -- but an extraction miss will surface here as a failure.
     """
+    # A green suite means something different in each mode, so say which one ran
+    # rather than leaving a reader to infer it from the absence of a key.
+    if LIVE_LLM:
+        print("\n[extraction mode] LIVE LLM - llm (text) and llm (vision) routes exercised")
+    else:
+        print("\n[extraction mode] deterministic regex / none - no ANTHROPIC_API_KEY.")
+        print("[extraction mode] the two LLM routes are NOT covered by this run.")
+
     db_path = tmp_path_factory.mktemp("invoice_db") / "test_app.db"
 
     mp = pytest.MonkeyPatch()
     mp.setattr(storage, "DB_PATH", str(db_path))
-    mp.delenv("ANTHROPIC_API_KEY", raising=False)
 
     # Fresh schema + seed reference data (POs and vendors) from data/*.json,
     # with no run history at all.
@@ -89,7 +119,6 @@ def client(tmp_path_factory):
     assert storage.list_purchase_orders(), "seed POs did not load into the test DB"
     assert storage.list_vendors(), "seed vendors did not load into the test DB"
     assert storage.list_runs() == [], "test DB should start with no run history"
-    assert not config.has_api_key(), "tests must run the deterministic regex route"
 
     # The context manager fires FastAPI's startup event, which calls init_db()
     # again -- harmless, and it proves startup works against the patched path.
@@ -186,9 +215,17 @@ def _check_missing_number(result):
 
 
 def _check_scanned(result):
-    # Refuses to guess rather than fabricating fields off an image-only PDF.
-    assert result["extracted"]["extraction_method"] == "none"
-    assert result["po_match"]["po_number"] is None
+    """The one sample whose behaviour is route-dependent -- see load_manifest()."""
+    if LIVE_LLM:
+        # Vision route: pages rasterised by pypdfium2 and read by the model.
+        assert result["extracted"]["extraction_method"] == "llm (vision)"
+        assert result["extracted"]["invoice_number"] == "INV-9004"
+        assert result["po_match"]["po_number"] == "PO-1005"
+        assert result["po_match"]["within_tolerance"] is True
+    else:
+        # Refuses to guess rather than fabricating fields off an image-only PDF.
+        assert result["extracted"]["extraction_method"] == "none"
+        assert result["po_match"]["po_number"] is None
 
 
 def _check_duplicate(result):

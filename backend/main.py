@@ -254,16 +254,25 @@ def list_sample_invoices():
         except Exception:
             manifest = {}
 
+    # One sample's expected verdict depends on which extraction route is live:
+    # an image-only PDF goes to review when there is no key to read it with, and
+    # is approved when the vision route can. Show what will actually happen, so
+    # the badge in the UI never contradicts the run sitting next to it.
+    vision = config.has_api_key()
+
     items = []
     for name in os.listdir(d):
         if not name.lower().endswith(".pdf"):
             continue
         meta = manifest.get(name, {})
+        expect = meta.get("expect")
+        if vision and meta.get("expect_with_vision"):
+            expect = meta["expect_with_vision"]
         items.append({
             "filename": name,
             "label": meta.get("label"),
             "note": meta.get("note"),
-            "expect": meta.get("expect"),
+            "expect": expect,
             "order": meta.get("order", 999),
         })
     items.sort(key=lambda i: (i["order"], i["filename"]))
