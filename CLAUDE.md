@@ -40,12 +40,12 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Extraction route in use | **live** — `llm (text)` / `llm (vision)` verified against `gemini-3.7-flash` |
 | Automated tests | ✅ **7/7 passing** — `tests/test_samples.py`, manifest-driven, isolated DB |
 | Prompt-injection hardening | ✅ Fenced prompt, closed response schema, post-extraction guard — 34 tests |
-| Known defects | **1 live bug** — currency (§8 #2). #1 inferred-PO and #3 concurrency are FIXED |
+| Known defects | ✅ **all 3 documented bugs FIXED** (§8) |
 | Deployed | ❌ Local only, no git remote, no hosting |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 15 commits at the time of writing (this update is
-the 16th), working tree clean.
+**Git:** local repo only, 16 commits at the time of writing (this update is
+the 17th), working tree clean.
 
 ```
 2865a58 Harden the PO ledger: atomicity, reversal + cascade, configurable tolerance
@@ -366,9 +366,9 @@ backend/
                   The ONLY module that talks to a model — google-genai is
                   imported lazily inside _client() so the regex route still
                   works where the SDK was never installed.
-  matching.py      122 lines. PO lookup (explicit refs then inferred),
+  matching.py      153 lines. PO lookup (explicit refs then inferred),
                   tolerance_for(), empty_match(), split-PO balance maths.
-  rules.py        265 lines. validate_required_fields, vendor_check (tri-state),
+  rules.py        281 lines. validate_required_fields, vendor_check (tri-state),
                   duplicate_check, and decide() — the only place a verdict is
                   produced.
   storage.py      356 lines. SQLite. Seeds POs/vendors from data/*.json on
@@ -393,6 +393,9 @@ sample_invoices/
                        AND is the source of truth for tests. Sample 05 carries
                        BOTH `expect` and `expect_with_vision` — see §7.
 tests/
+  test_currency.py       16 cases. Matching currencies unchanged, mismatch →
+                   review with a clear finding, no conversion, unknown currency
+                   not invented, and REJECTED still outranking the review.
   test_inferred_po.py    13 cases. The distance cap, the ambiguity guard, that
                    the inferred warning drives the verdict, and that explicit
                    matching / split-PO / duplicate behaviour did not move.
@@ -505,10 +508,31 @@ Verified against the pre-change code: it APPROVED a $1,000 invoice that named no
 PO, and silently picked one of two identical $1,000 POs. Both are NEEDS_REVIEW
 now. 13 tests in `tests/test_inferred_po.py`.
 
-🐞 **2. Currency extracted, never read.** Zero references to `currency` in
-`matching.py` or `rules.py` (verified by grep). The PO table *has* a `currency`
-column nobody consults. A €3,000 invoice against a $5,000 PO is compared as
-`3000` vs `5000`.
+✅ **2. Currency extracted, never read — FIXED** (Phase 1, 2026-08-19). Was:
+zero references to `currency` in `matching.py` or `rules.py`, so a €3,000 invoice
+against a $5,000 PO was compared as `3000` vs `5000` and read as a comfortable
+partial.
+
+`match_po` now emits `invoice_currency`, `po_currency` and `currency_mismatch`
+(compared case- and whitespace-insensitively, and **only when both sides are
+known** — an absent currency is not evidence of a different one). `decide()`
+turns a mismatch into NEEDS_REVIEW with a `fail`-level finding, placed *before*
+the amount reasoning because when the units differ none of that reasoning means
+anything.
+
+**No conversion, no rate lookup, no FX provider** — a verdict that depended on a
+rate fetched at run time would not be reproducible by an auditor, which is the
+property the whole design exists to protect. Amounts pass through untouched.
+
+Verified end to end: a EUR invoice against an untouched USD PO-1002 has
+`within_tolerance=True` and `is_partial=True` — every numeric check passes — yet
+returns NEEDS_REVIEW on exactly one fail-level finding, and consumes no budget.
+16 tests in `tests/test_currency.py`.
+
+⚠️ **Known limitation, unchanged by this fix:** the extractor falls back to
+`"USD"` when a document carries no currency signal, so a genuinely unmarked
+invoice is indistinguishable from a USD-marked one. That is an extraction
+concern, not a matching one, and was left alone deliberately.
 
 ✅ **3. PO ledger concurrency race — FIXED.** Was: every `storage` function opened
 its own connection, so a transaction could not span read-balance → decide →
@@ -594,9 +618,10 @@ and they outrank every phase below:
 The work cannot be graded while it only runs on one laptop. Neither item needs
 another line of pipeline code.
 
-The suite is now four files — `test_samples.py` (7 end-to-end sample verdicts),
+The suite is now five files — `test_samples.py` (7 end-to-end sample verdicts),
 `test_security.py` (27 injection cases), `test_po_edge_cases.py` (12 ledger
-cases), `test_inferred_po.py` (13 matching cases). **59 total.** Notes for whoever changes them next:
+cases), `test_inferred_po.py` (13 matching cases), `test_currency.py` (16
+currency cases). **75 total.** Notes for whoever changes them next:
 
 * It does **not** strip `GEMINI_API_KEY`. With a key present the suite runs the
   real `llm (text)` and `llm (vision)` routes; without one it runs `regex` /
@@ -621,7 +646,7 @@ REFACTOR_STRATEGY:
 
 | Phase | Work | State |
 |---|---|---|
-| 1 | Cap inferred PO matches + make `warn` bite; currency → review; vendor normalised-exact | ◨ **inferred-PO DONE**; currency and vendor-matching still to do |
+| 1 | Cap inferred PO matches + make `warn` bite; currency → review; vendor normalised-exact | ◨ **inferred-PO and currency DONE**; vendor normalised-exact still to do |
 | 2 | `Tracked[T]` provenance wrapper, per-route confidence, **confidence gate** | ⬜ |
 | 3 | `rules.yaml` versioned policy + typed loader | ◨ tolerance moved to `config.py`; YAML + loader still to do |
 | 4 | Transaction boundaries (`BEGIN IMMEDIATE` + WAL); `run_allocations` table | ◨ **transactions DONE** (§8 #3); allocations table still to do |

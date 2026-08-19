@@ -192,6 +192,22 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
             review = True
             add(f"Matched PO {po_match['po_number']} but it is already closed.", "fail")
 
+        # Currency is checked before any of the amount reasoning below, because
+        # when the units differ none of that reasoning means anything: "within
+        # tolerance" compares two bare numbers, and 3,000 of one currency is not
+        # 3,000 of another. No conversion is attempted and no rate is fetched --
+        # a verdict that depends on a third party and the time of day is not one
+        # an auditor can reproduce. A human converts and decides.
+        if po_match.get("currency_mismatch"):
+            review = True
+            add(
+                f"Currency mismatch: invoice is {po_match['invoice_currency']}, "
+                f"PO {po_match['po_number']} is {po_match['po_currency']}. The amount "
+                f"comparison below treats both as the same unit, so it cannot be relied on. "
+                f"No conversion was applied — confirm the correct amount before payment.",
+                "fail",
+            )
+
         if po_match["matched_via"] == "inferred":
             # An inferred match is a suggestion, not an authorisation. The
             # invoice never named this PO -- the process picked it -- so a human

@@ -12,6 +12,16 @@ def tolerance_for(amount: float) -> float:
     return max(amount * config.PO_TOLERANCE_PERCENT, config.PO_TOLERANCE_DOLLARS)
 
 
+def _norm_currency(value):
+    """A comparable currency code, or None when nothing usable is present.
+
+    Returns None rather than a default, so "we could not read a currency" stays
+    distinguishable from "the currency is USD" at the point of comparison.
+    """
+    code = (value or "").strip().upper()
+    return code or None
+
+
 def empty_match(invoice_total):
     """The shape returned when no PO could be matched. Kept in one place so every
     consumer (matching, and the unreadable-file abort path) emits the same keys."""
@@ -33,6 +43,9 @@ def empty_match(invoice_total):
         # Why inference declined to bind a PO, when it was attempted:
         # None | "ambiguous" | "no_close_candidate".
         "inference": None,
+        "invoice_currency": None,
+        "po_currency": None,
+        "currency_mismatch": False,
     }
 
 
@@ -103,6 +116,21 @@ def match_po(extracted: dict, exclude_run_id=None):
     # PO authorised, so it earns an explicit audit note naming the overage.
     over_within_tolerance = 0 < diff <= tol
 
+    # Currency. Every comparison above is a bare number: `diff = total - remaining`
+    # says nothing about what unit either side is in, so a EUR 3,000 invoice
+    # against a USD 5,000 PO reads as a comfortable partial. Flag it here and let
+    # rules decide -- no conversion, no rate lookup, no third party.
+    #
+    # Only compared when BOTH sides are known. Note the honest limitation: the
+    # extractor falls back to "USD" when a document carries no currency signal at
+    # all, so a genuinely-unmarked invoice is indistinguishable from a
+    # USD-marked one. That is an extraction question, not a matching one; the
+    # comparison here errs toward review whenever the two disagree.
+    invoice_currency = _norm_currency(extracted.get("currency"))
+    po_currency = _norm_currency(po_row.get("currency"))
+    currency_mismatch = bool(invoice_currency and po_currency
+                             and invoice_currency != po_currency)
+
     return {
         "po_number": po_row["po_number"],
         "po_vendor": po_row["vendor"],
@@ -119,4 +147,7 @@ def match_po(extracted: dict, exclude_run_id=None):
         "is_partial": is_partial,
         "over_within_tolerance": over_within_tolerance,
         "inference": inference,
+        "invoice_currency": invoice_currency,
+        "po_currency": po_currency,
+        "currency_mismatch": currency_mismatch,
     }
