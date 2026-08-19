@@ -31,33 +31,56 @@ export default function Home() {
   const [reloadKey, setReloadKey] = useState(0);
 
   if (!ready) {
-    return <div className="grid min-h-screen place-items-center text-dim">Loading…</div>;
+    return (
+      <div className="grid min-h-screen place-items-center">
+        <div className="flex items-center gap-3 text-dim">
+          <span className="block h-4 w-4 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+          Loading…
+        </div>
+      </div>
+    );
   }
   if (!user) return <LoginGate />;
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-20 border-b border-border bg-panel/85 backdrop-blur-md">
-        <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-4 px-4 py-2.5">
-          <div className="flex items-center gap-2.5">
-            <span className="grid h-8 w-8 place-items-center rounded-lg bg-accent text-[13px] font-bold text-white">
+      {/* A faint wash behind the header keeps the page from starting on a hard
+          flat edge, without introducing a second background colour. */}
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-x-0 top-0 h-72"
+        style={{ background: "linear-gradient(180deg, var(--bg-accent), transparent)", opacity: 0.6 }}
+      />
+
+      <header className="sticky top-0 z-20 border-b border-border bg-panel/80 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-4 px-5 py-3">
+          <div className="flex items-center gap-3">
+            <span
+              className="grid h-9 w-9 place-items-center rounded-xl text-[13px] font-bold text-white shadow-[var(--shadow-sm)]"
+              style={{ background: "linear-gradient(135deg, var(--accent), #7c3aed)" }}
+            >
               IP
             </span>
             <div className="leading-tight">
-              <div className="font-semibold">Invoice Processing</div>
-              <div className="text-[12px] text-faint">PDF → decision, with the reasoning visible</div>
+              <div className="text-[15px] font-semibold tracking-[-0.01em]">Invoice Processing</div>
+              <div className="text-[12px] text-faint">
+                PDF → decision, with the reasoning visible
+              </div>
             </div>
           </div>
 
-          <nav className="flex gap-1">
+          {/* Segmented control rather than underlined tabs: it reads as one
+              object, which suits three peers better than a nav bar. */}
+          <nav className="flex gap-1 rounded-[var(--radius-inner)] border border-border bg-panel2 p-1">
             {TABS.map((t) => (
               <button
                 key={t.key}
                 onClick={() => setTab(t.key)}
-                className={`rounded-lg px-3 py-1.5 font-medium transition ${
+                aria-current={tab === t.key}
+                className={`rounded-[9px] px-3.5 py-1.5 text-[14px] font-medium transition-all ${
                   tab === t.key
-                    ? "bg-accent-soft text-accent"
-                    : "text-dim hover:bg-panel2 hover:text-text"
+                    ? "bg-panel text-text shadow-[var(--shadow-sm)]"
+                    : "text-dim hover:text-text"
                 }`}
               >
                 {t.label}
@@ -65,21 +88,23 @@ export default function Home() {
             ))}
           </nav>
 
-          <div className="ml-auto flex items-center gap-3">
-            <span className="text-dim">{user.username}</span>
-            <button
-              onClick={() => signOut()}
-              className="rounded-lg border border-border px-2.5 py-1 text-dim transition hover:border-border-strong hover:text-text"
-            >
+          <div className="ml-auto flex items-center gap-2.5">
+            <div className="flex items-center gap-2 rounded-full border border-border bg-panel2 py-1 pr-3 pl-1">
+              <span className="grid h-6 w-6 place-items-center rounded-full bg-accent-soft text-[11px] font-bold text-accent uppercase">
+                {user.username.slice(0, 2)}
+              </span>
+              <span className="text-[13px] font-medium">{user.username}</span>
+            </div>
+            <button onClick={() => signOut()} className="btn btn-ghost px-3 py-1.5 text-[13px]">
               Sign out
             </button>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1400px] p-4">
-        {/* Tabs stay mounted-on-demand: the dashboard refetches on entry, which
-            is what makes a just-finished run show up without a manual refresh. */}
+      <main className="relative mx-auto max-w-[1440px] p-5">
+        {/* Tabs mount on demand: the dashboard refetches on entry, which is what
+            makes a just-finished run show up without a manual refresh. */}
         {tab === "run" && <RunTab onRan={() => setReloadKey((k) => k + 1)} />}
         {tab === "dashboard" && <Dashboard reloadKey={reloadKey} />}
         {tab === "reference" && <ReferenceTab />}

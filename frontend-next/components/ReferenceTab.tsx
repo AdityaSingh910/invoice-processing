@@ -18,15 +18,15 @@ export default function ReferenceTab() {
   }, []);
 
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
+    <div className="grid gap-5 xl:grid-cols-2">
       <Card title="Purchase orders">
         <Table head={["PO #", "Vendor", "Amount", "Status"]} numeric={2}>
           {(data?.purchase_orders || []).map((po) => (
             <tr key={po.po_number} className="border-b border-border last:border-0">
-              <td className="py-2 font-mono text-[12px]">{po.po_number}</td>
-              <td className="py-2 pr-3">{po.vendor}</td>
-              <td className="py-2 pr-3 text-right whitespace-nowrap">{money(po.amount)}</td>
-              <td className="py-2">
+              <td className="py-2.5 font-mono text-[13px] font-semibold">{po.po_number}</td>
+              <td className="py-2.5 pr-3 text-[14px]">{po.vendor}</td>
+              <td className="py-2.5 pr-3 text-right text-[14px] font-semibold whitespace-nowrap tabular-nums">{money(po.amount)}</td>
+              <td className="py-2.5">
                 <StatusPill status={po.status} />
               </td>
             </tr>
@@ -38,9 +38,9 @@ export default function ReferenceTab() {
         <Table head={["Vendor", "ID", "Status"]}>
           {(data?.vendors || []).map((v) => (
             <tr key={v.vendor_id} className="border-b border-border last:border-0">
-              <td className="py-2 pr-3">{v.vendor_name}</td>
-              <td className="py-2 pr-3 font-mono text-[12px]">{v.vendor_id}</td>
-              <td className="py-2">
+              <td className="py-2.5 pr-3 text-[14px]">{v.vendor_name}</td>
+              <td className="py-2.5 pr-3 font-mono text-[13px]">{v.vendor_id}</td>
+              <td className="py-2.5">
                 <StatusPill status={v.status} />
               </td>
             </tr>
@@ -64,9 +64,9 @@ function Table({
     <div className="-mx-4 overflow-x-auto px-4">
       <table className="w-full min-w-[420px] border-collapse text-left">
         <thead>
-          <tr className="border-b border-border text-[11px] tracking-wider text-faint uppercase">
+          <tr className="border-b border-border">
             {head.map((h, i) => (
-              <th key={h} className={`py-2 font-semibold ${i === numeric ? "text-right" : ""}`}>
+              <th key={h} className={`eyebrow py-2 pr-3 ${i === numeric ? "text-right" : ""}`}>
                 {h}
               </th>
             ))}

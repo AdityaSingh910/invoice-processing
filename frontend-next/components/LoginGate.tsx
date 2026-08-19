@@ -9,6 +9,12 @@
 import { useState } from "react";
 import { useAuth } from "@/lib/auth";
 
+const DEMO_ACCOUNTS: [string, string, string][] = [
+  ["analyst", "demo-analyst", "process invoices"],
+  ["reviewer", "demo-reviewer", "process + accept/reject"],
+  ["admin", "demo-admin", "override any run"],
+];
+
 export default function LoginGate() {
   const { signIn, notice } = useAuth();
   const [username, setUsername] = useState("");
@@ -31,87 +37,113 @@ export default function LoginGate() {
   }
 
   const field =
-    "w-full rounded-lg border border-border bg-panel2 px-3 py-2.5 text-text outline-none " +
-    "transition focus:border-accent focus:ring-2 focus:ring-accent/25";
+    "w-full rounded-[var(--radius-inner)] border border-border bg-panel2 px-3.5 py-2.5 text-[15px] " +
+    "text-text outline-none transition-all placeholder:text-faint focus:border-accent focus:bg-panel";
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-bg p-4">
-      <form
-        onSubmit={submit}
-        autoComplete="on"
-        className="w-full max-w-[440px] rounded-[var(--radius-card)] border border-border bg-panel p-7 shadow-[var(--shadow-card)]"
-      >
+    <div className="relative grid min-h-screen place-items-center overflow-hidden p-5">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(60rem 40rem at 50% -10%, var(--bg-accent), transparent 70%)",
+        }}
+      />
+
+      <form onSubmit={submit} autoComplete="on" className="card relative w-full max-w-[430px] p-8">
         <div className="flex items-center gap-3">
-          <span className="grid h-9 w-9 place-items-center rounded-lg bg-accent text-sm font-bold text-white">
+          <span
+            className="grid h-11 w-11 place-items-center rounded-2xl text-[15px] font-bold text-white shadow-[var(--shadow)]"
+            style={{ background: "linear-gradient(135deg, var(--accent), #7c3aed)" }}
+          >
             IP
           </span>
-          <h1 className="text-xl font-semibold">Invoice Processing</h1>
+          <div>
+            <h1 className="text-[20px] font-semibold tracking-[-0.02em]">Invoice Processing</h1>
+            <p className="text-[13px] text-dim">The AI reads. The rules decide.</p>
+          </div>
         </div>
-        <p className="mt-2 text-dim">Sign in to process and review invoices.</p>
 
-        <label className="mt-6 block">
-          <span className="mb-1.5 block font-semibold">Username</span>
-          <input
-            className={field}
-            type="text"
-            name="username"
-            autoComplete="username"
-            required
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-        </label>
+        <div className="mt-7 grid gap-4">
+          <label className="block">
+            <span className="mb-1.5 block text-[13px] font-semibold">Username</span>
+            <input
+              className={field}
+              type="text"
+              name="username"
+              autoComplete="username"
+              placeholder="analyst"
+              required
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+          </label>
 
-        <label className="mt-4 block">
-          <span className="mb-1.5 block font-semibold">Password</span>
-          <input
-            className={field}
-            type="password"
-            name="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[13px] font-semibold">Password</span>
+            <input
+              className={field}
+              type="password"
+              name="password"
+              autoComplete="current-password"
+              placeholder="••••••••"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+        </div>
 
         {(error || notice) && (
           <div
             role="alert"
-            className="mt-4 rounded-lg border px-3 py-2.5"
+            className="mt-4 flex items-start gap-2.5 rounded-[var(--radius-inner)] border px-3.5 py-2.5 text-[14px]"
             style={{
-              borderColor: "var(--fail-solid)",
+              borderColor: "var(--fail-border)",
               background: "var(--fail-soft)",
               color: "var(--fail)",
             }}
           >
-            {error || notice}
+            <span className="mt-0.5 font-bold" aria-hidden>
+              !
+            </span>
+            <span>{error || notice}</span>
           </div>
         )}
 
-        <button
-          type="submit"
-          disabled={busy}
-          className="mt-5 w-full rounded-lg bg-accent px-4 py-2.5 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
-        >
-          {busy ? "Signing in…" : "Sign in"}
+        <button type="submit" disabled={busy} className="btn btn-primary mt-5 w-full">
+          {busy ? (
+            <>
+              <span className="block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+              Signing in…
+            </>
+          ) : (
+            "Sign in"
+          )}
         </button>
 
-        <p className="mt-4 text-[13px] leading-relaxed text-faint">
-          Demo accounts:{" "}
-          {[
-            ["analyst", "demo-analyst", "process"],
-            ["reviewer", "demo-reviewer", "process + accept/reject"],
-            ["admin", "demo-admin", "+ override any run"],
-          ].map(([u, p, what], i) => (
-            <span key={u}>
-              {i > 0 && ", "}
-              <code className="rounded bg-panel2 px-1 py-0.5 font-mono text-text">{u}</code> /{" "}
-              <code className="rounded bg-panel2 px-1 py-0.5 font-mono text-text">{p}</code> ({what})
-            </span>
-          ))}
-          .
-        </p>
+        <div className="mt-7 border-t border-border pt-5">
+          <div className="eyebrow mb-2.5">Demo accounts</div>
+          <div className="grid gap-1.5">
+            {DEMO_ACCOUNTS.map(([u, p, what]) => (
+              <button
+                key={u}
+                type="button"
+                onClick={() => {
+                  setUsername(u);
+                  setPassword(p);
+                  setError(null);
+                }}
+                className="flex items-center justify-between gap-3 rounded-[var(--radius-inner)] border border-border bg-panel2 px-3 py-2 text-left transition-colors hover:border-accent hover:bg-accent-soft"
+              >
+                <span className="font-mono text-[13px] font-semibold">{u}</span>
+                <span className="text-[12px] text-dim">{what}</span>
+              </button>
+            ))}
+          </div>
+          <p className="mt-2.5 text-[12px] text-faint">Click one to fill the form.</p>
+        </div>
       </form>
     </div>
   );

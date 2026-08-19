@@ -29,16 +29,16 @@ export default function RunModal({
   return (
     <div
       onClick={(e) => e.target === e.currentTarget && onClose()}
-      className="fixed inset-0 z-40 overflow-y-auto bg-black/50 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-40 overflow-y-auto bg-black/60 p-4 backdrop-blur-md"
     >
-      <div className="mx-auto my-8 w-full max-w-3xl rounded-[var(--radius-card)] border border-border bg-panel p-5 shadow-[var(--shadow-card)]">
+      <div className="card mx-auto my-8 w-full max-w-3xl p-6 shadow-[var(--shadow-float)]">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2.5">
-              <h2 className="text-lg font-semibold break-words">{run.filename}</h2>
+              <h2 className="text-[19px] font-bold tracking-[-0.02em] break-words">{run.filename}</h2>
               <StatusPill status={run.status} />
             </div>
-            <div className="mt-0.5 text-dim">
+            <div className="mt-1 text-[14px] text-dim">
               run #{run.id} · {run.vendor_name || "unknown vendor"} · {money(run.total)} ·{" "}
               {when(run.created_at)}
             </div>
@@ -46,7 +46,7 @@ export default function RunModal({
           <button
             onClick={onClose}
             aria-label="Close"
-            className="shrink-0 rounded-lg border border-border px-2.5 py-1 text-dim transition hover:border-border-strong"
+            className="btn btn-ghost shrink-0 px-2.5 py-1.5"
           >
             ✕
           </button>
@@ -79,7 +79,5 @@ export default function RunModal({
 }
 
 const Section = ({ title }: { title: string }) => (
-  <div className="mt-5 mb-2 border-t border-border pt-4 text-[11px] font-semibold tracking-wider text-faint uppercase">
-    {title}
-  </div>
+  <div className="eyebrow mt-6 mb-3 border-t border-border pt-5">{title}</div>
 );

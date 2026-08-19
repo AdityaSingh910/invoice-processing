@@ -69,8 +69,8 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
   }, [runs]);
 
   return (
-    <div className="grid gap-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-5">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat label="Total runs" value={runs.length} />
         <Stat label="Approved" value={counts.APPROVED} tone="ok" />
         <Stat label="Needs review" value={counts.NEEDS_REVIEW} tone="warn" />
@@ -85,10 +85,10 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
               <button
                 key={f.key}
                 onClick={() => setFilter(f.key)}
-                className={`rounded-full border px-2.5 py-1 text-[12px] transition ${
+                className={`rounded-full border px-3 py-1 text-[13px] font-medium transition-all ${
                   filter === f.key
                     ? "border-accent bg-accent-soft text-accent"
-                    : "border-border bg-panel2 text-dim hover:border-border-strong"
+                    : "border-border bg-panel2 text-dim hover:border-border-strong hover:text-text"
                 }`}
               >
                 {f.label}
@@ -96,7 +96,7 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
             ))}
             <button
               onClick={() => setNonce((n) => n + 1)}
-              className="rounded-full border border-border bg-panel2 px-2.5 py-1 text-[12px] text-dim transition hover:border-border-strong"
+              className="rounded-full border border-border bg-panel2 px-3 py-1 text-[13px] font-medium text-dim transition-all hover:border-border-strong hover:text-text"
             >
               Refresh
             </button>
@@ -112,13 +112,10 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
           <div className="-mx-4 overflow-x-auto px-4">
             <table className="w-full min-w-[760px] border-collapse text-left">
               <thead>
-                <tr className="border-b border-border text-[11px] tracking-wider text-faint uppercase">
+                <tr className="border-b border-border">
                   {["ID", "File", "Vendor", "Invoice #", "Total", "PO", "Status", "When"].map(
                     (h, i) => (
-                      <th
-                        key={h}
-                        className={`py-2 pr-3 font-semibold ${i === 4 ? "text-right" : ""}`}
-                      >
+                      <th key={h} className={`eyebrow py-2.5 pr-3 ${i === 4 ? "text-right" : ""}`}>
                         {h}
                       </th>
                     )
@@ -130,15 +127,15 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
                   <tr
                     key={r.id}
                     onClick={() => setOpen(r)}
-                    className="cursor-pointer border-b border-border last:border-0 hover:bg-panel2"
+                    className="cursor-pointer border-b border-border transition-colors last:border-0 hover:bg-panel2"
                   >
-                    <td className="py-2 font-mono text-[12px] text-dim">#{r.id}</td>
-                    <td className="py-2 pr-3">{r.filename}</td>
-                    <td className="py-2 pr-3">{r.vendor_name || "—"}</td>
-                    <td className="py-2 pr-3 font-mono text-[12px]">{r.invoice_number || "—"}</td>
-                    <td className="py-2 pr-3 text-right whitespace-nowrap">{money(r.total)}</td>
-                    <td className="py-2 pr-3 font-mono text-[12px]">{r.po_number || "—"}</td>
-                    <td className="py-2 pr-3">
+                    <td className="py-2.5 pr-3 font-mono text-[12px] text-faint">#{r.id}</td>
+                    <td className="py-2.5 pr-3 text-[14px] font-medium">{r.filename}</td>
+                    <td className="py-2.5 pr-3 text-[14px] text-dim">{r.vendor_name || "—"}</td>
+                    <td className="py-2.5 pr-3 font-mono text-[12px]">{r.invoice_number || "—"}</td>
+                    <td className="py-2.5 pr-3 text-right text-[14px] font-semibold whitespace-nowrap tabular-nums">{money(r.total)}</td>
+                    <td className="py-2.5 pr-3 font-mono text-[12px]">{r.po_number || "—"}</td>
+                    <td className="py-2.5 pr-3">
                       <div className="flex items-center gap-1.5">
                         <StatusPill status={r.status} />
                         {/* A run a person ruled on reads as APPROVED/REJECTED like
@@ -149,14 +146,14 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
                             title={`${String(r.final_decision || "").replace(/_/g, " ")} by ${
                               r.reviewed_by || "an unattributed reviewer"
                             }`}
-                            className="rounded-full border border-border px-1.5 py-0.5 text-[10px] font-semibold text-dim uppercase"
+                            className="rounded-full border border-border bg-panel2 px-2 py-0.5 text-[10px] font-bold tracking-[0.06em] text-dim uppercase"
                           >
                             human
                           </span>
                         )}
                       </div>
                     </td>
-                    <td className="py-2 whitespace-nowrap text-dim">{when(r.created_at)}</td>
+                    <td className="py-2.5 text-[13px] whitespace-nowrap text-faint">{when(r.created_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -166,7 +163,7 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
       </Card>
 
       <Card title="PO consumption">
-        <div className="grid gap-3">
+        <div className="grid gap-4">
           {(reference?.purchase_orders || []).map((po) => {
             const used = consumed[po.po_number] || 0;
             const pct = Math.min(100, (used / po.amount) * 100);
@@ -182,17 +179,17 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
                 className="grid items-center gap-3 sm:grid-cols-[180px_minmax(0,1fr)_160px]"
               >
                 <div className="min-w-0">
-                  <div className="font-mono font-semibold">{po.po_number}</div>
-                  <div className="truncate text-dim">{po.vendor}</div>
+                  <div className="font-mono text-[14px] font-bold">{po.po_number}</div>
+                  <div className="truncate text-[13px] text-dim">{po.vendor}</div>
                 </div>
-                <div className="h-2.5 overflow-hidden rounded-full bg-panel2">
+                <div className="h-3 overflow-hidden rounded-full bg-panel3">
                   <div
                     className="h-full rounded-full transition-[width]"
                     style={{ width: `${pct}%`, background: colour }}
                   />
                 </div>
-                <div className="text-right whitespace-nowrap">
-                  <b>{money(used)}</b> <span className="text-dim">/ {money(po.amount)}</span>
+                <div className="text-right text-[14px] whitespace-nowrap tabular-nums">
+                  <b>{money(used)}</b> <span className="text-faint">/ {money(po.amount)}</span>
                 </div>
               </div>
             );
@@ -213,14 +210,20 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
 
 function Stat({ label, value, tone }: { label: string; value: number; tone?: string }) {
   return (
-    <div className="rounded-[var(--radius-card)] border border-border bg-panel p-4 shadow-[var(--shadow-card)]">
+    <div className="card p-5">
+      <div className="flex items-center gap-2">
+        <span
+          className="h-2 w-2 rounded-full"
+          style={{ background: tone ? `var(--${tone}-solid)` : "var(--text-faint)" }}
+        />
+        <div className="eyebrow">{label}</div>
+      </div>
       <div
-        className="text-2xl font-semibold"
+        className="mt-2 text-[30px] leading-none font-bold tracking-[-0.03em] tabular-nums"
         style={tone ? { color: `var(--${tone})` } : undefined}
       >
         {value}
       </div>
-      <div className="text-dim">{label}</div>
     </div>
   );
 }

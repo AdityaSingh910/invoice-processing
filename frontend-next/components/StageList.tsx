@@ -6,30 +6,55 @@
 import { LEVEL_ICON, STAGE_ORDER } from "@/lib/format";
 import type { Stage } from "@/lib/types";
 
-const LEVEL_STYLE: Record<string, { bg: string; fg: string }> = {
-  ok: { bg: "var(--ok-soft)", fg: "var(--ok)" },
-  warn: { bg: "var(--warn-soft)", fg: "var(--warn)" },
-  fail: { bg: "var(--fail-soft)", fg: "var(--fail)" },
-  info: { bg: "var(--accent-soft)", fg: "var(--accent)" },
-};
+const TONE: Record<string, string> = { ok: "ok", warn: "warn", fail: "fail", info: "accent" };
 
-export function StageRow({ stage, index }: { stage: Stage; index: number }) {
-  const style = LEVEL_STYLE[stage.status] ?? LEVEL_STYLE.info;
+/** A rail runs down the left so the nine stages read as one sequence rather
+ *  than nine unrelated rows. */
+function Rail({ last, children }: { last: boolean; children: React.ReactNode }) {
   return (
-    <div className="flex items-start gap-3 border-b border-border py-2.5 last:border-0">
-      <div
-        className="dot mt-0.5 h-6 w-6 text-xs"
-        data-level={stage.status}
-        style={{ background: style.bg, color: style.fg }}
-      >
-        {LEVEL_ICON[stage.status] ?? index + 1}
-      </div>
-      <div className="min-w-0 flex-1">
+    <div className="relative flex justify-center">
+      {!last && <span className="absolute top-7 bottom-0 w-px bg-border" aria-hidden />}
+      {children}
+    </div>
+  );
+}
+
+export function StageRow({
+  stage,
+  index,
+  last = false,
+}: {
+  stage: Stage;
+  index: number;
+  last?: boolean;
+}) {
+  const tone = TONE[stage.status] ?? "accent";
+  return (
+    <div className="grid grid-cols-[28px_minmax(0,1fr)] gap-3 pb-4 last:pb-0">
+      <Rail last={last}>
+        <span
+          className="z-10 grid h-7 w-7 place-items-center rounded-full border-2 text-[12px] font-bold"
+          style={{
+            background: `var(--${tone}-soft)`,
+            color: `var(--${tone})`,
+            borderColor: "var(--panel)",
+            boxShadow: `0 0 0 1px var(--${tone}-border, var(--border))`,
+          }}
+        >
+          {LEVEL_ICON[stage.status] ?? index + 1}
+        </span>
+      </Rail>
+
+      <div className="min-w-0 pt-0.5">
         <div className="flex items-baseline justify-between gap-3">
-          <span className="font-mono text-[12px] font-semibold tracking-wide">{stage.name}</span>
-          {stage.ms !== undefined && <span className="text-[11px] text-faint">{stage.ms} ms</span>}
+          <span className="font-mono text-[12px] font-bold tracking-[0.04em]">{stage.name}</span>
+          {stage.ms !== undefined && (
+            <span className="shrink-0 rounded-md bg-panel2 px-1.5 py-0.5 text-[11px] text-faint tabular-nums">
+              {stage.ms} ms
+            </span>
+          )}
         </div>
-        <div className="text-dim">{stage.detail}</div>
+        <div className="mt-0.5 text-[14px] text-dim">{stage.detail}</div>
       </div>
     </div>
   );
@@ -44,27 +69,32 @@ export default function StageList({ stages, running }: { stages: Stage[]; runnin
   return (
     <div>
       {STAGE_ORDER.map((name, i) => {
+        const last = i === STAGE_ORDER.length - 1;
         const done = byName.get(name);
-        if (done) return <StageRow key={name} stage={done} index={i} />;
+        if (done) return <StageRow key={name} stage={done} index={i} last={last} />;
 
         const active = running && name === nextPending;
         return (
           <div
             key={name}
-            className={`flex items-start gap-3 border-b border-border py-2.5 last:border-0 ${
-              active ? "" : "opacity-45"
+            className={`grid grid-cols-[28px_minmax(0,1fr)] gap-3 pb-4 transition-opacity last:pb-0 ${
+              active ? "opacity-100" : "opacity-40"
             }`}
           >
-            <div className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full border border-border bg-panel2 text-[11px] text-faint">
-              {active ? (
-                <span className="block h-2.5 w-2.5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-              ) : (
-                i + 1
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="font-mono text-[12px] font-semibold tracking-wide">{name}</div>
-              <div className="text-dim">{active ? "Running…" : "Waiting…"}</div>
+            <Rail last={last}>
+              <span className="z-10 grid h-7 w-7 place-items-center rounded-full border border-border bg-panel2 text-[11px] text-faint">
+                {active ? (
+                  <span className="block h-3 w-3 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+                ) : (
+                  i + 1
+                )}
+              </span>
+            </Rail>
+            <div className="min-w-0 pt-0.5">
+              <div className="font-mono text-[12px] font-bold tracking-[0.04em]">{name}</div>
+              <div className="mt-0.5 text-[14px] text-dim">
+                {active ? "Running…" : "Waiting…"}
+              </div>
             </div>
           </div>
         );

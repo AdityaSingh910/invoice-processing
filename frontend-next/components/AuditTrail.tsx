@@ -35,15 +35,15 @@ export default function AuditTrail({ audit, run }: { audit?: Audit; run?: Review
     : "—";
 
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-5">
       <div className="flex flex-wrap items-center gap-3">
         <StatusPill status={audit.automated_decision} />
-        <span className="text-dim">{audit.reason}</span>
+        <span className="text-[14px] text-dim">{audit.reason}</span>
       </div>
 
       {run?.human_decision && <HumanRuling run={run} />}
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-5 md:grid-cols-2">
         <Section title="Invoice">
           <KvTable
             rows={[
@@ -89,14 +89,14 @@ export default function AuditTrail({ audit, run }: { audit?: Audit; run?: Review
       )}
 
       <Section title="Rules">
-        <ul className="grid gap-1.5">
+        <ul className="grid gap-2">
           {(audit.rules || []).map((r, i) => (
-            <li key={i} className="flex items-start gap-2.5">
+            <li key={i} className="flex items-start gap-3 text-[14px]">
               <span className="dot mt-0.5" data-level={r.passed ? "ok" : "fail"}>
                 {r.passed ? "✓" : "✕"}
               </span>
               <span className="min-w-0">
-                <span className="font-medium">{r.name}</span>
+                <span className="font-semibold">{r.name}</span>
                 {r.detail && <span className="text-dim"> — {r.detail}</span>}
               </span>
             </li>
@@ -110,9 +110,7 @@ export default function AuditTrail({ audit, run }: { audit?: Audit; run?: Review
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-1.5 text-[11px] font-semibold tracking-wider text-faint uppercase">
-        {title}
-      </div>
+      <div className="eyebrow mb-2">{title}</div>
       {children}
     </div>
   );
@@ -122,7 +120,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
  *  opening it later sees immediately that it was already decided. */
 function HumanRuling({ run }: { run: ReviewedRun }) {
   return (
-    <div className="rounded-lg border border-border bg-panel2 p-3">
+    <div className="rounded-[var(--radius-inner)] border border-border bg-panel2 p-4">
       <div className="flex flex-wrap items-center gap-2">
         <StatusPill status={run.final_decision} />
         <span>

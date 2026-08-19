@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch, apiJson, streamRun } from "@/lib/api";
 import { STAGE_ORDER, money } from "@/lib/format";
 import type { RunResult, SampleInvoice, Stage } from "@/lib/types";
-import { Card, Chip, EmptyState, KvTable, Missing, StatusPill } from "./ui";
+import { Card, Chip, EmptyState, Eyebrow, KvTable, Missing, StatusPill } from "./ui";
 import StageList from "./StageList";
 import PoBalance from "./PoBalance";
 import ReasonList from "./ReasonList";
@@ -73,9 +73,9 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
   const pct = Math.round((progress / STAGE_ORDER.length) * 100);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+    <div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)]">
       {/* ---------------- left rail: input ---------------- */}
-      <div className="grid content-start gap-4">
+      <div className="grid content-start gap-5">
         <Card title="Input">
           <div
             onClick={() => fileInput.current?.click()}
@@ -89,13 +89,17 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
               setDragging(false);
               if (e.dataTransfer.files.length) chooseLocal(e.dataTransfer.files[0]);
             }}
-            className={`grid cursor-pointer place-items-center gap-1 rounded-lg border-2 border-dashed px-4 py-7 text-center transition ${
-              dragging ? "border-accent bg-accent-soft" : "border-border bg-panel2"
+            className={`grid cursor-pointer place-items-center gap-1.5 rounded-[var(--radius-inner)] border-2 border-dashed px-4 py-8 text-center transition-all ${
+              dragging
+                ? "scale-[1.02] border-accent bg-accent-soft"
+                : "border-border bg-panel2 hover:border-border-strong"
             }`}
           >
-            <div className="text-2xl text-faint">⭳</div>
-            <p className="font-semibold">Drop a PDF</p>
-            <p className="text-dim">or click to browse</p>
+            <div className="grid h-11 w-11 place-items-center rounded-full bg-accent-soft text-lg text-accent">
+              ⭳
+            </div>
+            <p className="text-[15px] font-semibold">Drop a PDF</p>
+            <p className="text-[13px] text-dim">or click to browse</p>
             <input
               ref={fileInput}
               type="file"
@@ -106,17 +110,21 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
           </div>
 
           {file && (
-            <div className="mt-3 truncate rounded-lg border border-border bg-panel2 px-3 py-2 font-mono text-[12px]">
-              {file.name}
+            <div className="mt-3 flex items-center gap-2 rounded-[var(--radius-inner)] border border-border bg-panel2 px-3 py-2">
+              <span className="text-accent">▣</span>
+              <span className="truncate font-mono text-[12px]">{file.name}</span>
             </div>
           )}
 
-          <button
-            onClick={run}
-            disabled={!file || running}
-            className="mt-3 w-full rounded-lg bg-accent px-4 py-2.5 font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
-          >
-            {running ? "Running…" : "Run process"}
+          <button onClick={run} disabled={!file || running} className="btn btn-primary mt-3 w-full">
+            {running ? (
+              <>
+                <span className="block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                Running…
+              </>
+            ) : (
+              "Run process"
+            )}
           </button>
         </Card>
 
@@ -125,49 +133,52 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
           aside={<Chip title="Some scenarios depend on earlier runs">order matters</Chip>}
         >
           <div className="grid gap-2">
-            {samples.map((s) => (
-              <button
-                key={s.filename}
-                onClick={() => pickSample(s)}
-                className={`rounded-lg border px-3 py-2 text-left transition hover:border-accent ${
-                  selectedSample === s.filename
-                    ? "border-accent bg-accent-soft"
-                    : "border-border bg-panel2"
-                }`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <span className="font-medium">{s.label || s.filename}</span>
-                  {s.expect && <StatusPill status={s.expect} />}
-                </div>
-                {s.note && <div className="mt-0.5 text-dim">{s.note}</div>}
-                <div className="mt-0.5 font-mono text-[11px] text-faint">{s.filename}</div>
-              </button>
-            ))}
+            {samples.map((s) => {
+              const active = selectedSample === s.filename;
+              return (
+                <button
+                  key={s.filename}
+                  onClick={() => pickSample(s)}
+                  className={`rounded-[var(--radius-inner)] border p-3 text-left transition-all ${
+                    active
+                      ? "border-accent bg-accent-soft shadow-[var(--shadow-sm)]"
+                      : "border-border bg-panel2 hover:border-border-strong hover:bg-panel3"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-[14px] font-semibold">{s.label || s.filename}</span>
+                    {s.expect && <StatusPill status={s.expect} glyph={false} />}
+                  </div>
+                  {s.note && <div className="mt-1 text-[13px] text-dim">{s.note}</div>}
+                  <div className="mt-1.5 font-mono text-[11px] text-faint">{s.filename}</div>
+                </button>
+              );
+            })}
           </div>
         </Card>
       </div>
 
       {/* ---------------- right: pipeline + decision ---------------- */}
-      <div className="grid content-start gap-4">
-        {result && <VerdictBar r={result} />}
+      <div className="grid content-start gap-5">
+        {result && <VerdictBanner r={result} />}
 
         {error && (
           <div
-            className="rounded-[var(--radius-card)] border px-4 py-3"
+            className="rounded-[var(--radius-card)] border px-5 py-4"
             style={{
-              borderColor: "var(--fail-solid)",
+              borderColor: "var(--fail-border)",
               background: "var(--fail-soft)",
               color: "var(--fail)",
             }}
           >
-            Run failed: {error}
+            <b>Run failed.</b> {error}
           </div>
         )}
 
         <Card
           title="Pipeline"
           aside={
-            <span className="text-dim">
+            <span className="rounded-full bg-panel2 px-2.5 py-1 text-[12px] font-medium text-dim tabular-nums">
               {running && progress === 0
                 ? "running…"
                 : progress
@@ -176,10 +187,17 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
             </span>
           }
         >
-          <div className="mb-3 h-1.5 w-full overflow-hidden rounded-full bg-panel2">
+          <div className="mb-5 h-1.5 w-full overflow-hidden rounded-full bg-panel3">
             <div
-              className="h-full rounded-full transition-[width] duration-300"
-              style={{ width: `${pct}%`, background: "var(--accent)" }}
+              className={`h-full rounded-full transition-[width] duration-500 ease-out ${
+                running ? "sheen" : ""
+              }`}
+              style={{
+                width: `${pct}%`,
+                background: running
+                  ? "linear-gradient(90deg, var(--accent), #7c3aed, var(--accent))"
+                  : "var(--accent)",
+              }}
             />
           </div>
 
@@ -205,7 +223,7 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
         )}
 
         {result && (
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-5 xl:grid-cols-2">
             <Card title="Reasoning">
               <ReasonList reasons={result.reasons} />
             </Card>
@@ -233,37 +251,69 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
   );
 }
 
-function VerdictBar({ r }: { r: RunResult }) {
+/**
+ * The verdict, stated once and large. Everything else on the page is evidence
+ * for this line, so it gets the strongest treatment on the screen.
+ */
+function VerdictBanner({ r }: { r: RunResult }) {
   const pm = r.po_match;
   const tone = r.status === "APPROVED" ? "ok" : r.status === "REJECTED" ? "fail" : "warn";
+  const glyph = r.status === "APPROVED" ? "✓" : r.status === "REJECTED" ? "✕" : "!";
 
   return (
     <div
       data-testid="verdict-bar"
-      className="flex flex-wrap items-center justify-between gap-4 rounded-[var(--radius-card)] border px-4 py-3"
-      style={{ borderColor: `var(--${tone}-solid)`, background: `var(--${tone}-soft)` }}
+      className="relative overflow-hidden rounded-[var(--radius-card)] border shadow-[var(--shadow-soft)]"
+      style={{ borderColor: `var(--${tone}-border)` }}
     >
-      <div className="flex min-w-0 items-center gap-3">
-        <StatusPill status={r.status} />
-        <div className="min-w-0">
-          <div className="truncate font-semibold">{r.filename}</div>
-          <div className="text-dim">
-            run #{r.run_id} · {r.extracted.vendor_name || "unknown vendor"}
-            {r.extracted.invoice_number ? ` · ${r.extracted.invoice_number}` : ""}
+      <div
+        aria-hidden
+        className="absolute inset-0"
+        style={{
+          background: `linear-gradient(120deg, var(--${tone}-soft), var(--panel) 65%)`,
+        }}
+      />
+      <div className="relative flex flex-wrap items-center justify-between gap-5 px-5 py-4">
+        <div className="flex min-w-0 items-center gap-4">
+          <span
+            className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-[22px] font-bold text-white"
+            style={{ background: `var(--${tone}-solid)` }}
+          >
+            {glyph}
+          </span>
+          <div className="min-w-0">
+            <div
+              data-testid="verdict-status"
+              className="text-[20px] leading-tight font-bold tracking-[-0.02em]"
+              style={{ color: `var(--${tone})` }}
+            >
+              {r.status.replace("_", " ")}
+            </div>
+            <div className="mt-0.5 truncate text-[14px] text-dim">
+              <span className="font-medium text-text">{r.filename}</span> · run #{r.run_id} ·{" "}
+              {r.extracted.vendor_name || "unknown vendor"}
+              {r.extracted.invoice_number ? ` · ${r.extracted.invoice_number}` : ""}
+            </div>
           </div>
+        </div>
+
+        <div className="flex gap-7">
+          <Figure label="invoice total" value={money(r.extracted.total)} />
+          {pm.po_number && <Figure label="PO available" value={money(pm.remaining_before)} />}
         </div>
       </div>
-      <div className="flex gap-6">
-        <div className="text-right">
-          <div className="text-lg font-semibold">{money(r.extracted.total)}</div>
-          <div className="text-[11px] text-faint uppercase">invoice total</div>
-        </div>
-        {pm.po_number && (
-          <div className="text-right">
-            <div className="text-lg font-semibold">{money(pm.remaining_before)}</div>
-            <div className="text-[11px] text-faint uppercase">PO available</div>
-          </div>
-        )}
+    </div>
+  );
+}
+
+function Figure({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="text-right">
+      <div className="text-[24px] leading-none font-bold tracking-[-0.02em] tabular-nums">
+        {value}
+      </div>
+      <div className="mt-1.5 text-[11px] font-semibold tracking-[0.06em] text-faint uppercase">
+        {label}
       </div>
     </div>
   );
@@ -281,12 +331,24 @@ function ExtractedFields({ r }: { r: RunResult }) {
         ["PO refs", (e.po_references || []).join(", ") || "—"],
         ["Subtotal", money(e.subtotal)],
         ["Tax", money(e.tax)],
-        ["Total", e.total != null ? <b key="t">{money(e.total)}</b> : <Missing key="t" />],
+        [
+          "Total",
+          e.total != null ? (
+            <b key="t" className="text-[15px]">
+              {money(e.total)}
+            </b>
+          ) : (
+            <Missing key="t" />
+          ),
+        ],
         ["Line items", (e.line_items || []).length || "—"],
         ["Currency", e.currency || "—"],
         [
           "Extraction route",
-          <span key="r" className="font-mono text-[12px]">
+          <span
+            key="r"
+            className="rounded-md bg-accent-soft px-1.5 py-0.5 font-mono text-[12px] text-accent"
+          >
             {e.extraction_method}
           </span>,
         ],
@@ -294,3 +356,5 @@ function ExtractedFields({ r }: { r: RunResult }) {
     />
   );
 }
+
+export { Eyebrow };

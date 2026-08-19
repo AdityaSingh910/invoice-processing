@@ -24,45 +24,53 @@ export default function PoBalance({ pm }: { pm: PoMatch }) {
   const over = fits ? 0 : claim - Math.max(0, pm.remaining_before || 0);
   const leftover = Math.max(0, total - consumed - shown);
 
+  const currentColour = fits ? "var(--ok-solid)" : "var(--warn-solid)";
+
   const seg = (bg: string, width: number, label: string, key: string) =>
     width <= 0.4 ? null : (
       <div
         key={key}
-        className="grid h-full place-items-center overflow-hidden text-[11px] font-semibold whitespace-nowrap text-white"
+        className="grid h-full place-items-center overflow-hidden text-[11px] font-bold whitespace-nowrap text-white tabular-nums"
         style={{ width: `${width}%`, background: bg }}
       >
-        {width > 9 ? label : ""}
+        {width > 11 ? label : ""}
       </div>
     );
 
-  const currentColour = fits ? "var(--ok-solid)" : "var(--warn-solid)";
-
   return (
     <div>
-      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-        <span className="font-mono font-semibold">{pm.po_number}</span>
-        <span className="text-dim">
-          {pm.po_vendor} · {money(total)} authorised
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <span className="rounded-md bg-panel2 px-2 py-0.5 font-mono text-[13px] font-bold">
+          {pm.po_number}
+        </span>
+        <span className="text-[13px] text-dim">
+          {pm.po_vendor} · <b className="text-text tabular-nums">{money(total)}</b> authorised
         </span>
       </div>
 
-      <div className="flex h-7 w-full overflow-hidden rounded-md border border-border bg-panel2">
+      <div className="flex h-9 w-full overflow-hidden rounded-[var(--radius-inner)] border border-border bg-panel3">
         {seg("var(--text-faint)", pct(consumed), money(consumed), "consumed")}
         {seg(currentColour, pct(shown), money(shown), "current")}
         {seg("var(--fail-solid)", pct(over), "+" + money(over), "over")}
         {seg("transparent", pct(leftover), "", "left")}
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
-        {[
-          ["var(--text-faint)", "Consumed earlier", money(consumed)],
-          [currentColour, "This invoice", money(claim)],
-          ["var(--border-strong)", "Remaining after", money(fits ? pm.remaining_after : pm.remaining_before)],
-        ].map(([colour, label, value]) => (
+      <div className="mt-3.5 flex flex-wrap gap-x-6 gap-y-2">
+        {(
+          [
+            ["var(--text-faint)", "Consumed earlier", money(consumed)],
+            [currentColour, "This invoice", money(claim)],
+            [
+              "var(--border-strong)",
+              "Remaining after",
+              money(fits ? pm.remaining_after : pm.remaining_before),
+            ],
+          ] as [string, string, string][]
+        ).map(([colour, label, value]) => (
           <div key={label} className="flex items-center gap-2">
             <span className="h-2.5 w-2.5 rounded-full" style={{ background: colour }} />
-            <span className="text-dim">
-              {label} <b className="text-text">{value}</b>
+            <span className="text-[13px] text-dim">
+              {label} <b className="text-text tabular-nums">{value}</b>
             </span>
           </div>
         ))}
@@ -74,16 +82,26 @@ export default function PoBalance({ pm }: { pm: PoMatch }) {
 }
 
 function Callout({ pm, fits }: { pm: PoMatch; fits: boolean }) {
-  const base = "mt-3 rounded-lg border px-3 py-2";
+  const base =
+    "mt-4 flex items-start gap-2.5 rounded-[var(--radius-inner)] border px-3.5 py-3 text-[14px]";
 
   if (!fits) {
     return (
       <div
         className={base}
-        style={{ borderColor: "var(--fail-solid)", background: "var(--fail-soft)", color: "var(--fail)" }}
+        style={{
+          borderColor: "var(--fail-border)",
+          background: "var(--fail-soft)",
+          color: "var(--fail)",
+        }}
       >
-        Over by {money(pm.diff)} — only {money(pm.remaining_before)} left on this PO, tolerance is{" "}
-        {money(pm.tolerance)}. The vendor is billing beyond what&apos;s authorised.
+        <span className="mt-0.5 font-bold" aria-hidden>
+          ✕
+        </span>
+        <span>
+          <b>Over by {money(pm.diff)}.</b> Only {money(pm.remaining_before)} is left on this PO and
+          tolerance is {money(pm.tolerance)}. The vendor is billing beyond what&apos;s authorised.
+        </span>
       </div>
     );
   }
@@ -92,18 +110,32 @@ function Callout({ pm, fits }: { pm: PoMatch; fits: boolean }) {
     return (
       <div
         className={base}
-        style={{ borderColor: "var(--ok-solid)", background: "var(--ok-soft)", color: "var(--ok)" }}
+        style={{
+          borderColor: "var(--ok-border)",
+          background: "var(--ok-soft)",
+          color: "var(--ok)",
+        }}
       >
-        Partial invoice — accepted. {money(pm.remaining_after)} stays available on {pm.po_number} for
-        the next invoice.
+        <span className="mt-0.5 font-bold" aria-hidden>
+          ✓
+        </span>
+        <span>
+          <b>Partial invoice — accepted.</b> {money(pm.remaining_after)} stays available on{" "}
+          {pm.po_number} for the next invoice.
+        </span>
       </div>
     );
   }
 
   return (
     <div className={`${base} border-border bg-panel2 text-dim`}>
-      Matches the remaining balance within tolerance (diff {money(pm.diff)}, tolerance{" "}
-      {money(pm.tolerance)}). {money(pm.remaining_after)} left on this PO.
+      <span className="mt-0.5 font-bold text-accent" aria-hidden>
+        ✓
+      </span>
+      <span>
+        Matches the remaining balance within tolerance (diff {money(pm.diff)}, tolerance{" "}
+        {money(pm.tolerance)}). {money(pm.remaining_after)} left on this PO.
+      </span>
     </div>
   );
 }

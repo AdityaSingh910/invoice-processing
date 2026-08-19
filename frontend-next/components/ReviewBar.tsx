@@ -35,8 +35,8 @@ export default function ReviewBar({ runId, automatedDecision, humanDecision, onR
   if (done) {
     return (
       <div
-        className="mt-4 rounded-lg border px-3 py-2.5"
-        style={{ borderColor: "var(--ok-solid)", background: "var(--ok-soft)", color: "var(--ok)" }}
+        className="mt-5 rounded-[var(--radius-inner)] border px-4 py-3 text-[14px]"
+        style={{ borderColor: "var(--ok-border)", background: "var(--ok-soft)", color: "var(--ok)" }}
       >
         Recorded: <b>{humanise(done)}</b>
       </div>
@@ -67,11 +67,11 @@ export default function ReviewBar({ runId, automatedDecision, humanDecision, onR
   }
 
   return (
-    <div className="mt-4 rounded-lg border border-border bg-panel2 p-3">
+    <div className="mt-5 rounded-[var(--radius-inner)] border border-border bg-panel2 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <b>Human review</b>
-          <div className="text-dim">
+          <div className="text-[14px] text-dim">
             Check the evidence above, then record a decision. The automated verdict is kept either
             way.
           </div>
@@ -80,7 +80,7 @@ export default function ReviewBar({ runId, automatedDecision, humanDecision, onR
           <button
             disabled={busy}
             onClick={() => rule("ACCEPTED")}
-            className="rounded-lg px-3.5 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+            className="btn px-4 py-2 text-white disabled:opacity-50"
             style={{ background: "var(--ok-solid)" }}
           >
             Accept
@@ -88,7 +88,7 @@ export default function ReviewBar({ runId, automatedDecision, humanDecision, onR
           <button
             disabled={busy}
             onClick={() => rule("REJECTED")}
-            className="rounded-lg px-3.5 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+            className="btn px-4 py-2 text-white disabled:opacity-50"
             style={{ background: "var(--fail-solid)" }}
           >
             Reject
