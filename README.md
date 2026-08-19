@@ -1,9 +1,10 @@
 # Invoice Processing — PDF to Decision
 
-An automated AP process: upload a vendor invoice PDF, watch it move through
-extraction, validation, PO matching and rule checks live, and get a decision
-— **APPROVED** / **NEEDS_REVIEW** / **REJECTED** — with the full reasoning
-trail, plus a dashboard of every run.
+An automated AP process: sign in, upload a vendor invoice PDF, watch it move
+through extraction, validation, PO matching and rule checks live, and get a
+decision — **APPROVED** / **NEEDS_REVIEW** / **REJECTED** — with a structured
+audit trail behind it, a human accept/reject path for anything held, and a
+dashboard of every run.
 
 Built for the Zamp AI Solutions Associate case study, **PS-1 (Finance / AP)**.
 
@@ -11,22 +12,28 @@ Built for the Zamp AI Solutions Associate case study, **PS-1 (Finance / AP)**.
 
 ## Where the project stands right now
 
-**The app runs. All 7 sample invoices produce their expected verdicts.**
+**The app runs. All 7 sample invoices produce their expected verdicts, and the
+suite is green.**
 
 | | |
 |---|---|
 | Pipeline | Working, 9 stages, streamed live to the browser |
-| Sample invoices | 7 / 7 passing from a clean database |
-| UI | Run view, dashboard, reference data — all working, light + dark |
-| Extraction route in use | **regex** (no API key set — see [Extraction routes](#extraction-routes)) |
-| Automated tests | **None yet** — next task |
-| Known defects | **3 open**, documented below — 2 from the audit, 1 concurrency race |
+| Sample invoices | 7 / 7 matching the manifest, driven through the real pipeline |
+| UI | Run view, dashboard, reference data, audit trail — light + dark |
+| Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
+| Automated tests | **329 passing** deterministically, 13 files, no live API calls |
+| Audit trail | Structured, deterministic, emitted by the rule engine itself |
+| Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
+| API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
+| Original audit defects | **All fixed** — see [Known problems](#known-problems) |
 | Deployed anywhere | No — runs locally only |
+| Demo video | Not recorded |
 
-Read [AUDIT.md](AUDIT.md) before trusting any of this in a real AP context. It
-is a deliberately unflattering self-review and it found real problems.
-[REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md) is the architect-level response:
-exact fix logic, schemas and sequencing for everything the audit surfaced.
+[AUDIT.md](AUDIT.md) is the deliberately unflattering self-review that started
+most of this work, and [REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md) is the
+architect-level response. Both are still worth reading, but note that the live
+bugs they describe have since been fixed — they are a record of how the design
+was arrived at, not of the current state.
 
 ---
 
@@ -42,45 +49,47 @@ invoice-number regex that matched prose in a footnote, and — the important one
 — an `abs()` in the tolerance check that flagged every legitimate partial
 invoice as an exception.
 
-**2. UI rebuild.** Replaced the flat key-value result panel with a verdict bar,
-a segmented **PO balance bar** (consumed / this invoice / remaining, with
-overflow hatched in red), severity-coded reasoning, per-stage timings, labelled
-sample scenarios and a PO-consumption view on the dashboard. Dark mode added.
+**2. UI rebuild.** Verdict bar, a segmented **PO balance bar** (consumed / this
+invoice / remaining, overflow hatched red), severity-coded reasoning, per-stage
+timings, labelled sample scenarios, PO-consumption view, dark mode.
 
 **3. "Accept any external PDF" work.** Rewrote extraction to handle invoices it
 has never seen: LLM over text, LLM over page images (replacing the OCR
-dependency), and a much more tolerant regex fallback. **This left the app
-broken mid-refactor** — `main.py` was still calling functions that had been
-deleted.
+dependency), and a much more tolerant regex fallback.
 
 **4. Audit.** Paused feature work to answer five questions honestly: where the
 LLM makes business decisions, whether rules live in config or code, whether
 fields carry confidence and provenance, whether the trace is reconstructable,
-and whether a low-confidence extraction can sneak through to auto-approve. The
-answers are in [AUDIT.md](AUDIT.md), along with a phased refactor plan.
+and whether a low-confidence extraction can reach auto-approve.
+[AUDIT.md](AUDIT.md), then [REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md) — which
+found **a third defect the audit missed**, a concurrency race in the PO ledger.
 
-**5. Phase 0 — get back to green** (in progress):
+**5. Phase 0 — back to green.** Git baseline, `main.py` reconciled with the new
+extraction API, and `tests/test_samples.py` as a real pytest suite.
 
-- ✅ **Step 1** — `git init`, `.gitignore`, `.gitattributes`, baseline commit of
-  the broken state so the fix could be diffed against it.
-- ✅ **Step 2** — reconciled `main.py` with the new extraction API. **7/7 samples
-  passing again.**
-- ⬜ **Step 3** — turn the throwaway verification script into a real
-  `tests/test_samples.py`.
+**6. Phase 1 — five business-rule fixes**, each its own verified commit:
+inferred-PO safety, currency mismatch, invoice arithmetic, zero/negative
+amounts, vendor normalisation. 112 tests.
 
-**6. Architect review.** A second pass over the audit findings, this time
-producing implementation patterns rather than just a list of problems:
-[REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md). It adds the exact fix logic for
-both live bugs, the `Tracked[T]` provenance wrapper and confidence gate, designs
-for three harder edge cases (multi-PO consolidation, FX drift, unlisted
-surcharges), a versioned `rules.yaml`, and a replayable `DecisionTrace` schema.
+**7. Provider split.** Text PDFs moved to **Groq**; **Gemini** kept for scans
+only. An economics decision, not an architectural one — Gemini's free tier is 20
+requests per *day* and it is the only route that can read a picture, so it is no
+longer spent on documents that already have a text layer. `matching.py`,
+`storage.py` and the decision engine were untouched by the swap, which is the
+whole point of the architecture.
 
-It also found **a third defect the audit missed** — a concurrency race in the
-PO ledger (see [Known problems](#known-problems)) — and pushed back on three
-points, most importantly that FX conversion must not silently widen
-auto-approval.
+**8. Deterministic audit trail.** `rules.decide()` now emits a structured record
+as it evaluates: the values compared, the PO and where its record came from, the
+variance, the tolerance, every rule that passed or failed, and the reason. No
+model is involved in any of it.
 
-Phase 1 (fixing the live bugs) has **not** started.
+**9. Human-in-the-loop review.** Accept / reject on anything held, recorded
+*beside* the automated decision rather than on top of it.
+
+**10. API security.** The API had none: every endpoint was reachable by anyone
+who knew the URL and the reviewer's identity was whatever the client typed.
+Now OAuth 2.0 bearer tokens, scopes, per-user rate limits, real input validation
+and a daily extraction budget.
 
 ---
 
@@ -102,6 +111,36 @@ python -m venv venv
 .\venv\Scripts\python.exe -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
+### Signing in
+
+The API requires authentication, so the app opens on a sign-in screen. Demo
+accounts ship in `data/users.json`:
+
+| Username | Password | Can |
+|---|---|---|
+| `viewer` | `demo-viewer` | read runs, audit trails, reference data |
+| `analyst` | `demo-analyst` | the above + process invoices |
+| `reviewer` | `demo-reviewer` | the above + accept / reject held invoices |
+| `admin` | `demo-admin` | the above + override any run's status |
+
+These are demo credentials and are flagged as such in the file. A production
+start refuses to boot while they exist — see [Running in production](#running-in-production).
+
+> Set `AUTH_SECRET` in `.env` before a demo. Without it a fresh signing key is
+> generated per process, so every server restart silently invalidates the token
+> in your browser and you have to sign in again mid-recording.
+
+### Running the tests
+
+```powershell
+.\venv\Scripts\python.exe -m pytest tests\ -q
+```
+
+**329 tests.** They mock both providers, so they need no API key, no network and
+no quota. With keys present, `tests/test_samples.py` additionally exercises the
+real Groq and Gemini routes end to end — the fixture prints which mode ran,
+because a green suite means a different thing in each.
+
 > The server holds `data/app.db` open. To reset run history, **stop the server
 > first**, then delete the file — it is rebuilt from the seed JSON on startup.
 
@@ -111,9 +150,12 @@ python -m venv venv
 
 - **Run tab** — drop in a PDF, or click a bundled sample. Each stage lights up
   live as it executes; the decision panel then shows the verdict, the PO balance
-  bar, the reasoning trail and every extracted field.
+  bar, the reasoning trail, every extracted field, and a **Decision details**
+  panel with the full audit trail. If the invoice was held for review and your
+  account has permission, **Accept** and **Reject** appear beneath the evidence.
 - **Dashboard tab** — every run, filterable by status, click-through to the full
-  stage log, plus PO consumption across all POs.
+  stage log and audit trail, plus PO consumption across all POs. A `human` chip
+  marks runs a person ruled on.
 - **Reference tab** — the purchase orders and approved vendors being checked against.
 
 ---
@@ -129,7 +171,7 @@ Regenerate anytime with `python sample_invoices/generate_invoices.py`.
 | `03_split_po_globex_b.pdf` | Second invoice — exactly exhausts the balance | **APPROVED** |
 | `03b_split_po_globex_overflow.pdf` | Third invoice against the exhausted PO | **NEEDS_REVIEW** |
 | `04_missing_invoice_number.pdf` | Amounts fine, but no audit key | **NEEDS_REVIEW** |
-| `05_scanned_no_text.pdf` | Image-only PDF, no text layer | **NEEDS_REVIEW** |
+| `05_scanned_no_text.pdf` | Image-only PDF, no text layer | **NEEDS_REVIEW** † |
 | `06_duplicate_of_01.pdf` | Resubmission of `INV-2201` | **REJECTED** |
 
 **Order matters.** Several cases are history-dependent by design:
@@ -142,6 +184,19 @@ Run `03b` alone against a fresh database and it is **APPROVED** — same bytes,
 opposite verdict, because $2,500 against an untouched $5,000 PO is an ordinary
 partial invoice. The decision depends on the PO's history, not the file alone.
 
+† **Sample 05's verdict is route-dependent, deliberately.** With no Gemini key
+there is nothing to read, so the process refuses to guess → NEEDS_REVIEW. With
+one, the vision route reads `INV-9004` / `PO-1005` / `$15,400.00` off the page
+image and it approves. `manifest.json` carries both expectations and the UI
+resolves against key presence. Same bytes, different verdict, because a
+different capability was available — a better story for a non-technical audience
+than the split-PO case.
+
+Sample `04` also flags an arithmetic inconsistency: the document states
+`Subtotal $8,200 + Tax $0.00 = Total $8,150`, which does not add up. Both
+extraction routes read it identically, so the check is correct — the fixture
+itself is inconsistent. The verdict is unaffected.
+
 ---
 
 ## How it works
@@ -152,13 +207,18 @@ partial invoice. The decision depends on the PO's history, not the file alone.
 every vendor formats invoices differently — and easy for an LLM. But the
 *decision* must be identical every time and defensible to an auditor, so no
 model touches a dollar comparison. Everything downstream of extraction is
-deterministic Python.
+deterministic Python, and no prompt contains the words approve, reject or
+tolerance.
 
 ### Pipeline
 
 ```
+Sign in → authenticate → authorize → rate limit → validate the file
+   ↓
 INGEST → EXTRACT_TEXT → EXTRACT_FIELDS → VALIDATE → VENDOR_CHECK
        → PO_MATCH → DUPLICATE_CHECK → TOLERANCE_CHECK → DECISION
+   ↓
+audit trail → (if held) human accept / reject
 ```
 
 Stages do **not** short-circuit. A missing invoice number at stage 4 does not
@@ -170,7 +230,8 @@ reviewer sees the whole picture rather than the first thing that went wrong.
 - **REJECTED** — things the process must not override: duplicates, vendors on
   file but not approved.
 - **NEEDS_REVIEW** — recoverable: missing fields, unreadable scan, amount over
-  tolerance, no PO match.
+  tolerance, no PO match, currency mismatch, bad arithmetic, an invalid total,
+  an inferred PO, or text that reads as an instruction to the extractor.
 - **APPROVED** — everything passed.
 
 Reject wins over review when both fire.
@@ -183,7 +244,8 @@ within = diff <= tol      # not abs(diff) <= tol
 
 Billing **over** the remaining PO balance is a problem — the vendor wants money
 nobody authorised. Billing **under** it is a normal partial invoice. Tolerance
-is `max(2% of remaining, $25)`.
+is the larger of 1% of the remaining balance or $50
+(`config.PO_TOLERANCE_PERCENT` / `PO_TOLERANCE_DOLLARS`).
 
 ### Split-PO tracking
 
@@ -194,113 +256,243 @@ summing the totals of previously **APPROVED** runs matched to that PO:
 remaining_before = PO amount − Σ(prior approved invoices)
 ```
 
-Two consequences: only approved runs consume budget (a flagged invoice sitting
-in review doesn't block the queue behind it), and the run history *is* the
-ledger — no counter can drift out of sync.
+Only approved runs consume budget, so a flagged invoice sitting in review
+doesn't block the queue behind it, and the run history *is* the ledger — no
+counter can drift out of sync. It also makes idempotency and reversal
+structural rather than defended: there is nothing to deduct twice, and moving a
+run out of APPROVED refunds it in the same instant.
 
 ### Extraction routes
 
-Three routes, degrading in a defined order. Same output schema either way, so
-matching and rules never know which ran:
+The route is chosen by what the document **is** — whether a usable text layer
+can be read out of it — never by its extension. Every route returns the same
+`ExtractedInvoice`, so matching and rules never know which ran:
 
-| Route | When | Needs API key |
-|---|---|---|
-| `llm (text)` | PDF has an embedded text layer | Yes |
-| `llm (vision)` | Scanned / image-only PDF — page images sent to the model | Yes |
-| `regex` | No API key, or the LLM call failed | No |
-| `none` | Nothing readable — returns empty fields rather than guessing | — |
+| Route | When | Provider | Needs key |
+|---|---|---|---|
+| `groq (text)` | PDF has an embedded text layer | Groq | `GROQ_API_KEY` |
+| `gemini (vision)` | Scanned / image-only PDF — page images sent to the model | Google Gemini | `GEMINI_API_KEY` |
+| `regex` | No Groq key, or the Groq call failed | — | No |
+| `none` | Nothing readable — returns empty fields rather than guessing | — | — |
 
-**Currently running on `regex`**, because no key is set. To enable the LLM and
-vision routes, create a `.env` file in the project root:
+Configure in `.env` at the project root:
 
 ```
-GEMINI_API_KEY=...
+GROQ_API_KEY=...        # https://console.groq.com/keys
+GEMINI_API_KEY=...      # https://aistudio.google.com/apikey
 ```
 
-Get one free at <https://aistudio.google.com/apikey>.
+`.env` is gitignored and neither key is ever sent to the browser.
 
-`.env` is gitignored and the key is never sent to the browser — the UI is only
-told whether a key is present.
+**Why the split.** Gemini's free tier allows 20 requests per *day*, and it is
+the only route that can read a picture. Spending it on text PDFs — which already
+have a working regex fallback — traded the one irreplaceable route for the one
+with an alternative. Groq covers text and is far more generous.
 
-> ⚠️ The `llm (text)` and `llm (vision)` routes are **wired but not yet
-> exercised** — every test so far has run through `regex`. Sample 05 (scanned)
-> currently lands on `route=none` for this reason, which is why it reads
-> "NEEDS_REVIEW — nothing could be read" rather than actually being read by vision.
+**On failure**, each route takes its existing safe path and never fabricates:
+Groq falls back to regex (deliberately *not* to Gemini, which would spend the
+scarce budget), and Gemini falling over leaves route `none` → empty fields →
+a human. Neither failure can produce an APPROVED.
+
+Models are **pinned**, not aliased (`openai/gpt-oss-120b`, `gemini-3.7-flash`),
+both overridable by environment variable. An alias changes the model under a
+running system, and an AP process must be able to say which model read an
+invoice approved months ago.
+
+### The audit trail
+
+Every run stores a structured record of how its decision was reached:
+
+```
+Automated Decision: NEEDS_REVIEW
+Reason:             Invoice total exceeds PO remaining amount.
+PO:                 PO-1002   (explicit match, open)
+Source:             purchase_orders.json, row 2
+Invoice total       $2,500.00
+PO remaining        $0.00
+Variance            $2,500.00
+Tolerance used      $50.00
+Rules  ✓ Security screen   ✓ Document readable  ✓ Required fields present
+       ✓ Invoice amount    ✓ Invoice arithmetic ✓ Duplicate check
+       ✓ Vendor approved   ✓ PO matched         ✓ Currency match
+       ✗ PO remaining check
+```
+
+It is emitted **by the same evaluation that produces the decision** — each check
+is recorded next to the branch that sets the verdict — not by a second pass that
+re-derives it. A trail assembled separately can disagree with the decision it
+claims to explain; this one cannot. No LLM writes any of it.
+
+PO records carry `source_file` and `source_row` so a balance can be traced back
+to the procurement row it came from. Nothing is invented: a record with no
+derivable position stores `NULL` and the trail says the row is unknown.
+
+### Human review
+
+When the process holds an invoice, a reviewer opens the audit trail and rules on
+it. The automated decision is never overwritten:
+
+```
+automated_decision   NEEDS_REVIEW      ← what the rules concluded, permanently
+human_decision       ACCEPTED
+final_decision       HUMAN_APPROVED
+```
+
+`status` does move, because that is the column the ledger sums — an accepted
+invoice has to consume its PO budget. Reviewer identity comes from the
+authenticated token and nothing else; a `reviewer` field in the request body is
+ignored. One ruling per run: reversing one is an admin action through the status
+endpoint, which leaves its own trail.
+
+### API security
+
+The frontend is treated as an untrusted client. CORS is configured but is not a
+security boundary — a script ignores it entirely.
+
+- **Authentication** — OAuth 2.0 resource-server pattern. Every protected call
+  carries `Authorization: Bearer <JWT>`, validated for signature, expiry and
+  issuer. Tokens are minted locally via the password grant; swapping in a hosted
+  IdP means verifying against its JWKS and changing nothing else.
+- **Authorization** — scopes named for actions: `invoice:read`,
+  `invoice:process`, `invoice:review`, `invoice:admin`. Reviewing is separate
+  from processing, because approving payment is a different authority from
+  feeding a PDF to an extractor.
+- **Rate limiting** — per user and per IP, configurable, default 20 processing
+  requests/minute/user. Authentication runs first, so an anonymous flood cannot
+  burn a real user's budget.
+- **Daily extraction budget** — a slower circuit breaker in front of both
+  providers. Twenty polite requests an hour apart never trip a per-minute limit
+  and would still exhaust Gemini for the day. When a budget is spent the
+  provider is not called at all and extraction takes its existing safe fallback.
+  The counter lives in SQLite so it survives a restart.
+- **Input validation** — uploads capped and read in chunks, PDFs validated by
+  magic bytes rather than extension or client-declared type, filenames reduced
+  to a safe basename.
+- **Errors** — proper status codes (401/403/404/409/413/415/429/500) with no
+  stack traces, provider messages or configuration names in the response.
 
 ### Stack
 
 - **Backend** — FastAPI. `POST /api/runs/stream` streams stages over SSE as they
-  execute; other endpoints serve run history and reference data.
+  execute; other endpoints serve run history, audit trails and reference data.
 - **Extraction** — `pdfplumber` for text, `pypdfium2` for page rasterisation
   (a self-contained wheel: no poppler or tesseract to install).
 - **Storage** — SQLite at `data/app.db`, seeded from `data/*.json` on startup.
+- **Auth** — `pyjwt`; PBKDF2-HMAC-SHA256 password hashing from the standard library.
 - **Frontend** — vanilla HTML/CSS/JS, no build step, reads the SSE stream with
   `fetch()`.
+
+### API endpoints
+
+```
+GET  /api/health                 public liveness probe
+POST /api/auth/token             OAuth 2.0 password grant → bearer token
+GET  /api/auth/me                who you are and what your token permits
+POST /api/runs/stream            multipart PDF → SSE stage stream  [invoice:process]
+GET  /api/runs                   run history                       [invoice:read]
+GET  /api/runs/{id}              one run, including its audit trail[invoice:read]
+POST /api/runs/{id}/review       accept / reject a held invoice    [invoice:review]
+POST /api/runs/{id}/status       override any run's status         [invoice:admin]
+GET  /api/reference              POs + approved vendors            [invoice:read]
+GET  /api/sample-invoices        the bundled scenarios             [invoice:read]
+GET  /api/sample-invoices/{name} one sample PDF                    [invoice:read]
+```
+
+---
+
+## Running in production
+
+Set `APP_ENV=production` and the app refuses to start on any of the following,
+reporting all of them at once:
+
+- `AUTH_SECRET` unset — there is no ephemeral fallback in production, because
+  it invalidates every session on restart and differs between workers.
+- Demo credentials present in the user store. The flag lives on the record, not
+  the file path, so copying `data/users.json` elsewhere does not launder it.
+  Point `AUTH_USERS_FILE` at a real store, or replace the token issuer with your
+  identity provider.
+- An empty or unreadable user store, or `CORS_ORIGINS` containing `*`.
+
+Everything convenient about the demo — published passwords, zero-config signing
+keys — is allowed in development and fatal in production, deliberately. Each is
+the kind of mistake that leaves the app working perfectly and quietly insecure.
+
+Environment variables worth knowing, all optional in development:
+
+```
+APP_ENV=development           # production | prod | live triggers the checks above
+AUTH_SECRET=                  # required in production
+AUTH_USERS_FILE=              # override the demo user store
+AUTH_TOKEN_TTL_MINUTES=480
+CORS_ORIGINS=                 # empty means same-origin only
+RATE_LIMIT_PROCESS_PER_MINUTE=20
+DAILY_QUOTA_VISION=20         # matches Gemini's free tier
+DAILY_QUOTA_TEXT=500
+```
 
 ---
 
 ## Known problems
 
-From [AUDIT.md](AUDIT.md) and [REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md).
-Three are live bugs, not just design gaps:
+**All three defects the audit and architect review found are fixed** — inferred
+PO matches no longer auto-approve, currency mismatches are caught, and the PO
+ledger race is closed with `BEGIN IMMEDIATE` + WAL (verified under real threads:
+8 concurrent $2,000 invoices against a $10,000 PO give exactly 5 approved, 3
+held, $0.00 remaining).
 
-🐞 **Inferred PO matches don't block approval.** When no PO reference is
-extracted, the process binds to the nearest-amount PO for that vendor with *no
-distance cap*, adds a `warn`-level reason — and `warn` doesn't change the
-verdict. An invoice that never named a PO can auto-approve against one the
-process picked.
-
-🐞 **Currency is extracted and never read.** Zero references in `matching.py` or
-`rules.py`. The PO table has a `currency` column nobody consults. A €3,000
-invoice against a $5,000 PO is compared as `3000` vs `5000`.
-
-🐞 **The PO ledger has a concurrency race.** Every `storage` function opens and
-closes its own connection, so a transaction cannot span read-balance → decide →
-write. Two invoices for the same PO processed concurrently both read the same
-remaining balance and can both be approved, committing more than the PO
-authorises. This is the only known defect that produces a wrong **number**
-rather than a wrong routing. Fix — `BEGIN IMMEDIATE` + WAL, with the slow
-extraction step kept outside the lock — in
-[REFACTOR_STRATEGY.md §3.4](REFACTOR_STRATEGY.md).
-
-Also, by design rather than accident, and all queued for later phases:
+What is still true, by design rather than accident, and queued for later phases:
 
 - Extracted fields are **bare values** — no confidence, no pointer to where in
   the document they came from. A total read off the page is indistinguishable
-  from one the code synthesised as `subtotal + tax`.
-- **All business rules are hardcoded.** Tolerance is two magic numbers in a
-  one-line function. `config.py` holds only operational settings.
-- Vendor matching is **bidirectional substring** — `Acme Corp` matches approved
-  `Acme Office Supplies`.
+  from one the code synthesised as `subtotal + tax`. This is Phase 2 and the
+  most valuable thing left to build.
+- **Business rules are constants in `config.py`, not versioned policy.** There
+  is no `rules.yaml`, no policy version, and no way to say which policy approved
+  a given invoice.
 - Reference data is **re-seeded from JSON on every startup**, so editing
   `purchase_orders.json` silently changes what historical runs refer to.
-- No arithmetic consistency check — nothing verifies `subtotal + tax == total`.
+- The schema stores **one `po_number` per run**, so a consolidated invoice
+  spanning several POs would over-consume each of them.
+- `extraction._first()` strips a **leading minus sign** off a captured amount,
+  so `Total Due: -500.00` extracts as positive 500. Accounting parentheses are
+  unaffected. The amount rule cannot catch a sign the extractor discarded.
+- Rate-limit counters are **per process** — several uvicorn workers each keep
+  their own, multiplying the effective limit.
+
+**Operationally:** Gemini's vision endpoint has been returning intermittent
+`503`s. The fallback is safe — the invoice is held, nothing is fabricated — but
+the scanned-sample demo is not reliably reproducible, and `manifest.json`
+resolves that sample's badge on key *presence* rather than provider
+availability, so the badge can briefly contradict the run beside it.
 
 ---
 
 ## What's next
 
-| Phase | Work |
-|---|---|
-| **0** | Finish Step 3 — real pytest suite |
-| **1** | Cap inferred PO matches + make `warn` actually bite; currency mismatch → review; normalised vendor matching |
-| **2** | `Tracked[T]` provenance wrapper, per-route confidence, and the **confidence gate** |
-| **3** | `rules.yaml` — pull every threshold out of Python, stamp the version on each run |
-| **4** | Transaction boundaries and the `run_allocations` ledger table |
-| **5** | `DecisionTrace` + reference snapshot; stop re-seeding on startup |
-| **6** | Line-item decomposition, multi-PO consolidation, FX provider |
-| **7** | UI: confidence badges, evidence snippets, allocation view |
+| Phase | Work | State |
+|---|---|---|
+| **0** | Green build, pytest suite | ✅ done |
+| **1** | Inferred-PO safety, currency, arithmetic, invalid amounts, vendor matching | ✅ done |
+| **2** | `Tracked[T]` provenance wrapper, per-route confidence, the **confidence gate** | ⬜ |
+| **3** | `rules.yaml` — pull every threshold out of Python, stamp the version on each run | ◨ thresholds centralised; YAML + loader to do |
+| **4** | Transaction boundaries and the `run_allocations` ledger table | ◨ transactions done; allocations to do |
+| **5** | `DecisionTrace` + reference snapshot; stop re-seeding on startup | ◨ audit trail done; snapshot to do |
+| **6** | Line-item decomposition, multi-PO consolidation, FX provider | ⬜ |
+| **7** | UI: confidence badges, evidence snippets, allocation view | ⬜ |
 
-**If only three things get built:** the live bugs (Phase 1), the confidence gate
-(Phase 2 — it closes the low-confidence auto-approve problem as a *class* rather
-than case by case), and the transaction fix (Phase 4a — the only defect that
-corrupts a number rather than a routing).
+**The most valuable thing left** is Phase 2's confidence gate — it closes the
+low-confidence auto-approve problem as a *class* rather than case by case.
+Nothing in Phases 2–7 changes a verdict on any of the seven samples, though, so
+none of it is what is blocking the case study.
 
 **One sequencing trap worth knowing:** multi-PO consolidation is a *ledger*
 feature, not a matching feature. The schema stores one `po_number` per run and
 consumption sums run totals, so a consolidated invoice would over-consume every
 PO it touched. It needs the allocations table, which needs transaction
 boundaries first. Phase 4 before Phase 6, always.
+
+**For the case study itself:** deploy it somewhere shareable and record the
+5-minute demo video. Neither needs another line of pipeline code.
 
 Full plan with rationale, code patterns and exit criteria:
 [REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md) · findings behind it:
@@ -312,17 +504,22 @@ Full plan with rationale, code patterns and exit criteria:
 
 ```
 backend/
-  main.py         FastAPI app, the 9-stage pipeline, SSE streaming
-  extraction.py   PDF → text/images → structured fields (3 routes)
-  matching.py     PO lookup, split-PO balance maths, tolerance
-  rules.py        Required fields, vendor, duplicates, final decision
-  storage.py      SQLite: seed data, run history
+  main.py         FastAPI app, the 9-stage pipeline, SSE streaming, endpoints
+  extraction.py   PDF → text/images → structured fields (Groq / Gemini / regex)
+  matching.py     PO lookup, split-PO balance maths, tolerance, currency
+  rules.py        Validation, vendor, duplicates, decision + audit trail
+  storage.py      SQLite: seed data, run history, ledger, human review
+  auth.py         OAuth 2.0 bearer tokens, scopes, production config checks
+  ratelimit.py    Per-user / per-IP sliding-window limits
+  quota.py        Daily per-provider extraction budget (circuit breaker)
   schemas.py      Shared dataclasses
-  config.py       Operational settings, .env loading
+  config.py       Operational settings, .env loading, environment switch
 frontend/         index.html, style.css, app.js — no build step
-data/             Seed POs + vendors (tracked); app.db (not tracked)
+data/             Seed POs + vendors + demo users (tracked); app.db (not tracked)
 sample_invoices/  7 PDFs, the generator, and manifest.json of scenarios
+tests/            13 files, 329 tests, both providers mocked
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing
 PROCESS_MAP.md        The on-paper design done before building
+CLAUDE.md             Session handoff notes
 ```
