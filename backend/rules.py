@@ -204,6 +204,58 @@ def _is_balance_reason(text: str) -> bool:
     return any(marker in text for marker in _BALANCE_MARKERS)
 
 
+# Routes where a language model actually read the document. Only these support
+# the "no fields at all" inference below: if the regex fallback or nothing at
+# all ran, an empty result says the EXTRACTOR failed, not that the document is
+# not an invoice.
+_LLM_ROUTES = ("groq-text", "gemini-vision")
+
+
+def looks_like_an_invoice(extracted: dict) -> bool:
+    """True if the extractor found anything that identifies this as an invoice.
+
+    Any single signal is enough — a vendor, an invoice number, a total, a date,
+    a PO reference or a line item. Invoices vary enormously in format, so the
+    bar is deliberately one field, not a required combination.
+    """
+    if not extracted:
+        return False
+    if any(extracted.get(k) for k in ("vendor_name", "invoice_number", "total", "invoice_date")):
+        return True
+    return bool(extracted.get("po_references") or extracted.get("line_items"))
+
+
+def is_not_an_invoice(extracted: dict, extract_info: dict) -> bool:
+    """True when a model read the document cleanly and found no invoice in it.
+
+    WHY THIS IS THE SIGNAL
+
+    No keyword list. A vocabulary check ("does the text contain the word
+    invoice?") is both too weak and too strong: it misses invoices in other
+    languages, and it fires on any document that merely DISCUSSES invoicing —
+    a contract, a policy, this project's own brief. The extractor is already a
+    document classifier: when a model reads a page and cannot find a vendor, a
+    number, an amount, a date, a PO reference or a single line item, the
+    document does not contain an invoice.
+
+    Gated on the model routes on purpose. If extraction fell back to regex or
+    failed outright, an empty result is evidence about the extractor, not about
+    the document, and this must not fire.
+    """
+    # `None` means the caller did not supply extraction data at all, which is
+    # not the same as supplying data that turned out empty. Treating the first
+    # as "not an invoice" would hard-reject a perfectly good invoice on any code
+    # path that happens not to pass `extracted` — absence of evidence read as
+    # evidence of absence. Only an explicitly empty result may classify.
+    if extracted is None:
+        return False
+
+    route = (extract_info or {}).get("route")
+    if route not in _LLM_ROUTES:
+        return False
+    return not looks_like_an_invoice(extracted)
+
+
 def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
            dup_row, dup_detail, po_match: dict, arithmetic=None, amount=None,
            audit=None, extracted=None):
@@ -294,6 +346,34 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
            "Nothing could be read from the document" if route == "none"
            else f"Fields extracted via route '{route}'",
            reason="Nothing could be read from the document.")
+
+    # Is this an invoice at all?
+    #
+    # Everything below assumes the document IS one and asks whether it may be
+    # paid. Without this check a CV, a contract or a policy document lands in
+    # the AP review queue reported as an invoice with "missing required fields"
+    # — technically true, and useless to the person reading it.
+    #
+    # This REJECTS rather than holds. A hold means "a human must decide whether
+    # to pay this", and there is nothing to decide about a document that
+    # contains no invoice. The cost is that a genuine invoice so degraded that a
+    # model finds not one field in it is rejected rather than queued; that is
+    # accepted deliberately, the reason below says exactly what was observed,
+    # and an administrator can move the run back through /status.
+    not_invoice = is_not_an_invoice(extracted, extract_info)
+    if not_invoice:
+        reject = True
+        add(
+            "This document does not appear to be an invoice. It was read successfully, but it "
+            "contains no vendor, invoice number, amount, date, purchase-order reference or line "
+            "item — nothing that identifies it as something to be paid. Check that the right "
+            "file was submitted.",
+            "fail",
+        )
+    _check("Document is an invoice", not not_invoice,
+           "No invoice fields were found in a document that was read successfully"
+           if not_invoice else "Recognised as an invoice",
+           reason="The document does not appear to be an invoice.")
 
     if route == "gemini-vision":
         add(
