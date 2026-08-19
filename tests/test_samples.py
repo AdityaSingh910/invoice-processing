@@ -126,8 +126,13 @@ def client(tmp_path_factory):
 
     # The context manager fires FastAPI's startup event, which calls init_db()
     # again -- harmless, and it proves startup works against the patched path.
+    # The API now requires a bearer token on every invoice endpoint, so the
+    # test client authenticates like any other caller. `admin` carries every
+    # scope, which keeps this fixture about samples rather than about
+    # permissions -- those are tested directly in tests/test_api_security.py.
+    from conftest import auth_headers
     from fastapi.testclient import TestClient
-    with TestClient(main.app) as c:
+    with TestClient(main.app, headers=auth_headers("admin")) as c:
         assert storage.DB_PATH == str(db_path), "startup must not restore the real DB path"
         yield c
 

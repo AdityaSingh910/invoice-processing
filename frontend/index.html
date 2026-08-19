@@ -7,6 +7,31 @@
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <!-- Sign-in gate. The API rejects unauthenticated calls regardless of what
+       this overlay does -- it is a convenience for a human, never the control.
+       No secret lives here: the user supplies their own credentials and the
+       server returns a token scoped to them. -->
+  <div id="loginOverlay" class="login-overlay">
+    <form id="loginForm" class="login-card" autocomplete="on">
+      <div class="login-brand"><span class="brand-mark">IP</span><h1>Invoice Processing</h1></div>
+      <p class="login-sub">Sign in to process and review invoices.</p>
+      <label class="login-field">
+        <span>Username</span>
+        <input id="loginUser" name="username" type="text" autocomplete="username" required />
+      </label>
+      <label class="login-field">
+        <span>Password</span>
+        <input id="loginPass" name="password" type="password" autocomplete="current-password" required />
+      </label>
+      <div id="loginError" class="login-error hidden"></div>
+      <button id="loginBtn" class="btn primary" type="submit">Sign in</button>
+      <p class="login-hint">
+        Demo accounts: <code>analyst</code> / <code>demo-analyst</code> (process),
+        <code>reviewer</code> / <code>demo-reviewer</code> (process + accept/reject).
+      </p>
+    </form>
+  </div>
+
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
@@ -21,6 +46,10 @@
         <button class="tab-btn" data-tab="dashboard">Dashboard</button>
         <button class="tab-btn" data-tab="reference">Reference</button>
       </nav>
+      <div class="whoami">
+        <span id="whoamiName"></span>
+        <button id="signOutBtn" class="btn ghost small">Sign out</button>
+      </div>
     </div>
   </header>
 

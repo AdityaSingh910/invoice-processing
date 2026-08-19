@@ -222,15 +222,17 @@ def describe_api_error(exc: Exception, provider: str = "gemini") -> str:
     # Name the setting the operator actually has to go and check. Two providers
     # now fail independently, and "check GEMINI_API_KEY" is actively misleading
     # when it was the Groq call that returned 401.
-    key_env, model_setting = (
-        (config.GROQ_API_KEY_ENV, "config.groq_model()") if provider == "groq"
-        else (config.API_KEY_ENV, "config.EXTRACTION_MODEL")
-    )
+    # Name the PROVIDER, not the internal setting. This string is attached to
+    # the run and travels to the browser, and an environment-variable name or a
+    # `config.` attribute in a client-facing message is implementation detail an
+    # external caller has no business learning. An operator gets the specific
+    # setting from the server log instead.
+    label = "Groq" if provider == "groq" else "Gemini"
     known = {
         400: "request rejected (400)",
-        401: f"authentication failed (401) — check {key_env}",
+        401: f"authentication failed (401) — check the {label} API credentials",
         403: "permission denied (403) — key lacks access to this model",
-        404: f"model not found (404) — check {model_setting}",
+        404: f"model not found (404) — check the configured {label} model",
         429: "rate limit / quota exhausted (429) — free tier throttles quickly",
         500: "provider error (500)",
         503: "provider unavailable (503)",

@@ -45,8 +45,10 @@ def db(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(db):
+    from conftest import auth_headers
     from fastapi.testclient import TestClient
-    with TestClient(main.app) as c:
+    # Reviewing requires the 'invoice:review' scope; a reviewer has it.
+    with TestClient(main.app, headers=auth_headers("reviewer", "a.singh")) as c:
         assert storage.DB_PATH == db, "startup must not restore the real DB path"
         yield c
 
@@ -290,11 +292,15 @@ def test_review_endpoint_rejects(client):
 
 
 def test_review_endpoint_refuses_an_approved_run(client):
+    """409, not 200-with-an-error-body: the run exists but is not in a state
+    that can be reviewed, and a caller should be able to act on that difference."""
     run_id, status = submit(3000.00, "INV-OK")
     assert status == "APPROVED"
-    body = client.post(f"/api/runs/{run_id}/review",
-                       json={"decision": "REJECTED", "reviewer": "a.singh"}).json()
-    assert body["ok"] is False
+    r = client.post(f"/api/runs/{run_id}/review",
+                    json={"decision": "REJECTED", "reviewer": "a.singh"})
+    assert r.status_code == 409
+    assert "NEEDS_REVIEW" in r.json()["error"]
+    assert storage.get_run(run_id)["human_decision"] is None
 
 
 def test_review_endpoint_releases_budget_and_cascades(client):

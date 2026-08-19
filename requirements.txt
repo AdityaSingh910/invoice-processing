@@ -28,3 +28,9 @@ groq==1.6.0
 # tests never need a live uvicorn holding data/app.db open.
 pytest==9.1.1
 httpx==0.28.1
+
+# API security: OAuth 2.0 bearer tokens (JWT). The API is a resource server --
+# it validates signed access tokens and their scopes. Swapping the local token
+# issuer for a hosted IdP means verifying against that provider's JWKS instead
+# of a local secret; nothing else changes.
+pyjwt==2.13.0

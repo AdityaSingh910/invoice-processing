@@ -449,3 +449,41 @@ h1, h2, h3 { margin: 0; }
   font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
   background: var(--accent-soft); color: var(--accent); vertical-align: middle;
 }
+
+/* ---------- sign-in ----------
+   A convenience gate for a human. The API refuses unauthenticated calls on its
+   own; nothing here is a security control and no secret is stored in the page. */
+.login-overlay {
+  position: fixed; inset: 0; z-index: 200; display: flex;
+  align-items: center; justify-content: center; padding: 24px;
+  background: var(--bg);
+}
+.login-overlay.hidden { display: none; }
+.login-card {
+  width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 13px;
+  padding: 28px; border: 1px solid var(--border); border-radius: 13px;
+  background: var(--panel); box-shadow: 0 12px 40px rgba(0, 0, 0, .10);
+}
+.login-brand { display: flex; align-items: center; gap: 11px; }
+.login-brand h1 { margin: 0; font-size: 17px; letter-spacing: -.01em; }
+.login-sub { margin: -4px 0 6px; font-size: 12.5px; color: var(--text-dim); }
+.login-field { display: flex; flex-direction: column; gap: 5px; }
+.login-field span { font-size: 11px; font-weight: 650; color: var(--text-dim); }
+.login-field input {
+  padding: 9px 11px; font: inherit; font-size: 13px; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border-strong); border-radius: 8px;
+}
+.login-field input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.login-error {
+  padding: 8px 11px; border-radius: 7px; font-size: 12px;
+  background: var(--fail-soft); color: var(--fail); border: 1px solid var(--fail-solid);
+}
+.login-error.hidden { display: none; }
+.login-hint { margin: 2px 0 0; font-size: 11px; line-height: 1.6; color: var(--text-faint); }
+.login-hint code {
+  padding: 1px 5px; border-radius: 4px; background: var(--panel-2);
+  border: 1px solid var(--border); font-size: 10.5px;
+}
+
+.whoami { display: flex; align-items: center; gap: 9px; margin-left: 14px; }
+.whoami #whoamiName { font-size: 12px; font-weight: 650; color: var(--text-dim); }

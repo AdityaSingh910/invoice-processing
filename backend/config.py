@@ -90,6 +90,50 @@ GROQ_MODEL_ENV = "GROQ_MODEL"
 GROQ_MODEL_DEFAULT = "openai/gpt-oss-120b"
 
 
+# --------------------------------------------------------------------------
+# API security
+#
+# Operational settings only, like everything else in this file -- no business
+# rules. The signing secret itself is NEVER stored here; it comes from the
+# environment, and auth.signing_secret() generates an ephemeral one rather than
+# falling back to a value committed to the repository.
+# --------------------------------------------------------------------------
+AUTH_SECRET_ENV = "AUTH_SECRET"
+AUTH_ISSUER = os.environ.get("AUTH_ISSUER", "invoice-processing")
+AUTH_TOKEN_TTL_MINUTES = int(os.environ.get("AUTH_TOKEN_TTL_MINUTES", "480") or 480)
+USERS_SEED = os.path.join(ROOT, "data", "users.json")
+
+# CORS. Configured so a browser on another origin can be allowed deliberately,
+# NOT as a security control: CORS is enforced by the browser, and a script or
+# curl request ignores it entirely. Authentication is the boundary; this only
+# decides which origins a browser is permitted to make credentialed calls from.
+# Default is same-origin only, which is how the app is actually served.
+CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+
+# --------------------------------------------------------------------------
+# Rate limiting
+#
+# The resource being protected is extraction quota. Gemini's free tier is 20
+# requests per DAY, so an unattended script hitting the processing endpoint is
+# not a theoretical concern -- it would exhaust the scanned-invoice route in
+# under a minute and leave the process unable to read a scan at all.
+# --------------------------------------------------------------------------
+RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "1").strip() not in ("0", "false", "False", "")
+# Per authenticated user, on the processing endpoint.
+RATE_LIMIT_PROCESS_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PROCESS_PER_MINUTE", "20") or 20)
+# Per client IP, as a second line for the unauthenticated surface (the token
+# endpoint) and as a backstop when many users share one host.
+RATE_LIMIT_IP_PER_MINUTE = int(os.environ.get("RATE_LIMIT_IP_PER_MINUTE", "60") or 60)
+# Login attempts per IP per minute. Lower, because this one guards passwords.
+RATE_LIMIT_LOGIN_PER_MINUTE = int(os.environ.get("RATE_LIMIT_LOGIN_PER_MINUTE", "10") or 10)
+
+# Whether X-Forwarded-For may be believed when identifying a caller. Off by
+# default: the header is client-controlled, so trusting it on a directly-exposed
+# app lets anyone reset their own rate-limit counter by inventing one. Turn it on
+# only when the app genuinely sits behind a proxy that overwrites it.
+TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "").strip() in ("1", "true", "True")
+
+
 def load_dotenv():
     """Minimal .env loader (KEY=VALUE per line). Real environment wins."""
     if not os.path.isfile(ENV_PATH):

@@ -4,7 +4,8 @@ const STAGE_ORDER = [
 ];
 const ICONS = { ok: "✓", warn: "!", fail: "✕", info: "i" };
 
-const state = { file: null, dashFilter: "ALL", runs: [], pos: [] };
+const state = { file: null, dashFilter: "ALL", runs: [], pos: [],
+                token: null, user: null };
 
 const $ = (id) => document.getElementById(id);
 const money = (v) =>
@@ -14,6 +15,109 @@ const money = (v) =>
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/* ---------------- authentication ----------------
+
+   The API is the security boundary; this is the client side of it. Every call
+   carries the bearer token the server issued for THIS user, and the server
+   re-checks the scope on every request -- so hiding a button here is a courtesy
+   to the person using the app, never a control. Nothing secret is stored in
+   this file: the token is obtained by the user signing in with their own
+   credentials, and it lives in sessionStorage so it dies with the tab rather
+   than persisting on a shared machine. */
+
+const TOKEN_KEY = "ip.token";
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (state.token) headers["Authorization"] = "Bearer " + state.token;
+  const res = await fetch(path, Object.assign({}, opts, { headers }));
+  if (res.status === 401) {
+    signOut("Your session has expired. Please sign in again.");
+    throw new Error("unauthenticated");
+  }
+  return res;
+}
+
+function showLogin(message) {
+  $("loginOverlay").classList.remove("hidden");
+  const err = $("loginError");
+  if (message) { err.textContent = message; err.classList.remove("hidden"); }
+  else err.classList.add("hidden");
+}
+
+function signOut(message) {
+  state.token = null;
+  state.user = null;
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  $("whoamiName").textContent = "";
+  showLogin(message);
+}
+
+async function signIn(username, password) {
+  // OAuth 2.0 password grant: form-encoded, as the spec requires.
+  const body = new URLSearchParams({ username, password });
+  const res = await fetch("/api/auth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  if (!res.ok) {
+    const detail = res.status === 429
+      ? "Too many attempts. Wait a moment and try again."
+      : "Incorrect username or password.";
+    throw new Error(detail);
+  }
+  const data = await res.json();
+  state.token = data.access_token;
+  try { sessionStorage.setItem(TOKEN_KEY, state.token); } catch (e) {}
+  return loadIdentity();
+}
+
+async function loadIdentity() {
+  const res = await api("/api/auth/me");
+  if (!res.ok) throw new Error("could not load identity");
+  state.user = await res.json();
+  $("whoamiName").textContent = state.user.username;
+  $("loginOverlay").classList.add("hidden");
+  document.body.classList.toggle("can-review", can("invoice:review"));
+  return state.user;
+}
+
+function can(scope) {
+  return !!(state.user && (state.user.scopes || []).includes(scope));
+}
+
+$("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("loginBtn");
+  btn.disabled = true;
+  try {
+    await signIn($("loginUser").value.trim(), $("loginPass").value);
+    $("loginPass").value = "";
+    loadSamples();
+  } catch (err) {
+    showLogin(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("signOutBtn").addEventListener("click", () => signOut());
+
+/* Resume an existing session if the tab still holds a valid token. */
+(async function restoreSession() {
+  let saved = null;
+  try { saved = sessionStorage.getItem(TOKEN_KEY); } catch (e) {}
+  if (!saved) return showLogin();
+  state.token = saved;
+  try {
+    await loadIdentity();
+    loadSamples();
+  } catch (err) {
+    signOut();
+  }
+})();
 
 /* ---------------- tabs ---------------- */
 document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -52,7 +156,7 @@ function selectFile(file, sampleEl) {
 
 /* ---------------- samples ---------------- */
 async function loadSamples() {
-  const items = await (await fetch("/api/sample-invoices")).json();
+  const items = await (await api("/api/sample-invoices")).json();
   const list = $("sampleList");
   list.innerHTML = "";
   items.forEach((item) => {
@@ -67,13 +171,15 @@ async function loadSamples() {
       ${item.note ? `<div class="si-note">${esc(item.note)}</div>` : ""}
       <div class="si-file">${esc(item.filename)}</div>`;
     div.addEventListener("click", async () => {
-      const blob = await (await fetch("/api/sample-invoices/" + encodeURIComponent(item.filename))).blob();
+      const blob = await (await api("/api/sample-invoices/" + encodeURIComponent(item.filename))).blob();
       selectFile(new File([blob], item.filename, { type: "application/pdf" }), div);
     });
     list.appendChild(div);
   });
 }
-loadSamples();
+// Samples load once a session exists -- restoreSession()/signIn() call this.
+// Calling it here unconditionally would fire an unauthenticated request on
+// every page load and bounce straight back through the 401 handler.
 
 /* ---------------- pipeline run ---------------- */
 function resetStages() {
@@ -142,7 +248,7 @@ async function run() {
 
   let seen = 0;
   try {
-    const resp = await fetch("/api/runs/stream", { method: "POST", body: fd });
+    const resp = await api("/api/runs/stream", { method: "POST", body: fd });
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -345,6 +451,9 @@ function reviewBarHTML(run) {
   if (!run || !run.id) return "";
   const automated = run.automated_decision || run.status;
   if (automated !== "NEEDS_REVIEW" || run.human_decision) return "";
+  // Don't offer an action the caller's token will not carry. The server checks
+  // the same scope on every request, so this only spares someone a 403.
+  if (!can("invoice:review")) return "";
   return `
     <div class="review-bar" data-run="${run.id}">
       <div class="review-copy">
@@ -370,10 +479,12 @@ document.addEventListener("click", async (e) => {
 
   bar.querySelectorAll("button").forEach((b) => (b.disabled = true));
   try {
-    const res = await fetch(`/api/runs/${runId}/review`, {
+    // `reviewer` is NOT sent: the server derives the identity from the token
+    // and ignores anything the client claims about who is acting.
+    const res = await api(`/api/runs/${runId}/review`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision: btn.dataset.decision, reviewer }),
+      body: JSON.stringify({ decision: btn.dataset.decision }),
     });
     const body = await res.json();
     if (!body.ok) {
@@ -452,8 +563,8 @@ $("refreshDash").addEventListener("click", loadDashboard);
 
 async function loadDashboard() {
   const [runs, ref] = await Promise.all([
-    (await fetch("/api/runs")).json(),
-    (await fetch("/api/reference")).json(),
+    (await api("/api/runs")).json(),
+    (await api("/api/reference")).json(),
   ]);
   state.runs = runs;
   state.pos = ref.purchase_orders;
@@ -572,7 +683,7 @@ document.addEventListener("keydown", (e) => {
 let refLoaded = false;
 async function loadReference() {
   if (refLoaded) return;
-  const d = await (await fetch("/api/reference")).json();
+  const d = await (await api("/api/reference")).json();
   document.querySelector("#poRefTable tbody").innerHTML = d.purchase_orders.map((po) => `
     <tr><td class="mono">${esc(po.po_number)}</td><td>${esc(po.vendor)}</td>
     <td class="num">${money(po.amount)}</td>

@@ -8,22 +8,66 @@ from dataclasses import asdict
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from fastapi import Body, FastAPI, File, UploadFile
+from fastapi import (Body, Depends, FastAPI, File, HTTPException, Request,
+                     Security, UploadFile, status)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 
+import auth
 import config
 import extraction
 import matching
+import ratelimit
 import rules
 import storage
 from schemas import ExtractedInvoice
 
 app = FastAPI(title="Invoice Processing")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# CORS is configured, never relied on. It is enforced by browsers and ignored
+# entirely by curl or a script, so it is not a security boundary -- the bearer
+# token is. Default is same-origin (no middleware at all), which is how the app
+# is actually served; CORS_ORIGINS opts specific origins in deliberately.
+if config.CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=config.CORS_ORIGINS,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
+
+
+# --------------------------------------------------------------------------
+# error handling
+#
+# Two rules: say what the caller needs to act on, and never say anything about
+# how this process is built. A stack trace, a provider message or a file path in
+# an error body is reconnaissance, and provider errors in particular can echo
+# request content back to whoever sent it.
+# --------------------------------------------------------------------------
+
+@app.exception_handler(HTTPException)
+async def _http_error(request: Request, exc: HTTPException):
+    # `error` alongside `detail` because the existing frontend reads `error`.
+    body = {"error": exc.detail, "detail": exc.detail}
+    if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+        body["ok"] = False
+    return JSONResponse(status_code=exc.status_code, content=body,
+                        headers=getattr(exc, "headers", None))
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error(request: Request, exc: Exception):
+    # Logged in full server-side, described to the client in six words.
+    print(f"[error] unhandled {exc.__class__.__name__} on {request.url.path}",
+          file=sys.stderr)
+    return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        content={"error": "Internal server error",
+                                 "detail": "Internal server error"})
 
 
 @app.on_event("startup")
@@ -260,31 +304,158 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     yield sse("final", {"result": result})
 
 
+# --------------------------------------------------------------------------
+# authentication endpoints
+# --------------------------------------------------------------------------
+
+@app.get("/api/health")
+def health():
+    """Public liveness probe. Says nothing about configuration, versions, which
+    providers are reachable or whether keys are present -- all of which would be
+    useful to someone deciding whether this host is worth attacking."""
+    return {"status": "ok"}
+
+
+@app.post("/api/auth/token", dependencies=[Depends(ratelimit.rate_limit_login)])
+def issue_token(form: OAuth2PasswordRequestForm = Depends()):
+    """OAuth 2.0 password grant. Returns a signed bearer token and its scopes.
+
+    Rate limited per IP: this is the only endpoint that accepts a password, so
+    it is the only one where an unlimited caller is guessing rather than
+    scraping. One message for bad user and bad password alike.
+    """
+    user = auth.authenticate_user(form.username, form.password)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Incorrect username or password",
+                            headers={"WWW-Authenticate": "Bearer"})
+    return auth.create_access_token(user)
+
+
+@app.get("/api/auth/me")
+def whoami(principal: auth.Principal = Security(auth.current_principal)):
+    """Who the token says you are, and what it permits. The UI uses this to
+    decide which controls to render -- a convenience, never a control: every
+    endpoint re-checks the scope itself."""
+    return {"username": principal.username, "roles": principal.roles,
+            "scopes": principal.scopes}
+
+
+# --------------------------------------------------------------------------
+# upload validation
+# --------------------------------------------------------------------------
+_PDF_MAGIC = b"%PDF-"
+
+
+def _safe_filename(name: str) -> str:
+    """A filename safe to store and display.
+
+    The uploaded name is attacker-controlled and ends up in the database and on
+    screen, so any directory component is stripped (a client can send
+    "../../x.pdf"), control characters are removed, and the length is bounded.
+    """
+    name = os.path.basename((name or "").replace("\\", "/"))
+    name = "".join(ch for ch in name if ch.isprintable() and ch not in r'\/:*?"<>|')
+    name = name.strip(". ") or "upload.pdf"
+    return name[:180]
+
+
+async def _read_capped(file: UploadFile) -> bytes:
+    """Read the upload, refusing anything past the configured cap.
+
+    Read in chunks and stop at the limit rather than `await file.read()` -- the
+    latter buys the whole body into memory before anyone checks how big it is,
+    which turns the size limit into a formality. Content-Length is not trusted
+    for this; it is a client-supplied header.
+    """
+    limit = config.MAX_UPLOAD_BYTES
+    chunks, total = [], 0
+    while True:
+        chunk = await file.read(1024 * 256)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File exceeds the {limit // (1024 * 1024)} MB upload limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _validate_pdf(data: bytes):
+    if not data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Empty file")
+    # Checked by content, not by extension or by the client's Content-Type --
+    # both are trivially set to whatever the caller likes.
+    if not data.startswith(_PDF_MAGIC):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Only PDF files are accepted")
+
+
 @app.post("/api/runs/stream")
-async def create_run_stream(file: UploadFile = File(...)):
-    pdf_bytes = await file.read()
+async def create_run_stream(
+    file: UploadFile = File(...),
+    principal: auth.Principal = Depends(ratelimit.rate_limit_processing),
+):
+    """Process an invoice. Requires 'invoice:process' and is rate limited.
+
+    The dependency does authentication, authorization and rate limiting in that
+    order, before a single byte is read -- so an unauthorised caller cannot make
+    this endpoint do any work, let alone spend extraction quota.
+    """
+    pdf_bytes = await _read_capped(file)
+    _validate_pdf(pdf_bytes)
     return StreamingResponse(
-        run_pipeline(file.filename, pdf_bytes),
+        _guarded_pipeline(_safe_filename(file.filename), pdf_bytes),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
+async def _guarded_pipeline(filename: str, pdf_bytes: bytes):
+    """Run the pipeline, converting any unexpected failure into a safe event.
+
+    The exception handlers above cannot help here: by the time the generator
+    runs, the 200 and the headers are already on the wire, so a crash mid-stream
+    cannot become a 500 -- it just severs the connection, and on some servers
+    spills a traceback into the response body. Catching it here means the client
+    gets one clean event and the detail stays in the server log.
+    """
+    try:
+        async for event in run_pipeline(filename, pdf_bytes):
+            yield event
+    except Exception as exc:
+        print(f"[error] pipeline failed on {filename!r}: {exc.__class__.__name__}",
+              file=sys.stderr)
+        yield sse("error", {"error": "Processing failed. The run was not completed."})
+
+
 @app.get("/api/runs")
-def get_runs():
+def get_runs(principal: auth.Principal = Security(auth.current_principal,
+                                                  scopes=["invoice:read"])):
     return storage.list_runs()
 
 
 @app.get("/api/runs/{run_id}")
-def get_run(run_id: int):
+def get_run(run_id: int,
+            principal: auth.Principal = Security(auth.current_principal,
+                                                 scopes=["invoice:read"])):
+    """A single run, including its audit trail. Reading a decision trail means
+    reading vendor names, amounts and PO balances, so it needs the same
+    permission as the rest of the invoice data."""
     run = storage.get_run(run_id)
     if not run:
-        return {"error": "not found"}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return run
 
 
 @app.post("/api/runs/{run_id}/status")
-def change_run_status(run_id: int, payload: dict = Body(...)):
+def change_run_status(run_id: int, payload: dict = Body(...),
+                      principal: auth.Principal = Security(auth.current_principal,
+                                                           scopes=["invoice:admin"])):
     """Change a run's status, then re-evaluate anything queued on the same PO.
 
     This is the reversal path. There is no balance to refund: consumption is
@@ -294,9 +465,14 @@ def change_run_status(run_id: int, payload: dict = Body(...)):
     """
     new_status = (payload or {}).get("status")
     note = (payload or {}).get("note")
+    # Attribute the override to the authenticated caller, not to a name they
+    # supplied. This is the broad override path, so who used it matters most.
+    if note:
+        note = f"{note} (by {principal.username})"
     ok, old_status, po_number = storage.set_run_status(run_id, new_status, note)
     if not ok:
-        return {"error": "unknown run, or invalid status"}
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Unknown run, or invalid status")
 
     cascaded = []
     if po_number and old_status != new_status:
@@ -313,7 +489,9 @@ def change_run_status(run_id: int, payload: dict = Body(...)):
 
 
 @app.post("/api/runs/{run_id}/review")
-def review_run(run_id: int, payload: dict = Body(...)):
+def review_run(run_id: int, payload: dict = Body(...),
+               principal: auth.Principal = Security(auth.current_principal,
+                                                    scopes=["invoice:review"])):
     """Record a human ruling on a run the process held for review.
 
     Body: {"decision": "ACCEPTED"|"REJECTED", "reviewer": str, "note": str}
@@ -328,14 +506,25 @@ def review_run(run_id: int, payload: dict = Body(...)):
     Only runs whose AUTOMATED decision was NEEDS_REVIEW are eligible; the
     storage layer enforces that rather than trusting the caller.
     """
+    # The reviewer is the authenticated principal, FULL STOP. Any "reviewer"
+    # field in the body is ignored: an audit record that says whatever the
+    # client typed is not evidence of anything, and this is the one action in
+    # the system that moves money against the process's own judgement.
     result = storage.record_human_review(
         run_id,
         (payload or {}).get("decision"),
-        reviewer=(payload or {}).get("reviewer"),
+        reviewer=principal.username,
         note=(payload or {}).get("note"),
     )
     if not result.get("ok"):
-        return result
+        # 404 for a run that does not exist, 409 for one that exists but is not
+        # in a reviewable state -- a caller can act on the difference.
+        err = result["error"]
+        code = (status.HTTP_404_NOT_FOUND if "unknown run" in err
+                else status.HTTP_409_CONFLICT
+                if ("NEEDS_REVIEW" in err or "already been reviewed" in err)
+                else status.HTTP_400_BAD_REQUEST)
+        raise HTTPException(status_code=code, detail=result["error"])
 
     # Accepting an invoice consumes PO budget; rejecting one releases it. Either
     # way the queue behind that PO may now resolve differently, so re-evaluate it
@@ -350,12 +539,14 @@ def review_run(run_id: int, payload: dict = Body(...)):
 
 
 @app.get("/api/reference")
-def get_reference():
+def get_reference(principal: auth.Principal = Security(auth.current_principal,
+                                                       scopes=["invoice:read"])):
     return {"purchase_orders": storage.list_purchase_orders(), "vendors": storage.list_vendors()}
 
 
 @app.get("/api/sample-invoices")
-def list_sample_invoices():
+def list_sample_invoices(principal: auth.Principal = Security(auth.current_principal,
+                                                              scopes=["invoice:read"])):
     """Sample PDFs plus, where available, the scenario metadata from manifest.json
     so the UI can show what each file is meant to demonstrate."""
     d = os.path.join(os.path.dirname(__file__), "..", "sample_invoices")
@@ -396,12 +587,27 @@ def list_sample_invoices():
 
 
 @app.get("/api/sample-invoices/{name}")
-def get_sample_invoice(name: str):
+def get_sample_invoice(name: str,
+                       principal: auth.Principal = Security(auth.current_principal,
+                                                            scopes=["invoice:read"])):
+    """Serve one sample PDF by name.
+
+    `name` is caller-controlled and was being joined straight onto a directory,
+    which on Windows let a backslash-separated parent reference walk out of the
+    samples folder and read any PDF on the host. Verified before the fix: a name
+    of the form "..<sep>data<sep>x.pdf" resolved outside the directory entirely.
+    Now the name is reduced to its basename and the
+    resolved path is required to sit inside the samples directory -- belt and
+    braces, because basename alone is easy to reintroduce a hole around.
+    """
     from fastapi.responses import FileResponse
-    d = os.path.join(os.path.dirname(__file__), "..", "sample_invoices")
-    path = os.path.join(d, name)
-    if not os.path.isfile(path) or not name.lower().endswith(".pdf"):
-        return {"error": "not found"}
+    d = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "sample_invoices"))
+    safe = os.path.basename(name.replace("\\", "/"))
+    path = os.path.abspath(os.path.join(d, safe))
+    if (os.path.commonpath([d, path]) != d
+            or not safe.lower().endswith(".pdf")
+            or not os.path.isfile(path)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sample not found")
     return FileResponse(path, media_type="application/pdf")
 
 

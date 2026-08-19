@@ -487,7 +487,11 @@ def record_human_review(run_id: int, decision: str, reviewer: str = None, note: 
 
     Returns a dict; `ok` is False with a `error` when the run is not eligible.
     """
-    decision = (decision or "").strip().upper()
+    # str() first: the body is arbitrary JSON, so `decision` can arrive as an
+    # int, a list or None. Calling .strip() on it directly turns a malformed
+    # request into a 500, which is both a worse answer and more information than
+    # the caller should get.
+    decision = str(decision or "").strip().upper()
     if decision not in HUMAN_OUTCOMES:
         return {"ok": False, "error": "decision must be ACCEPTED or REJECTED"}
     new_status, final_decision = HUMAN_OUTCOMES[decision]
@@ -506,6 +510,17 @@ def record_human_review(run_id: int, decision: str, reviewer: str = None, note: 
     if automated != "NEEDS_REVIEW":
         return {"ok": False,
                 "error": f"only NEEDS_REVIEW runs can be reviewed (this one is {automated})"}
+
+    # A run may be ruled on ONCE. Because `automated_decision` deliberately stays
+    # NEEDS_REVIEW forever, the eligibility check above keeps passing after a
+    # ruling -- which would let a caller post again and quietly rewrite who
+    # decided, what they decided and when. That is precisely the audit record
+    # that must not be editable from a client. Reversing a ruling is an
+    # administrative act and goes through the status endpoint, which requires
+    # 'invoice:admin' and leaves its own trail.
+    if row["human_decision"]:
+        return {"ok": False,
+                "error": f"this run has already been reviewed ({row['human_decision']})"}
 
     ok, old_status, po_number = set_run_status(
         run_id, new_status,

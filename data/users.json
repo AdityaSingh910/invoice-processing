@@ -1,0 +1,30 @@
+[
+  {
+    "username": "viewer",
+    "roles": [
+      "viewer"
+    ],
+    "password_hash": "pbkdf2_sha256$390000$8vjYb+t9SVmFIse56hV/Sw==$Xx2Br/AKXW3l4JeBR9+u/knpMbLY22Sb99wJJ2qRkYM="
+  },
+  {
+    "username": "analyst",
+    "roles": [
+      "analyst"
+    ],
+    "password_hash": "pbkdf2_sha256$390000$KlSZMS+m1/Ut41oj8m81Wg==$4qoA1CLoH6lrxuv62cy2bJMasEJAhOwr83thmSvK1Ko="
+  },
+  {
+    "username": "reviewer",
+    "roles": [
+      "reviewer"
+    ],
+    "password_hash": "pbkdf2_sha256$390000$I327WZM/PWT/6tfHQPoVRA==$XNqHZwilAOmwh1SJb6b/gge/HHCa6qEKb0XeNqnn+fw="
+  },
+  {
+    "username": "admin",
+    "roles": [
+      "admin"
+    ],
+    "password_hash": "pbkdf2_sha256$390000$sd5CugqFDuBlqqyEv+3mNw==$2FfjVelP4U+LaVhmpqGKR7j/jKlRMEg84F78rpDzOR0="
+  }
+]
