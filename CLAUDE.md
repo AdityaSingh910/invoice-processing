@@ -44,10 +44,13 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Deployed | ❌ Local only, no git remote, no hosting |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 13 commits at the time of writing (this update is
-the 14th), working tree clean.
+**Git:** local repo only, 14 commits at the time of writing (this update is
+the 15th), working tree clean.
 
 ```
+2865a58 Harden the PO ledger: atomicity, reversal + cascade, configurable tolerance
+056d0f2 Harden the extraction layer against indirect prompt injection
+b7f4b00 Update CLAUDE.md: Gemini swap, live route verification, and what it cost
 d7790c3 Fix Gemini client lifetime and model pin; vision route verified working
 5ed4a53 Swap the LLM extraction layer from Anthropic Claude to Google Gemini
 dd9c1bc Update CLAUDE.md: current git log, line counts, unproven LLM routes
@@ -82,6 +85,10 @@ invoice_date     2026-07-22   currency USD   (bonus, not asserted)
 `pytest` is 7/7 with the live routes active (65s, against 16s on regex).
 
 **The remaining caveat is quota, not correctness** — see the 429 gotcha in §4.
+
+Since then, two hardening rounds landed and are covered by **46 tests**: prompt
+injection (§5) and the PO ledger (§5, §8 #3). The concurrency race was verified
+fixed under real threads, and reversal + cascade end to end over HTTP.
 
 ---
 
@@ -130,6 +137,12 @@ netstat -ano | grep ":8000" | grep LISTENING | awk '{print $5}' \
   | while read pid; do taskkill //F //PID $pid >/dev/null 2>&1; done
 sleep 1.5 && rm -f data/app.db
 ```
+
+**Starting a `TestClient` wipes any PO you inserted.** FastAPI's startup event
+calls `init_db()`, which does `DELETE FROM purchase_orders` and re-seeds from
+`data/purchase_orders.json`. Insert fixture POs *after* entering the TestClient
+context, not before, or they vanish and every balance assertion reads `None`.
+This is the re-seed-on-startup design gap in §8 showing its teeth.
 
 **The Gemini free tier rate-limits hard (HTTP 429).** Running all 7 samples
 back to back exhausts quota within a minute, and the pipeline then falls back to
@@ -405,6 +418,8 @@ README.md             Project overview + status
 POST /api/runs/stream          multipart PDF → SSE stream of stages, then final
 GET  /api/runs                 run history
 GET  /api/runs/{id}            single run
+POST /api/runs/{id}/status     change a run's status; cascades to invoices held
+                               on the same PO. Body: {"status": ..., "note": ...}
 GET  /api/reference            POs + vendors
 GET  /api/sample-invoices      list + manifest metadata
 GET  /api/sample-invoices/{n}  fetch one sample PDF
@@ -563,7 +578,9 @@ and they outrank every phase below:
 The work cannot be graded while it only runs on one laptop. Neither item needs
 another line of pipeline code.
 
-Notes on the suite, for whoever changes it next:
+The suite is now three files — `test_samples.py` (7 end-to-end sample verdicts),
+`test_security.py` (27 injection cases), `test_po_edge_cases.py` (12 ledger
+cases). **46 total.** Notes for whoever changes them next:
 
 * It does **not** strip `GEMINI_API_KEY`. With a key present the suite runs the
   real `llm (text)` and `llm (vision)` routes; without one it runs `regex` /
@@ -576,19 +593,30 @@ Notes on the suite, for whoever changes it next:
   is inherent, since the later cases are *about* the state the earlier ones left.
 * Verified to actually bite: running `-k overflow` alone turns `03b` **APPROVED**
   and fails the suite, which is the same-bytes/opposite-verdict demo from §7.
+* `test_po_edge_cases.py` uses a per-test `db` fixture and drives rules/storage
+  directly rather than through PDFs — the scenarios are about the ledger, and
+  generating $1,000,000 fixture invoices would test reportlab, not balance logic.
+* The concurrency test uses real threads and a `Barrier`, so it exercises actual
+  SQLite locking. Its retry-on-locked loop is not incidental: it is what a caller
+  must do, and is part of what the test asserts.
 
 **Then (gated on user confirmation) — Phases 1-7**, per the table in README /
 REFACTOR_STRATEGY:
 
-| Phase | Work |
-|---|---|
-| 1 | Cap inferred PO matches + make `warn` bite; currency → review; vendor normalised-exact |
-| 2 | `Tracked[T]` provenance wrapper, per-route confidence, **confidence gate** |
-| 3 | `rules.yaml` versioned policy + typed loader |
-| 4 | Transaction boundaries (`BEGIN IMMEDIATE` + WAL); `run_allocations` table |
-| 5 | `DecisionTrace` + reference snapshot; stop re-seeding on startup |
-| 6 | Line-item decomposition, multi-PO consolidation, FX provider |
-| 7 | UI: confidence badges, evidence snippets, allocation view |
+| Phase | Work | State |
+|---|---|---|
+| 1 | Cap inferred PO matches + make `warn` bite; currency → review; vendor normalised-exact | ⬜ gated |
+| 2 | `Tracked[T]` provenance wrapper, per-route confidence, **confidence gate** | ⬜ |
+| 3 | `rules.yaml` versioned policy + typed loader | ◨ tolerance moved to `config.py`; YAML + loader still to do |
+| 4 | Transaction boundaries (`BEGIN IMMEDIATE` + WAL); `run_allocations` table | ◨ **transactions DONE** (§8 #3); allocations table still to do |
+| 5 | `DecisionTrace` + reference snapshot; stop re-seeding on startup | ⬜ |
+| 6 | Line-item decomposition, multi-PO consolidation, FX provider | ⬜ |
+| 7 | UI: confidence badges, evidence snippets, allocation view | ⬜ |
+
+The `run_allocations` table is the remaining half of Phase 4 and it still gates
+Phase 6: the schema stores one `po_number` per run and consumption sums run
+totals, so a consolidated invoice would over-consume every PO it touched. The
+transaction work landing does **not** unblock multi-PO.
 
 **Sequencing trap:** multi-PO consolidation is a **ledger** feature, not a
 matching feature. The schema stores one `po_number` per run and consumption sums
