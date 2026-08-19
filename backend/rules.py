@@ -57,6 +57,24 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
 
     route = (extract_info or {}).get("route")
 
+    # Security screening comes first: if the document was carrying text aimed at
+    # the extractor, that fact outranks every ordinary finding below and a human
+    # must see it. It forces review, never rejection -- the invoice may well be
+    # legitimate, and auto-rejecting on a keyword would hand anyone a way to
+    # block a competitor's payment by printing a phrase on their invoice.
+    security_flags = (extract_info or {}).get("security_flags") or []
+    if security_flags:
+        review = True
+        add(
+            "SECURITY: this document contains text that reads as an instruction to the "
+            "extraction system rather than invoice data. The values below were transcribed "
+            "as they appeared and no instruction was acted on, but the document is not "
+            "trustworthy input. Verify it against the vendor before paying. "
+            f"Detected — {'; '.join(security_flags[:5])}"
+            + (f" (and {len(security_flags) - 5} more)" if len(security_flags) > 5 else ""),
+            "fail",
+        )
+
     if route == "none":
         review = True
         add(

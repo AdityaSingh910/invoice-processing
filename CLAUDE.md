@@ -39,12 +39,13 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | UI | ✅ Run view, dashboard, reference tab; light + dark |
 | Extraction route in use | **live** — `llm (text)` / `llm (vision)` verified against `gemini-3.7-flash` |
 | Automated tests | ✅ **7/7 passing** — `tests/test_samples.py`, manifest-driven, isolated DB |
+| Prompt-injection hardening | ✅ Fenced prompt, closed response schema, post-extraction guard — 34 tests |
 | Known defects | **3 live bugs**, all documented, none fixed |
 | Deployed | ❌ Local only, no git remote, no hosting |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 11 commits at the time of writing (this update is
-the 12th), working tree clean.
+**Git:** local repo only, 12 commits at the time of writing (this update is
+the 13th), working tree clean.
 
 ```
 d7790c3 Fix Gemini client lifetime and model pin; vision route verified working
@@ -236,8 +237,8 @@ Same output schema regardless, so matching and rules never know which ran.
 (2026-08-19). `llm (vision)` reads `05_scanned_no_text.pdf` correctly — vendor,
 invoice number, PO reference, total, and date — and the invoice reaches APPROVED
 end to end. `llm (text)` also returns clean fields. Entry points:
-`llm_extract_vision` at `extraction.py:193`, `llm_extract_text` at
-`extraction.py:178`.
+`llm_extract_vision` at `extraction.py:302`, `llm_extract_text` at
+`extraction.py:287`.
 
 The provider is configured through `.env` in the project root:
 
@@ -262,6 +263,47 @@ entirely.
 is *not* used: an alias changes the model under a running system, and an AP
 process must be able to say which model read an invoice approved months ago.
 
+### Prompt-injection defence
+
+A vendor invoice is **attacker-controlled input**. Anyone who can send an invoice
+can print text on it addressed to the extractor. Four controls, in descending
+order of how much weight they actually carry:
+
+1. **Architecture (was already there).** No model output reaches a verdict.
+   `decide()` computes status from numbers and the PO ledger. There is no field
+   an extractor could set that changes it — so the blast radius of a successful
+   injection is *wrong numbers*, never *wrong decision*.
+2. **Closed response schema** (`extraction.RESPONSE_SCHEMA`). The reply is
+   decoded against a fixed shape, so a document demanding `{"status":"APPROVED"}`
+   cannot produce that key. The bad output is unrepresentable, not merely
+   discouraged. This is the load-bearing *new* control.
+3. **Fenced prompt.** Document text is wrapped in
+   `<untrusted_document_content>` via `wrap_untrusted()`, which also defangs a
+   closing tag already inside the document — otherwise a document could close the
+   fence early and have the rest read as trusted prompt. Images get the same
+   fence: text printed on a scan is exactly as untrusted as a text layer.
+   `SCHEMA_PROMPT` frames the model as a passive transcriber with no authority
+   and explicitly tells it to transcribe hostile text rather than obey or drop it.
+4. **Post-extraction guard** (`validate_extracted_security`). Scans extracted
+   strings *and* `raw_text` for instruction-shaped phrases, and forces
+   NEEDS_REVIEW. Never raises — a guard that crashes is free denial of service.
+
+**It forces review, never rejection.** Auto-rejecting on a keyword would hand
+anyone a way to block a competitor's payment by printing a phrase on an invoice.
+A duplicate still outranks it and still REJECTs; there is a test for that.
+
+Two findings worth keeping:
+
+* **Field-only scanning was not enough.** The regex extractor drops a hostile
+  line that matches no field pattern, so the guard saw nothing while the
+  injection sat in the document in plain sight. What an indirect injection
+  targets is the text the *model* reads, so `raw_text` is screened too. Found by
+  the end-to-end test, not by reading the code.
+* **The patterns are deliberately narrow.** Scoring or fuzzy matching would flag
+  "System Integration Services" and train a clerk to click through the warning —
+  worse than no guard. `tests/test_security.py` pins six benign-but-similar
+  strings that must stay silent.
+
 ### Stack
 
 FastAPI + SQLite + vanilla JS (no build step). `POST /api/runs/stream` streams
@@ -273,10 +315,10 @@ stages over SSE; the frontend reads it with `fetch()`.
 
 ```
 backend/
-  main.py         292 lines. FastAPI app, the 9-stage pipeline as an async
+  main.py         306 lines. FastAPI app, the 9-stage pipeline as an async
                   generator yielding SSE events, _abort_unreadable() path,
                   all endpoints.
-  extraction.py   421 lines. PDF → text (pdfplumber) → fields. Three routes,
+  extraction.py   633 lines. PDF → text (pdfplumber) → fields. Three routes,
                   SCHEMA_PROMPT for the LLM, regex fallback with tiered
                   patterns, _guess_vendor positional heuristic, PdfUnreadable.
                   The ONLY module that talks to a model — google-genai is
@@ -284,7 +326,7 @@ backend/
                   works where the SDK was never installed.
   matching.py      84 lines. PO lookup (explicit refs then inferred),
                   tolerance_for(), empty_match(), split-PO balance maths.
-  rules.py        151 lines. validate_required_fields, vendor_check (tri-state),
+  rules.py        169 lines. validate_required_fields, vendor_check (tri-state),
                   duplicate_check, and decide() — the only place a verdict is
                   produced.
   storage.py      196 lines. SQLite. Seeds POs/vendors from data/*.json on
@@ -309,6 +351,9 @@ sample_invoices/
                        AND is the source of truth for tests. Sample 05 carries
                        BOTH `expect` and `expect_with_vision` — see §7.
 tests/
+  test_security.py 27 cases. Injection detection, false-positive floor, prompt
+                   and schema shape, decision-layer behaviour, and one hostile
+                   PDF built at test time (never committed) driven end to end.
   test_samples.py  269 lines. 7 parametrized cases, one per sample, run sequentially in
                    manifest order against a temp DB. Verdicts come from
                    manifest.json, resolved against config.has_api_key(); each
@@ -411,7 +456,7 @@ produces a wrong number rather than a wrong routing.**
 
 - Extracted fields are **bare values** — no confidence, no provenance. A total
   read off the page is indistinguishable from one the code synthesised as
-  `subtotal + tax` (`extraction.py:342` in `regex_extract`).
+  `subtotal + tax` (`extraction.py:455` in `regex_extract`).
 - **All business rules hardcoded.** Tolerance is two magic numbers in a one-line
   function. `config.py` holds only operational settings.
 - Vendor matching is **bidirectional substring** (`storage.py:112` in `find_vendor`) — `Acme
@@ -421,7 +466,7 @@ produces a wrong number rather than a wrong routing.**
 - No arithmetic consistency check — nothing verifies `subtotal + tax == total`.
 - `config.status()` and `config.extraction_mode()` are **dead code** — nothing
   calls them, so the UI has no way to show which extraction route is live.
-- `_guess_vendor` (`extraction.py:265`) picks the vendor by **line position**.
+- `_guess_vendor` (`extraction.py:378`) picks the vendor by **line position**.
 
 Full detail: [AUDIT.md](AUDIT.md). Fix patterns: [REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md).
 
@@ -449,6 +494,14 @@ Full detail: [AUDIT.md](AUDIT.md). Fix patterns: [REFACTOR_STRATEGY.md](REFACTOR
   architecture. `anthropic` removed from `requirements.txt` and the venv.
 - **Both LLM routes verified live** — see §2. This closed the largest standing
   unknown in the project.
+- **Prompt-injection hardening** — fenced prompt, closed response schema,
+  post-extraction guard, 27 security tests. A hostile invoice that would
+  otherwise auto-approve (approved vendor, matched PO, within tolerance, no
+  duplicate) is now held for review.
+- **API failures now say why** — `describe_api_error()` maps status codes, so
+  "out of quota" is distinguishable from "bad key" without a debugger. This is a
+  security concern, not just convenience: when the LLM route fails it falls back
+  to regex, which means the hardened prompt is not running.
 
 ### Remaining
 
@@ -523,6 +576,9 @@ GitHub repo, an ngrok tunnel, or a real deploy to Render/Railway/Fly).
 | **Google Gemini over Anthropic** | User's call, 2026-08-19. Free tier removes the "do I want to pay to demo this" question. The swap touched only `extraction.py` + `config.py` — proof the provider was never load-bearing. |
 | Model **pinned**, not `gemini-flash-latest` | An alias changes the model under a running system. An AP process must be able to say which model read an invoice approved months ago. |
 | `gemini-3.7-flash` over `gemini-3.6-flash` | Both extracted every field correctly from the scan; 3.7 did it in 3.7s vs 11.6s. Speed matters in a live demo. |
+| Injection guard forces review, never reject | Auto-rejecting on a keyword lets anyone block a competitor's payment by printing a phrase on their invoice. |
+| Injection patterns narrow, not fuzzy | A guard that flags "System Integration Services" trains clerks to click through warnings — worse than no guard. |
+| Guard never edits the invoice | The run view should show what the document actually said; the value is that a human sees the real text. |
 | Test suite honours a live key rather than mocking | A mocked LLM proves nothing about whether extraction works. The cost is non-determinism, accepted knowingly — see §9. |
 
 ### Bugs already found and fixed — don't reintroduce

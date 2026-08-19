@@ -134,12 +134,26 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     await asyncio.sleep(0.3)
     mark()
 
-    # 4. VALIDATE
+    # 4. VALIDATE -- required fields, plus the security screen on what was read.
+    # Both are reported here so an operator sees "this document tried something"
+    # in the run view, not only in the final reasoning trail.
     missing = rules.validate_required_fields(extracted)
-    yield sse("stage", {"stage": stage(
-        "VALIDATE", "fail" if missing else "ok",
-        f"Missing required field(s): {', '.join(missing)}." if missing else "All required fields present."
-    )})
+    security_flags = extract_info.get("security_flags") or []
+    if security_flags:
+        val_status = "fail"
+        val_detail = (
+            f"SECURITY: {len(security_flags)} field(s) contain instruction-like text "
+            f"— {security_flags[0]}. Routed for human review."
+        )
+        if missing:
+            val_detail += f" Also missing: {', '.join(missing)}."
+    elif missing:
+        val_status = "fail"
+        val_detail = f"Missing required field(s): {', '.join(missing)}."
+    else:
+        val_status = "ok"
+        val_detail = "All required fields present; no injection patterns detected."
+    yield sse("stage", {"stage": stage("VALIDATE", val_status, val_detail)})
     await asyncio.sleep(0.25)
     mark()
 
