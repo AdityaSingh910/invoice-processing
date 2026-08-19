@@ -118,10 +118,35 @@ def init_db(reset_runs: bool = False):
             po_match_json TEXT,
             stages_json TEXT,
             reasons_json TEXT,
-            audit_json TEXT
+            audit_json TEXT,
+            automated_decision TEXT,
+            human_decision TEXT,
+            final_decision TEXT,
+            reviewed_by TEXT,
+            reviewed_at TEXT,
+            review_note TEXT
         )"""
     )
-    _ensure_columns(conn, "runs", {"audit_json": "TEXT"})
+    _ensure_columns(conn, "runs", {
+        "audit_json": "TEXT",
+        # The review columns are separate from `status` on purpose. `status` is
+        # what the LEDGER reads -- consumption sums APPROVED runs -- so a human
+        # approval has to land there for the money to move. But the automated
+        # decision is a historical fact that must survive being overridden, so
+        # it gets its own column that nothing ever rewrites.
+        "automated_decision": "TEXT",
+        "human_decision": "TEXT",
+        "final_decision": "TEXT",
+        "reviewed_by": "TEXT",
+        "reviewed_at": "TEXT",
+        "review_note": "TEXT",
+    })
+    # Runs that predate these columns: backfill the automated decision from the
+    # status they were committed with. That is exactly what it was.
+    conn.execute("""UPDATE runs SET automated_decision = status
+                    WHERE automated_decision IS NULL""")
+    conn.execute("""UPDATE runs SET final_decision = status
+                    WHERE final_decision IS NULL""")
     if reset_runs:
         cur.execute("DELETE FROM runs")
 
@@ -372,13 +397,17 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
 
         cur = conn.execute(
             """INSERT INTO runs (filename, status, created_at, vendor_name, invoice_number, total,
-               po_number, extracted_json, po_match_json, stages_json, reasons_json, audit_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+               po_number, extracted_json, po_match_json, stages_json, reasons_json, audit_json,
+               automated_decision, final_decision)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (filename, status, datetime.now(timezone.utc).isoformat(),
              extracted.get("vendor_name"), extracted.get("invoice_number"),
              extracted.get("total"), po_number, json.dumps(extracted),
              json.dumps(po_match), json.dumps(stages), json.dumps(reasons),
-             json.dumps(audit) if audit is not None else None),
+             json.dumps(audit) if audit is not None else None,
+             # The decision this process reached on its own, recorded once and
+             # never rewritten. `status` may later move; this must not.
+             status, status),
         )
         return cur.lastrowid, status, extra
 
@@ -413,7 +442,97 @@ def set_run_status(run_id: int, new_status: str, note: str = None):
         })
         conn.execute("UPDATE runs SET status=?, reasons_json=? WHERE id=?",
                      (new_status, json.dumps(reasons), run_id))
+        # An automated status change (a cascade re-evaluation, an operator
+        # reversal) moves the final decision with it. A run a human has already
+        # ruled on keeps its HUMAN_* outcome -- that verdict belongs to a person
+        # and is not something a later automated pass gets to relabel.
+        conn.execute("""UPDATE runs SET final_decision=?
+                        WHERE id=? AND human_decision IS NULL""",
+                     (new_status, run_id))
         return True, old_status, po_number
+
+
+# A human ruling maps to a ledger status AND to a final decision label. The
+# labels are kept distinct on purpose: "APPROVED" is what the ledger consumes
+# against, "HUMAN_APPROVED" is how it came to be approved. Collapsing them would
+# lose the difference between an invoice the process cleared and one a person
+# cleared over the process's objection -- which is precisely what an auditor is
+# looking for.
+HUMAN_OUTCOMES = {
+    "ACCEPTED": ("APPROVED", "HUMAN_APPROVED"),
+    "REJECTED": ("REJECTED", "HUMAN_REJECTED"),
+}
+
+
+def record_human_review(run_id: int, decision: str, reviewer: str = None, note: str = None):
+    """Record a person's ruling on a run the process held for review.
+
+    The automated decision is NEVER overwritten. It stays in
+    `automated_decision` exactly as the rules produced it, and the human ruling
+    is recorded beside it, so the run reads as the full history:
+
+        automated_decision  NEEDS_REVIEW
+        human_decision      ACCEPTED
+        final_decision      HUMAN_APPROVED
+
+    `status` does move, because that is the column the ledger reads: an accepted
+    invoice has to consume its PO budget, and a rejected one has to release it.
+    Moving it through `set_run_status` rather than with a bare UPDATE is
+    deliberate -- that path already handles reversal correctly and is what the
+    cascade re-evaluation hangs off.
+
+    Only a run whose AUTOMATED decision was NEEDS_REVIEW is eligible. An invoice
+    the process rejected outright is not something to wave through from a review
+    screen, and one it approved needs no ruling.
+
+    Returns a dict; `ok` is False with a `error` when the run is not eligible.
+    """
+    decision = (decision or "").strip().upper()
+    if decision not in HUMAN_OUTCOMES:
+        return {"ok": False, "error": "decision must be ACCEPTED or REJECTED"}
+    new_status, final_decision = HUMAN_OUTCOMES[decision]
+
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT status, automated_decision, human_decision, po_number FROM runs WHERE id=?",
+        (run_id,)).fetchone()
+    conn.close()
+    if row is None:
+        return {"ok": False, "error": "unknown run"}
+
+    # Runs written before these columns existed fall back to their status, which
+    # at that point was the automated decision.
+    automated = row["automated_decision"] or row["status"]
+    if automated != "NEEDS_REVIEW":
+        return {"ok": False,
+                "error": f"only NEEDS_REVIEW runs can be reviewed (this one is {automated})"}
+
+    ok, old_status, po_number = set_run_status(
+        run_id, new_status,
+        note or f"Human review: {decision} by {reviewer or 'an unattributed reviewer'}.")
+    if not ok:
+        return {"ok": False, "error": "could not update run status"}
+
+    reviewer = (reviewer or "").strip() or None    # never invent an identity
+    reviewed_at = datetime.now(timezone.utc).isoformat()
+    with write_txn() as conn:
+        conn.execute(
+            """UPDATE runs SET human_decision=?, final_decision=?, reviewed_by=?,
+               reviewed_at=?, review_note=? WHERE id=?""",
+            (decision, final_decision, reviewer, reviewed_at, note, run_id))
+
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "automated_decision": automated,
+        "human_decision": decision,
+        "final_decision": final_decision,
+        "status": new_status,
+        "previous_status": old_status,
+        "reviewed_by": reviewer,
+        "reviewed_at": reviewed_at,
+        "po_number": po_number,
+    }
 
 
 def runs_pending_on_po(po_number: str):

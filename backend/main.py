@@ -312,6 +312,43 @@ def change_run_status(run_id: int, payload: dict = Body(...)):
     }
 
 
+@app.post("/api/runs/{run_id}/review")
+def review_run(run_id: int, payload: dict = Body(...)):
+    """Record a human ruling on a run the process held for review.
+
+    Body: {"decision": "ACCEPTED"|"REJECTED", "reviewer": str, "note": str}
+
+    This is the human-in-the-loop path, and it is deliberately not the same
+    endpoint as /status. /status is an operator changing a run's state (a
+    reversal, a correction). This one asserts something stronger: that a person
+    looked at the audit trail for an invoice the rules would not clear, and took
+    responsibility for the outcome. It records who and when, and it leaves the
+    automated decision exactly where it was.
+
+    Only runs whose AUTOMATED decision was NEEDS_REVIEW are eligible; the
+    storage layer enforces that rather than trusting the caller.
+    """
+    result = storage.record_human_review(
+        run_id,
+        (payload or {}).get("decision"),
+        reviewer=(payload or {}).get("reviewer"),
+        note=(payload or {}).get("note"),
+    )
+    if not result.get("ok"):
+        return result
+
+    # Accepting an invoice consumes PO budget; rejecting one releases it. Either
+    # way the queue behind that PO may now resolve differently, so re-evaluate it
+    # exactly as the reversal path does.
+    po_number = result.get("po_number")
+    result["cascaded"] = (
+        rules.reevaluate_po_queue(po_number, triggered_by=run_id) if po_number else []
+    )
+    result["remaining_after"] = storage.remaining_for_po(po_number) if po_number else None
+    result["run"] = storage.get_run(run_id)
+    return result
+
+
 @app.get("/api/reference")
 def get_reference():
     return {"purchase_orders": storage.list_purchase_orders(), "vendors": storage.list_vendors()}
