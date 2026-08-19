@@ -632,4 +632,26 @@ def get_sample_invoice(name: str,
     return FileResponse(path, media_type="application/pdf")
 
 
-app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+class _AppShell(StaticFiles):
+    """Static files, except the HTML shell is never cached.
+
+    The hashed /_next/* assets are immutable and SHOULD be cached hard. The
+    entry document must not be: it is the file that names which hashed bundle
+    to load, so a cached copy pins the browser to a build that no longer exists
+    on disk. That produced a genuinely confusing failure twice -- the server
+    serving a new UI while the browser kept rendering the old one, with no
+    error anywhere to explain the disagreement.
+
+    Scoped to the static mount on purpose. A blanket HTTP middleware would sit
+    in front of the SSE endpoint too, and nothing is worth risking the stream
+    the whole demo runs on.
+    """
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        if str(resp.media_type or "").startswith("text/html"):
+            resp.headers["Cache-Control"] = "no-store, must-revalidate"
+        return resp
+
+
+app.mount("/", _AppShell(directory=FRONTEND_DIR, html=True), name="frontend")
