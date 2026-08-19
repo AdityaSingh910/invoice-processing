@@ -48,6 +48,7 @@ import {
   IconUpload,
 } from "@/components/ui/icons";
 import { LegendItem, SERIES, Sparkline, VolumeChart } from "@/components/charts";
+import ResetDemoButton from "@/components/ResetDemoButton";
 
 export default function OverviewPage({
   runs,
@@ -96,6 +97,7 @@ export default function OverviewPage({
         description="Automation performance and everything waiting on a person."
         actions={
           <>
+            <ResetDemoButton onReset={runs.refresh} />
             <Button size="sm" onClick={runs.refresh} icon={<IconRefresh size={13} />}>
               Refresh
             </Button>

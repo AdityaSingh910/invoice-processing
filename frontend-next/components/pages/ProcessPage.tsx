@@ -11,7 +11,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch, apiJson, streamRun } from "@/lib/api";
 import { STAGE_ORDER } from "@/lib/format";
-import type { RunResult, SampleInvoice, Stage } from "@/lib/types";
+import type { RunRecord, RunResult, SampleInvoice, Stage } from "@/lib/types";
+import type { Async } from "@/lib/useData";
 import { PageBody, PageHeader } from "@/components/layout/AppShell";
 import {
   Badge,
@@ -28,10 +29,17 @@ import { IconAlert, IconFile, IconUpload, IconX } from "@/components/ui/icons";
 import StageList, { PhaseStepper } from "@/components/invoice/StageList";
 import RunDetail from "@/components/invoice/RunDetail";
 import { VerdictHeader } from "@/components/invoice/Panels";
+import ResetDemoButton from "@/components/ResetDemoButton";
 
 const MAX_MB = 10;
 
-export default function ProcessPage({ onRan }: { onRan?: () => void }) {
+export default function ProcessPage({
+  runs,
+  onRan,
+}: {
+  runs?: Async<RunRecord[]>;
+  onRan?: () => void;
+}) {
   const toast = useToast();
   const [samples, setSamples] = useState<SampleInvoice[] | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -115,6 +123,18 @@ export default function ProcessPage({ onRan }: { onRan?: () => void }) {
     setError(null);
   }
 
+  const processed = new Set((runs?.data ?? []).map((r) => r.filename));
+
+  // A rejection whose findings cite an earlier run is the duplicate rule
+  // firing, which for a sample almost always means it has simply been run
+  // before. Detected from the reasons the engine emitted, never guessed.
+  const rejectedAsDuplicate =
+    result?.status === "REJECTED" &&
+    (result.reasons || []).some((raw) => {
+      const text = typeof raw === "string" ? raw : raw.text;
+      return /matches run #\d+|duplicat/i.test(text);
+    });
+
   const done = stages.length;
   const started = running || done > 0;
 
@@ -149,6 +169,27 @@ export default function ProcessPage({ onRan }: { onRan?: () => void }) {
             total={result.extracted.total}
             remaining={result.po_match?.po_number ? result.po_match.remaining_before : null}
           />
+        )}
+
+        {/* A duplicate rejection is correct but confusing on a sample the
+            user has simply run before, so name the cause and offer the way
+            out instead of leaving them to work it out. */}
+        {rejectedAsDuplicate && (
+          <Callout
+            tone="warn"
+            icon={<IconAlert size={13} />}
+            title="This invoice has been processed before"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span>
+                The duplicate check found an earlier run with the same vendor, invoice number and
+                amount, so it was rejected — which is the rule working. The sample invoices are
+                meant to be run once through in order; clearing the run history lets them be
+                replayed from the start.
+              </span>
+              <ResetDemoButton onReset={() => { runs?.refresh(); reset(); }} />
+            </div>
+          </Callout>
         )}
 
         {/* The phase rail is the workflow at a glance; the stage list below is
@@ -263,6 +304,14 @@ export default function ProcessPage({ onRan }: { onRan?: () => void }) {
                         {s.expect && <StatusBadge status={s.expect} />}
                       </div>
                       {s.note && <p className="t-meta mt-0.5 text-[11px]">{s.note}</p>}
+                      {/* Running one of these again is a genuine duplicate, so
+                          say so before it surprises anyone. */}
+                      {processed.has(s.filename) && (
+                        <p className="mt-1 flex items-center gap-1 text-[11px] text-warn">
+                          <IconAlert size={10} />
+                          Already processed — will be rejected as a duplicate
+                        </p>
+                      )}
                     </button>
                   );
                 })}

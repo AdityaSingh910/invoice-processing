@@ -615,3 +615,27 @@ def get_run(run_id):
     row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
     conn.close()
     return _hydrate(dict(row)) if row else None
+
+
+def clear_run_history():
+    """Delete every processed run, leaving reference data untouched.
+
+    WHY THIS EXISTS
+
+    The sample invoices are deliberately history-dependent: the split-PO story
+    only works as 02 -> 03 -> 03b, and 06 is only a duplicate because 01 ran
+    first. Since every run is recorded, a second pass through the samples makes
+    01 a duplicate of itself and leaves PO-1001 with no budget -- the engine is
+    still right, but the samples stop demonstrating what they were written to
+    demonstrate. Clearing the history is what makes them repeatable.
+
+    Deliberately narrow. Purchase orders, vendors and users are seed data owned
+    by data/*.json and are re-seeded on startup; this touches only `runs`, so it
+    cannot destroy anything that is not reproducible by re-running an invoice.
+
+    Runs inside the same write transaction the ledger uses, so it cannot land
+    half-applied beside an in-flight approval.
+    """
+    with write_txn() as conn:
+        deleted = conn.execute("DELETE FROM runs").rowcount
+    return deleted

@@ -56,7 +56,7 @@ export default function Home() {
       {section === "overview" && (
         <OverviewPage runs={runs} reference={reference} onNavigate={setSection} />
       )}
-      {section === "process" && <ProcessPage onRan={refresh} />}
+      {section === "process" && <ProcessPage runs={runs} onRan={refresh} />}
       {section === "invoices" && <InvoicesPage runs={runs} />}
       {section === "reference" && <ReferencePage reference={reference} runs={runs} />}
     </AppShell>

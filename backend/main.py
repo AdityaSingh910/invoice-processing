@@ -509,6 +509,24 @@ def change_run_status(run_id: int, payload: dict = Body(...),
     }
 
 
+@app.post("/api/admin/reset-demo")
+def reset_demo_data(principal: auth.Principal = Security(auth.current_principal,
+                                                         scopes=["invoice:admin"])):
+    """Clear processed-run history so the sample invoices are repeatable.
+
+    The samples are history-dependent by design, so a second pass through them
+    turns the happy path into a duplicate of itself and leaves PO-1001 with no
+    budget. The verdicts stay correct; the demonstration stops working. This is
+    the supported way to get back to a clean slate without shell access.
+
+    Scoped to invoice:admin, and deliberately narrow: it deletes runs only.
+    Purchase orders, vendors and users are seed data owned by data/*.json, so
+    nothing here destroys anything that re-running an invoice cannot rebuild.
+    """
+    deleted = storage.clear_run_history()
+    return {"ok": True, "deleted": deleted, "by": principal.username}
+
+
 @app.post("/api/runs/{run_id}/review")
 def review_run(run_id: int, payload: dict = Body(...),
                principal: auth.Principal = Security(auth.current_principal,
