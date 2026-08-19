@@ -3,17 +3,23 @@
 /** The nine pipeline stages. Stages do not short-circuit: findings accumulate
  *  and only DECISION judges, so every row stays visible and reports its own
  *  outcome rather than the run stopping at the first problem. */
-import { LEVEL_ICON, STAGE_ORDER } from "@/lib/format";
+import { LEVEL_ICON, STAGE_LABEL, STAGE_ORDER } from "@/lib/format";
 import type { Stage } from "@/lib/types";
 
 const TONE: Record<string, string> = { ok: "ok", warn: "warn", fail: "fail", info: "accent" };
 
-/** A rail runs down the left so the nine stages read as one sequence rather
+/** A rail runs down the left so the nine stages read as one journey rather
  *  than nine unrelated rows. */
 function Rail({ last, children }: { last: boolean; children: React.ReactNode }) {
   return (
     <div className="relative flex justify-center">
-      {!last && <span className="absolute top-7 bottom-0 w-px bg-border" aria-hidden />}
+      {!last && (
+        <span
+          className="absolute top-8 bottom-0 w-0.5 rounded-full"
+          style={{ background: "var(--border)" }}
+          aria-hidden
+        />
+      )}
       {children}
     </div>
   );
@@ -30,29 +36,27 @@ export function StageRow({
 }) {
   const tone = TONE[stage.status] ?? "accent";
   return (
-    <div className="grid grid-cols-[28px_minmax(0,1fr)] gap-3 pb-4 last:pb-0">
+    <div className="pop grid grid-cols-[32px_minmax(0,1fr)] gap-3.5 pb-4 last:pb-0">
       <Rail last={last}>
         <span
-          className="z-10 grid h-7 w-7 place-items-center rounded-full border-2 text-[12px] font-bold"
-          style={{
-            background: `var(--${tone}-soft)`,
-            color: `var(--${tone})`,
-            borderColor: "var(--panel)",
-            boxShadow: `0 0 0 1px var(--${tone}-border, var(--border))`,
-          }}
+          className="z-10 grid h-8 w-8 place-items-center rounded-full text-[13px] font-extrabold text-white"
+          style={{ background: `var(--grad-${tone}, var(--grad-accent))` }}
         >
           {LEVEL_ICON[stage.status] ?? index + 1}
         </span>
       </Rail>
 
-      <div className="min-w-0 pt-0.5">
-        <div className="flex items-baseline justify-between gap-3">
-          <span className="font-mono text-[12px] font-bold tracking-[0.04em]">{stage.name}</span>
-          {stage.ms !== undefined && (
-            <span className="shrink-0 rounded-md bg-panel2 px-1.5 py-0.5 text-[11px] text-faint tabular-nums">
-              {stage.ms} ms
+      <div className="min-w-0 pt-1">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <span className="text-[15px] font-bold">{STAGE_LABEL[stage.name] ?? stage.name}</span>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-panel3 px-2 py-0.5 font-mono text-[10px] font-bold text-faint">
+              {stage.name}
             </span>
-          )}
+            {stage.ms !== undefined && (
+              <span className="text-[11px] text-faint tabular-nums">{stage.ms} ms</span>
+            )}
+          </div>
         </div>
         <div className="mt-0.5 text-[14px] text-dim">{stage.detail}</div>
       </div>
@@ -77,23 +81,26 @@ export default function StageList({ stages, running }: { stages: Stage[]; runnin
         return (
           <div
             key={name}
-            className={`grid grid-cols-[28px_minmax(0,1fr)] gap-3 pb-4 transition-opacity last:pb-0 ${
-              active ? "opacity-100" : "opacity-40"
+            className={`grid grid-cols-[32px_minmax(0,1fr)] gap-3.5 pb-4 transition-opacity last:pb-0 ${
+              active ? "opacity-100" : "opacity-35"
             }`}
           >
             <Rail last={last}>
-              <span className="z-10 grid h-7 w-7 place-items-center rounded-full border border-border bg-panel2 text-[11px] text-faint">
+              <span
+                className="z-10 grid h-8 w-8 place-items-center rounded-full border-2 border-dashed text-[12px] font-bold text-faint"
+                style={{ borderColor: "var(--border-strong)", background: "var(--panel-2)" }}
+              >
                 {active ? (
-                  <span className="block h-3 w-3 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+                  <span className="block h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
                 ) : (
                   i + 1
                 )}
               </span>
             </Rail>
-            <div className="min-w-0 pt-0.5">
-              <div className="font-mono text-[12px] font-bold tracking-[0.04em]">{name}</div>
+            <div className="min-w-0 pt-1">
+              <div className="text-[15px] font-bold">{STAGE_LABEL[name] ?? name}</div>
               <div className="mt-0.5 text-[14px] text-dim">
-                {active ? "Running…" : "Waiting…"}
+                {active ? "Working on it…" : "Waiting"}
               </div>
             </div>
           </div>

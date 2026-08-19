@@ -1,103 +1,116 @@
 @import "tailwindcss";
 
 /* ---------------------------------------------------------------------------
-   DESIGN SYSTEM
+   DESIGN SYSTEM  —  warm, colourful, friendly
 
-   A finance tool has to look trustworthy before anyone reads a number on it, so
-   the palette is deliberately restrained: one accent, three semantic colours
-   that only ever mean approved / held / rejected, and neutrals doing everything
-   else. Colour carries meaning here -- nothing is tinted for decoration.
+   The audience for this screen is an AP clerk and a non-technical buyer, not an
+   engineer. So the surface is soft and welcoming: violet-tinted neutrals rather
+   than grey, generous radii, gradients, and shadows that carry the accent's hue
+   instead of a flat black.
 
-   Light is the default; dark is adopted from the OS.
+   The three status colours still mean exactly one thing each -- approved, held,
+   rejected -- and are never used decoratively. Everything else is free to be
+   friendly.
    --------------------------------------------------------------------------- */
 :root {
-  /* neutrals -- a cool slate ramp */
-  --bg: #f7f8fa;
-  --bg-accent: #eef2ff;
+  /* neutrals, warmed toward violet so nothing reads as battleship grey */
+  --bg: #fbfaff;
+  --bg-tint-a: #efe9ff;
+  --bg-tint-b: #e6f0ff;
+  --bg-tint-c: #ffeef6;
   --panel: #ffffff;
-  --panel-2: #f8fafc;
-  --panel-3: #f1f5f9;
-  --border: #e6e9ef;
-  --border-strong: #cbd5e1;
-  --text: #0f172a;
-  --text-dim: #5b6577;
-  --text-faint: #94a3b8;
+  --panel-2: #f8f6ff;
+  --panel-3: #f1edfe;
+  --border: #ebe6fa;
+  --border-strong: #d6cdf3;
+  --text: #1c1338;
+  --text-dim: #6b6389;
+  --text-faint: #a49dbe;
 
-  /* one accent, used for interaction and nothing else */
-  --accent: #4f46e5;
-  --accent-hover: #4338ca;
-  --accent-soft: #eef2ff;
-  --accent-ring: rgba(79, 70, 229, 0.18);
+  /* accent -- a violet→blue gradient is the brand device */
+  --accent: #7c5cff;
+  --accent-2: #4f8cff;
+  --accent-hover: #6a46ff;
+  --accent-soft: #f0ebff;
+  --accent-ring: rgba(124, 92, 255, 0.25);
   --on-accent: #ffffff;
+  --grad-accent: linear-gradient(135deg, #7c5cff, #4f8cff);
 
-  /* semantic -- these three mean a verdict, never decoration */
-  --ok: #047857;
-  --ok-soft: #ecfdf5;
-  --ok-solid: #10b981;
-  --ok-border: #a7f3d0;
+  /* semantic -- saturated, but with pastel companions for fills */
+  --ok: #04815a;
+  --ok-soft: #e4faf1;
+  --ok-solid: #10c88a;
+  --ok-border: #a8ecd2;
+  --grad-ok: linear-gradient(135deg, #10c88a, #35d0a8);
 
-  --warn: #b45309;
-  --warn-soft: #fffbeb;
-  --warn-solid: #f59e0b;
-  --warn-border: #fde68a;
+  --warn: #a35a00;
+  --warn-soft: #fff3e0;
+  --warn-solid: #ff9f1c;
+  --warn-border: #ffd9a3;
+  --grad-warn: linear-gradient(135deg, #ff9f1c, #ffbe4d);
 
-  --fail: #be123c;
-  --fail-soft: #fff1f2;
-  --fail-solid: #f43f5e;
-  --fail-border: #fecdd3;
+  --fail: #c31d46;
+  --fail-soft: #ffebf0;
+  --fail-solid: #ff5c7a;
+  --fail-border: #ffc2ce;
+  --grad-fail: linear-gradient(135deg, #ff5c7a, #ff87a1);
 
-  /* layered, low-opacity shadows read as depth rather than as a drop shadow */
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -12px rgba(15, 23, 42, 0.12);
-  --shadow-lg: 0 2px 4px rgba(15, 23, 42, 0.04), 0 24px 48px -16px rgba(15, 23, 42, 0.18);
+  /* shadows carry the accent hue -- a neutral black shadow is what makes a
+     light UI look cheap */
+  --shadow-sm: 0 1px 2px rgba(46, 27, 92, 0.05);
+  --shadow: 0 2px 4px rgba(46, 27, 92, 0.04), 0 12px 28px -10px rgba(74, 47, 145, 0.16);
+  --shadow-lg: 0 4px 8px rgba(46, 27, 92, 0.05), 0 28px 56px -16px rgba(74, 47, 145, 0.26);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #080b14;
-    --bg-accent: #131a35;
-    --panel: #10141f;
-    --panel-2: #161b28;
-    --panel-3: #1c2233;
-    --border: #212736;
-    --border-strong: #333c50;
-    --text: #eef2f8;
-    --text-dim: #98a3b8;
-    --text-faint: #64708a;
+    --bg: #100d1f;
+    --bg-tint-a: #241a4a;
+    --bg-tint-b: #142a4d;
+    --bg-tint-c: #35163a;
+    --panel: #191530;
+    --panel-2: #201b3c;
+    --panel-3: #29224b;
+    --border: #2f2856;
+    --border-strong: #443a75;
+    --text: #f1edff;
+    --text-dim: #a49cc9;
+    --text-faint: #6f6699;
 
-    --accent: #818cf8;
-    --accent-hover: #a5b4fc;
-    --accent-soft: #1c1f3d;
-    --accent-ring: rgba(129, 140, 248, 0.22);
-    --on-accent: #0b1020;
+    --accent: #9b7cff;
+    --accent-2: #6ba4ff;
+    --accent-hover: #b298ff;
+    --accent-soft: #251d47;
+    --accent-ring: rgba(155, 124, 255, 0.3);
+    --on-accent: #16102e;
+    --grad-accent: linear-gradient(135deg, #9b7cff, #6ba4ff);
 
-    --ok: #34d399;
-    --ok-soft: #072b22;
-    --ok-solid: #10b981;
-    --ok-border: #10513f;
+    --ok: #3ddc9a;
+    --ok-soft: #0c3229;
+    --ok-solid: #10c88a;
+    --ok-border: #175c47;
+    --grad-ok: linear-gradient(135deg, #10c88a, #3ddc9a);
 
-    --warn: #fbbf24;
-    --warn-soft: #2a1f07;
-    --warn-solid: #f59e0b;
-    --warn-border: #5a400d;
+    --warn: #ffb547;
+    --warn-soft: #38260a;
+    --warn-solid: #ff9f1c;
+    --warn-border: #6b4713;
+    --grad-warn: linear-gradient(135deg, #ff9f1c, #ffb547);
 
-    --fail: #fb7185;
-    --fail-soft: #2b0d16;
-    --fail-solid: #f43f5e;
-    --fail-border: #6b1d2e;
+    --fail: #ff7a95;
+    --fail-soft: #3a1220;
+    --fail-solid: #ff5c7a;
+    --fail-border: #75213a;
+    --grad-fail: linear-gradient(135deg, #ff5c7a, #ff7a95);
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 32px -12px rgba(0, 0, 0, 0.6);
-    --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.5), 0 32px 64px -20px rgba(0, 0, 0, 0.75);
+    --shadow: 0 2px 6px rgba(0, 0, 0, 0.45), 0 16px 36px -12px rgba(0, 0, 0, 0.6);
+    --shadow-lg: 0 4px 10px rgba(0, 0, 0, 0.5), 0 36px 72px -20px rgba(0, 0, 0, 0.75);
   }
 }
 
-/* Expose the tokens to Tailwind so `bg-panel`, `text-dim`, `border-border`
-   resolve as utilities. `inline` keeps the var reference live, which is what
-   lets the media query above re-theme every utility at once. */
 @theme inline {
   --color-bg: var(--bg);
-  --color-bg-accent: var(--bg-accent);
   --color-panel: var(--panel);
   --color-panel2: var(--panel-2);
   --color-panel3: var(--panel-3);
@@ -108,6 +121,7 @@
   --color-faint: var(--text-faint);
 
   --color-accent: var(--accent);
+  --color-accent2: var(--accent-2);
   --color-accent-hover: var(--accent-hover);
   --color-accent-soft: var(--accent-soft);
   --color-on-accent: var(--on-accent);
@@ -127,8 +141,8 @@
   --color-fail-solid: var(--fail-solid);
   --color-fail-border: var(--fail-border);
 
-  --radius-card: 16px;
-  --radius-inner: 12px;
+  --radius-card: 22px;
+  --radius-inner: 14px;
 
   --shadow-soft: var(--shadow);
   --shadow-float: var(--shadow-lg);
@@ -147,11 +161,9 @@
     font-size: 15px;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
   }
 
-  /* Numbers in a ledger must line up vertically -- proportional digits make two
-     totals of the same magnitude look different lengths. */
+  /* Figures in a ledger have to line up vertically. */
   .tnum,
   table td,
   table th {
@@ -162,7 +174,6 @@
     background: var(--accent-ring);
   }
 
-  /* A scrollbar that does not fight the panel it sits inside. */
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--border-strong) transparent;
@@ -170,36 +181,30 @@
 }
 
 @layer components {
-  /* ---- verdict pill -------------------------------------------------------
-     Status colour is keyed off a value the SERVER produced, applied by data
-     attribute rather than by a conditional in every component that renders a
-     verdict. */
+  /* ---- status pill -------------------------------------------------------- */
   .pill {
-    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold tracking-[0.06em] uppercase;
+    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-extrabold tracking-[0.05em] uppercase;
   }
   .pill[data-status="APPROVED"],
   .pill[data-status="HUMAN_APPROVED"],
   .pill[data-status="open"] {
     background: var(--ok-soft);
     color: var(--ok);
-    border-color: var(--ok-border);
   }
   .pill[data-status="NEEDS_REVIEW"] {
     background: var(--warn-soft);
     color: var(--warn);
-    border-color: var(--warn-border);
   }
   .pill[data-status="REJECTED"],
   .pill[data-status="HUMAN_REJECTED"],
   .pill[data-status="closed"] {
     background: var(--fail-soft);
     color: var(--fail);
-    border-color: var(--fail-border);
   }
 
   /* ---- level dot ---------------------------------------------------------- */
   .dot {
-    @apply inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold;
+    @apply inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[12px] font-bold;
   }
   .dot[data-level="ok"] {
     background: var(--ok-soft);
@@ -225,23 +230,23 @@
 
   /* ---- buttons ------------------------------------------------------------ */
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-[var(--radius-inner)] px-4 py-2.5 text-[14px] font-semibold transition-all duration-150 outline-none;
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-[14px] font-bold transition-all duration-150 outline-none;
   }
   .btn:focus-visible {
-    box-shadow: 0 0 0 3px var(--accent-ring);
+    box-shadow: 0 0 0 4px var(--accent-ring);
   }
   .btn-primary {
-    background: var(--accent);
-    color: var(--on-accent);
-    box-shadow: var(--shadow-sm);
+    background: var(--grad-accent);
+    color: #fff;
+    box-shadow: 0 6px 16px -6px var(--accent-ring);
   }
   .btn-primary:hover:not(:disabled) {
-    background: var(--accent-hover);
     transform: translateY(-1px);
-    box-shadow: var(--shadow);
+    box-shadow: 0 12px 24px -8px var(--accent-ring);
   }
   .btn-primary:disabled {
     opacity: 0.45;
+    box-shadow: none;
   }
   .btn-ghost {
     @apply border border-border bg-panel2 text-dim;
@@ -249,15 +254,22 @@
   .btn-ghost:hover:not(:disabled) {
     color: var(--text);
     border-color: var(--border-strong);
+    background: var(--panel-3);
   }
 
-  /* ---- small caps section label ------------------------------------------- */
   .eyebrow {
-    @apply text-[11px] font-bold tracking-[0.08em] text-faint uppercase;
+    @apply text-[11px] font-extrabold tracking-[0.08em] text-faint uppercase;
+  }
+
+  /* Text filled with the brand gradient -- used once, on the wordmark. */
+  .grad-text {
+    background: var(--grad-accent);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
 }
 
-/* The indeterminate shimmer on the progress bar while a run is in flight. */
 @keyframes sheen {
   0% {
     background-position: -200% 0;
@@ -269,4 +281,18 @@
 .sheen {
   background-size: 200% 100%;
   animation: sheen 1.6s linear infinite;
+}
+
+@keyframes pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.96) translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+.pop {
+  animation: pop 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
 }

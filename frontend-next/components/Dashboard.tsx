@@ -71,14 +71,14 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
   return (
     <div className="grid gap-5">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat label="Total runs" value={runs.length} />
-        <Stat label="Approved" value={counts.APPROVED} tone="ok" />
-        <Stat label="Needs review" value={counts.NEEDS_REVIEW} tone="warn" />
-        <Stat label="Rejected" value={counts.REJECTED} tone="fail" />
+        <Stat label="Total runs" value={runs.length} glyph="∑" />
+        <Stat label="Approved" value={counts.APPROVED} tone="ok" glyph="✓" />
+        <Stat label="Needs review" value={counts.NEEDS_REVIEW} tone="warn" glyph="?" />
+        <Stat label="Rejected" value={counts.REJECTED} tone="fail" glyph="✕" />
       </div>
 
       <Card
-        title="Run history"
+        title="Everything processed"
         aside={
           <div className="flex flex-wrap items-center gap-1.5">
             {FILTERS.map((f) => (
@@ -87,9 +87,10 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
                 onClick={() => setFilter(f.key)}
                 className={`rounded-full border px-3 py-1 text-[13px] font-medium transition-all ${
                   filter === f.key
-                    ? "border-accent bg-accent-soft text-accent"
+                    ? "border-transparent text-white shadow-[var(--shadow-sm)]"
                     : "border-border bg-panel2 text-dim hover:border-border-strong hover:text-text"
                 }`}
+                style={filter === f.key ? { background: "var(--grad-accent)" } : undefined}
               >
                 {f.label}
               </button>
@@ -105,7 +106,7 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
       >
         {shown.length === 0 ? (
           <EmptyState
-            title="No runs to show"
+            title="Nothing here yet"
             sub="Process an invoice on the Run tab and it will appear here."
           />
         ) : (
@@ -162,7 +163,7 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
         )}
       </Card>
 
-      <Card title="PO consumption">
+      <Card title="Purchase order budgets">
         <div className="grid gap-4">
           {(reference?.purchase_orders || []).map((po) => {
             const used = consumed[po.po_number] || 0;
@@ -208,18 +209,35 @@ export default function Dashboard({ reloadKey }: { reloadKey: number }) {
   );
 }
 
-function Stat({ label, value, tone }: { label: string; value: number; tone?: string }) {
+function Stat({
+  label,
+  value,
+  tone,
+  glyph,
+}: {
+  label: string;
+  value: number;
+  tone?: string;
+  glyph: string;
+}) {
   return (
-    <div className="card p-5">
-      <div className="flex items-center gap-2">
+    <div className="card relative overflow-hidden p-5">
+      <div
+        aria-hidden
+        className="absolute -top-8 -right-6 h-24 w-24 rounded-full opacity-25 blur-2xl"
+        style={{ background: tone ? `var(--${tone}-solid)` : "var(--accent)" }}
+      />
+      <div className="relative flex items-center gap-2.5">
         <span
-          className="h-2 w-2 rounded-full"
-          style={{ background: tone ? `var(--${tone}-solid)` : "var(--text-faint)" }}
-        />
+          className="grid h-7 w-7 place-items-center rounded-full text-[13px] font-black text-white"
+          style={{ background: tone ? `var(--grad-${tone})` : "var(--grad-accent)" }}
+        >
+          {glyph}
+        </span>
         <div className="eyebrow">{label}</div>
       </div>
       <div
-        className="mt-2 text-[30px] leading-none font-bold tracking-[-0.03em] tabular-nums"
+        className="relative mt-3 text-[34px] leading-none font-black tracking-[-0.04em] tabular-nums"
         style={tone ? { color: `var(--${tone})` } : undefined}
       >
         {value}

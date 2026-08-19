@@ -44,44 +44,48 @@ export default function Home() {
 
   return (
     <div className="min-h-screen">
-      {/* A faint wash behind the header keeps the page from starting on a hard
-          flat edge, without introducing a second background colour. */}
+      {/* A soft three-colour mesh instead of a flat canvas. Decorative only,
+          and low enough in contrast that nothing on top of it shifts. */}
       <div
         aria-hidden
-        className="pointer-events-none fixed inset-x-0 top-0 h-72"
-        style={{ background: "linear-gradient(180deg, var(--bg-accent), transparent)", opacity: 0.6 }}
+        className="pointer-events-none fixed inset-0"
+        style={{
+          background:
+            "radial-gradient(50rem 30rem at 8% -8%, var(--bg-tint-a), transparent 60%)," +
+            "radial-gradient(45rem 28rem at 95% -12%, var(--bg-tint-b), transparent 60%)," +
+            "radial-gradient(40rem 26rem at 60% 105%, var(--bg-tint-c), transparent 60%)",
+        }}
       />
 
       <header className="sticky top-0 z-20 border-b border-border bg-panel/80 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-4 px-5 py-3">
           <div className="flex items-center gap-3">
             <span
-              className="grid h-9 w-9 place-items-center rounded-xl text-[13px] font-bold text-white shadow-[var(--shadow-sm)]"
-              style={{ background: "linear-gradient(135deg, var(--accent), #7c3aed)" }}
+              className="grid h-10 w-10 place-items-center rounded-2xl text-[14px] font-black text-white shadow-[var(--shadow)]"
+              style={{ background: "var(--grad-accent)" }}
             >
               IP
             </span>
             <div className="leading-tight">
-              <div className="text-[15px] font-semibold tracking-[-0.01em]">Invoice Processing</div>
+              <div className="grad-text text-[17px] font-black tracking-[-0.02em]">Invoice Processing</div>
               <div className="text-[12px] text-faint">
-                PDF → decision, with the reasoning visible
+                From PDF to decision — and it shows its working
               </div>
             </div>
           </div>
 
           {/* Segmented control rather than underlined tabs: it reads as one
               object, which suits three peers better than a nav bar. */}
-          <nav className="flex gap-1 rounded-[var(--radius-inner)] border border-border bg-panel2 p-1">
+          <nav className="flex gap-1 rounded-full border border-border bg-panel2 p-1">
             {TABS.map((t) => (
               <button
                 key={t.key}
                 onClick={() => setTab(t.key)}
                 aria-current={tab === t.key}
-                className={`rounded-[9px] px-3.5 py-1.5 text-[14px] font-medium transition-all ${
-                  tab === t.key
-                    ? "bg-panel text-text shadow-[var(--shadow-sm)]"
-                    : "text-dim hover:text-text"
+                className={`rounded-full px-4 py-1.5 text-[14px] font-bold transition-all ${
+                  tab === t.key ? "text-white shadow-[var(--shadow-sm)]" : "text-dim hover:text-text"
                 }`}
+                style={tab === t.key ? { background: "var(--grad-accent)" } : undefined}
               >
                 {t.label}
               </button>
@@ -90,7 +94,8 @@ export default function Home() {
 
           <div className="ml-auto flex items-center gap-2.5">
             <div className="flex items-center gap-2 rounded-full border border-border bg-panel2 py-1 pr-3 pl-1">
-              <span className="grid h-6 w-6 place-items-center rounded-full bg-accent-soft text-[11px] font-bold text-accent uppercase">
+              <span className="grid h-7 w-7 place-items-center rounded-full text-[11px] font-black text-white uppercase"
+                style={{ background: "var(--grad-accent)" }}>
                 {user.username.slice(0, 2)}
               </span>
               <span className="text-[13px] font-medium">{user.username}</span>

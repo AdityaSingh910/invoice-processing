@@ -37,7 +37,7 @@ export default function LoginGate() {
   }
 
   const field =
-    "w-full rounded-[var(--radius-inner)] border border-border bg-panel2 px-3.5 py-2.5 text-[15px] " +
+    "w-full rounded-[var(--radius-inner)] border-2 border-border bg-panel2 px-4 py-3 text-[15px] " +
     "text-text outline-none transition-all placeholder:text-faint focus:border-accent focus:bg-panel";
 
   return (
@@ -47,20 +47,22 @@ export default function LoginGate() {
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "radial-gradient(60rem 40rem at 50% -10%, var(--bg-accent), transparent 70%)",
+            "radial-gradient(45rem 30rem at 20% 0%, var(--bg-tint-a), transparent 65%),"+
+            "radial-gradient(45rem 30rem at 85% 10%, var(--bg-tint-b), transparent 65%),"+
+            "radial-gradient(40rem 28rem at 50% 100%, var(--bg-tint-c), transparent 65%)",
         }}
       />
 
       <form onSubmit={submit} autoComplete="on" className="card relative w-full max-w-[430px] p-8">
         <div className="flex items-center gap-3">
           <span
-            className="grid h-11 w-11 place-items-center rounded-2xl text-[15px] font-bold text-white shadow-[var(--shadow)]"
-            style={{ background: "linear-gradient(135deg, var(--accent), #7c3aed)" }}
+            className="grid h-12 w-12 place-items-center rounded-2xl text-[16px] font-black text-white shadow-[var(--shadow)]"
+            style={{ background: "var(--grad-accent)" }}
           >
             IP
           </span>
           <div>
-            <h1 className="text-[20px] font-semibold tracking-[-0.02em]">Invoice Processing</h1>
+            <h1 className="grad-text text-[22px] font-black tracking-[-0.03em]">Invoice Processing</h1>
             <p className="text-[13px] text-dim">The AI reads. The rules decide.</p>
           </div>
         </div>
@@ -135,7 +137,7 @@ export default function LoginGate() {
                   setPassword(p);
                   setError(null);
                 }}
-                className="flex items-center justify-between gap-3 rounded-[var(--radius-inner)] border border-border bg-panel2 px-3 py-2 text-left transition-colors hover:border-accent hover:bg-accent-soft"
+                className="flex items-center justify-between gap-3 rounded-[var(--radius-inner)] border border-border bg-panel2 px-3 py-2 text-left transition-colors hover:border-accent hover:bg-accent-soft hover:-translate-y-px"
               >
                 <span className="font-mono text-[13px] font-semibold">{u}</span>
                 <span className="text-[12px] text-dim">{what}</span>

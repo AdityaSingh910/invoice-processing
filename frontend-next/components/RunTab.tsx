@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch, apiJson, streamRun } from "@/lib/api";
-import { STAGE_ORDER, money } from "@/lib/format";
+import { STAGE_ORDER, VERDICT_BLURB, VERDICT_HEADLINE, money } from "@/lib/format";
 import type { RunResult, SampleInvoice, Stage } from "@/lib/types";
 import { Card, Chip, EmptyState, Eyebrow, KvTable, Missing, StatusPill } from "./ui";
 import StageList from "./StageList";
@@ -98,8 +98,8 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
             <div className="grid h-11 w-11 place-items-center rounded-full bg-accent-soft text-lg text-accent">
               ⭳
             </div>
-            <p className="text-[15px] font-semibold">Drop a PDF</p>
-            <p className="text-[13px] text-dim">or click to browse</p>
+            <p className="text-[15px] font-bold">Drop an invoice here</p>
+            <p className="text-[13px] text-dim">or click to pick a PDF</p>
             <input
               ref={fileInput}
               type="file"
@@ -129,7 +129,7 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
         </Card>
 
         <Card
-          title="Sample invoices"
+          title="Try a sample"
           aside={<Chip title="Some scenarios depend on earlier runs">order matters</Chip>}
         >
           <div className="grid gap-2">
@@ -203,11 +203,11 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
 
           {progress === 0 && !running ? (
             <EmptyState
-              title="No run yet"
+              title="Nothing processed yet"
               sub={
                 <>
-                  Pick a sample invoice on the left, then hit <em>Run process</em>. Each stage
-                  reports as it executes.
+                  Pick one of the sample invoices on the left and press <em>Run process</em>.
+                  You’ll see each step report as it happens.
                 </>
               }
             />
@@ -217,24 +217,24 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
         </Card>
 
         {result?.po_match?.po_number && (
-          <Card title="PO balance" aside={<Chip>{result.po_match.matched_via} match</Chip>}>
+          <Card title="Purchase order budget" aside={<Chip>{result.po_match.matched_via} match</Chip>}>
             <PoBalance pm={result.po_match} />
           </Card>
         )}
 
         {result && (
           <div className="grid gap-5 xl:grid-cols-2">
-            <Card title="Reasoning">
+            <Card title="Why">
               <ReasonList reasons={result.reasons} />
             </Card>
-            <Card title="Extracted fields">
+            <Card title="What it read">
               <ExtractedFields r={result} />
             </Card>
           </div>
         )}
 
         {result && (
-          <Card title="Decision details" aside={<Chip>audit trail</Chip>}>
+          <Card title="How it decided" aside={<Chip>audit trail</Chip>}>
             <AuditTrail audit={result.audit} />
             {/* A run that has just finished carries no human ruling yet, so the
                 review bar is offered whenever the rules held it. */}
@@ -258,48 +258,65 @@ export default function RunTab({ onRan }: { onRan?: () => void }) {
 function VerdictBanner({ r }: { r: RunResult }) {
   const pm = r.po_match;
   const tone = r.status === "APPROVED" ? "ok" : r.status === "REJECTED" ? "fail" : "warn";
-  const glyph = r.status === "APPROVED" ? "✓" : r.status === "REJECTED" ? "✕" : "!";
+  const glyph = r.status === "APPROVED" ? "✓" : r.status === "REJECTED" ? "✕" : "?";
 
   return (
     <div
       data-testid="verdict-bar"
-      className="relative overflow-hidden rounded-[var(--radius-card)] border shadow-[var(--shadow-soft)]"
-      style={{ borderColor: `var(--${tone}-border)` }}
+      className="pop relative overflow-hidden rounded-[var(--radius-card)] shadow-[var(--shadow-soft)]"
     >
+      {/* A soft wash in the verdict's own colour: the outcome is legible from
+          across the room before a single number is read. */}
       <div
         aria-hidden
         className="absolute inset-0"
         style={{
-          background: `linear-gradient(120deg, var(--${tone}-soft), var(--panel) 65%)`,
+          background: `linear-gradient(130deg, var(--${tone}-soft) 0%, var(--panel) 60%)`,
         }}
       />
-      <div className="relative flex flex-wrap items-center justify-between gap-5 px-5 py-4">
+      <div
+        aria-hidden
+        className="absolute -top-16 -right-10 h-56 w-56 rounded-full opacity-20 blur-3xl"
+        style={{ background: `var(--${tone}-solid)` }}
+      />
+
+      <div className="relative flex flex-wrap items-center justify-between gap-6 p-6">
         <div className="flex min-w-0 items-center gap-4">
           <span
-            className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-[22px] font-bold text-white"
-            style={{ background: `var(--${tone}-solid)` }}
+            className="grid h-14 w-14 shrink-0 place-items-center rounded-full text-[26px] font-black text-white"
+            style={{
+              background: `var(--grad-${tone})`,
+              boxShadow: `0 10px 24px -8px var(--${tone}-solid)`,
+            }}
           >
             {glyph}
           </span>
           <div className="min-w-0">
-            <div
-              data-testid="verdict-status"
-              className="text-[20px] leading-tight font-bold tracking-[-0.02em]"
-              style={{ color: `var(--${tone})` }}
-            >
-              {r.status.replace("_", " ")}
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h2
+                className="text-[26px] leading-tight font-black tracking-[-0.03em]"
+                style={{ color: `var(--${tone})` }}
+              >
+                {VERDICT_HEADLINE[r.status] ?? r.status}
+              </h2>
+              {/* The formal verdict stays on screen beside the friendly line --
+                  the plain wording softens delivery, never meaning. */}
+              <span className="pill" data-status={r.status} data-testid="verdict-status">
+                {r.status.replace("_", " ")}
+              </span>
             </div>
-            <div className="mt-0.5 truncate text-[14px] text-dim">
-              <span className="font-medium text-text">{r.filename}</span> · run #{r.run_id} ·{" "}
+            <p className="mt-1 text-[14px] text-dim">{VERDICT_BLURB[r.status]}</p>
+            <p className="mt-1.5 truncate text-[13px] text-faint">
+              <span className="font-semibold text-dim">{r.filename}</span> · run #{r.run_id} ·{" "}
               {r.extracted.vendor_name || "unknown vendor"}
               {r.extracted.invoice_number ? ` · ${r.extracted.invoice_number}` : ""}
-            </div>
+            </p>
           </div>
         </div>
 
-        <div className="flex gap-7">
+        <div className="flex gap-3">
           <Figure label="invoice total" value={money(r.extracted.total)} />
-          {pm.po_number && <Figure label="PO available" value={money(pm.remaining_before)} />}
+          {pm.po_number && <Figure label="left on the PO" value={money(pm.remaining_before)} />}
         </div>
       </div>
     </div>
@@ -308,11 +325,11 @@ function VerdictBanner({ r }: { r: RunResult }) {
 
 function Figure({ label, value }: { label: string; value: string }) {
   return (
-    <div className="text-right">
-      <div className="text-[24px] leading-none font-bold tracking-[-0.02em] tabular-nums">
+    <div className="rounded-[var(--radius-inner)] border border-border bg-panel/70 px-4 py-3 text-right backdrop-blur-sm">
+      <div className="text-[26px] leading-none font-black tracking-[-0.03em] tabular-nums">
         {value}
       </div>
-      <div className="mt-1.5 text-[11px] font-semibold tracking-[0.06em] text-faint uppercase">
+      <div className="mt-1.5 text-[10px] font-extrabold tracking-[0.08em] text-faint uppercase">
         {label}
       </div>
     </div>
