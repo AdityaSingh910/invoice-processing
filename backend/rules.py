@@ -6,8 +6,57 @@ import storage
 REQUIRED_FIELDS = ["vendor_name", "invoice_number", "total"]
 
 
+def _is_missing(value):
+    """Presence, not truthiness.
+
+    `not value` would call a total of 0.00 "missing", which is wrong twice over:
+    the figure IS present, and reporting it as absent sends an AP clerk looking
+    for a number that is printed on the page. A zero total is a *invalid amount*
+    problem -- see validate_amount() -- and belongs to that check, with its own
+    message.
+    """
+    if value is None:
+        return True
+    return isinstance(value, str) and not value.strip()
+
+
 def validate_required_fields(extracted: dict):
-    return [f for f in REQUIRED_FIELDS if not extracted.get(f)]
+    return [f for f in REQUIRED_FIELDS if _is_missing(extracted.get(f))]
+
+
+def validate_amount(extracted: dict):
+    """The invoice total must be a positive number.
+
+    Returns None when the total is valid or absent, and a dict describing the
+    problem when it is not. Absence is deliberately not this check's business --
+    validate_required_fields owns that, and reporting it twice would put two
+    findings on one fact.
+
+    Two cases, both of which previously reached approval:
+
+    * **Negative.** A negative total is a credit note, not a payable. Paying one
+      as an invoice moves money the wrong way. Before this check it sailed
+      through: matching compares `total - remaining`, and a negative total makes
+      that comfortably negative, which reads as a small partial invoice.
+    * **Zero.** Nothing is owed. Approving it to pay is meaningless, and it is
+      more likely a misread figure than a real zero-value bill.
+
+    Deliberately no upper bound. A large invoice is a PO/tolerance question, and
+    an arbitrary ceiling here would reject legitimate high-value invoices that
+    the ledger is perfectly capable of judging.
+    """
+    total = extracted.get("total")
+    if total is None:
+        return None
+    try:
+        value = float(total)
+    except (TypeError, ValueError):
+        return None      # non-numeric is an extraction problem, not an amount one
+    if value < 0:
+        return {"total": value, "kind": "negative"}
+    if value == 0:
+        return {"total": value, "kind": "zero"}
+    return None
 
 
 def validate_arithmetic(extracted: dict):
@@ -138,7 +187,7 @@ def _is_balance_reason(text: str) -> bool:
 
 
 def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
-           dup_row, dup_detail, po_match: dict, arithmetic=None):
+           dup_row, dup_detail, po_match: dict, arithmetic=None, amount=None):
     """Aggregates every check into one status plus a severity-tagged reasoning trail.
 
     Each reason is {"text": ..., "level": "ok"|"warn"|"fail"|"info"} so the UI can
@@ -197,6 +246,27 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
     if missing_fields:
         review = True
         add(f"Missing required field(s): {', '.join(missing_fields)}. Cannot safely auto-approve.", "fail")
+
+    # An invalid total is checked before the arithmetic and before any PO
+    # reasoning, because every one of those compares against `total`. If the
+    # figure itself is not a payable amount, none of what follows means anything.
+    if amount:
+        review = True
+        if amount["kind"] == "negative":
+            add(
+                f"Invalid invoice amount: total must be greater than zero, but this invoice "
+                f"states ${amount['total']:.2f}. A negative total is a credit note rather than "
+                f"a payable invoice — paying it would move money the wrong way. Route to AP to "
+                f"confirm whether a credit was intended.",
+                "fail",
+            )
+        else:
+            add(
+                "Invalid invoice amount: total must be greater than zero, but this invoice "
+                "states $0.00. Nothing is payable, and a zero total is more often a misread "
+                "figure than a genuine zero-value bill. Confirm the amount against the document.",
+                "fail",
+            )
 
     # Arithmetic sits with the other document-integrity checks, before any PO
     # reasoning: if the invoice does not add up, which figure the PO should be

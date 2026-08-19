@@ -139,6 +139,7 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     # in the run view, not only in the final reasoning trail.
     missing = rules.validate_required_fields(extracted)
     arithmetic = rules.validate_arithmetic(extracted)
+    amount = rules.validate_amount(extracted)
     security_flags = extract_info.get("security_flags") or []
     if security_flags:
         val_status = "fail"
@@ -148,11 +149,17 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
         )
         if missing:
             val_detail += f" Also missing: {', '.join(missing)}."
+        if amount:
+            val_detail += f" Total is also invalid (${amount['total']:.2f})."
         if arithmetic:
             val_detail += f" Arithmetic also off by ${arithmetic['diff']:.2f}."
     elif missing:
         val_status = "fail"
         val_detail = f"Missing required field(s): {', '.join(missing)}."
+    elif amount:
+        val_status = "fail"
+        val_detail = (f"Invalid invoice amount: total is ${amount['total']:.2f}; "
+                      f"it must be greater than zero.")
     elif arithmetic:
         val_status = "fail"
         val_detail = (
@@ -215,7 +222,7 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     # 9. DECISION
     status, reasons = rules.decide(
         extract_info, missing, vendor_ok, vendor_detail, dup_row, dup_detail, po_match,
-        arithmetic=arithmetic,
+        arithmetic=arithmetic, amount=amount,
     )
     yield sse("stage", {"stage": stage("DECISION", "ok", f"Final status: {status}.")})
     await asyncio.sleep(0.15)

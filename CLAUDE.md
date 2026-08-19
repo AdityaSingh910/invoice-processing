@@ -44,8 +44,8 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Deployed | ❌ Local only, no git remote, no hosting |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 17 commits at the time of writing (this update is
-the 18th), working tree clean.
+**Git:** local repo only, 18 commits at the time of writing (this update is
+the 19th), working tree clean.
 
 ```
 2865a58 Harden the PO ledger: atomicity, reversal + cascade, configurable tolerance
@@ -305,6 +305,51 @@ What is *not* free, and is implemented:
   `over_within_tolerance` triggers a `warn`-level audit note naming the overage
   in dollars. Under-billing is unbounded and handled separately as a partial.
 
+### Invoice amount validity
+
+`rules.validate_amount()` requires the total to be **greater than zero**, and
+`decide(..., amount=...)` turns a violation into NEEDS_REVIEW. Checked before the
+arithmetic and before any PO reasoning, because all of those compare against
+`total` — if the figure is not a payable amount, none of what follows means
+anything.
+
+Measured against the code before this change:
+
+```
+total =  1000.00  ->  APPROVED       (correct)
+total =     0.00  ->  NEEDS_REVIEW   (right verdict, WRONG reason)
+total =  -500.00  ->  APPROVED       <- the hole
+total = -5000.00  ->  APPROVED
+```
+
+A negative total sailed through because matching compares `total - remaining`,
+and a negative total makes that comfortably negative — which reads as a small
+partial invoice against a healthy PO, the most innocuous shape in the system. A
+negative total is a **credit note**; approving it as a payable moves money the
+wrong way.
+
+Zero *was* caught, but by accident: `validate_required_fields` used
+`not extracted.get("total")`, and `not 0.0` is True, so a printed $0.00 was
+reported as a **missing** total. Right verdict, wrong story, and it sends a clerk
+hunting for a figure that is on the page. Presence is now tested by `_is_missing`
+(None, or a blank string), so a zero total is present-but-invalid and
+`validate_amount` owns it.
+
+**No upper bound, deliberately.** Size is not a validity question — a large
+invoice is judged by the PO and tolerance rules, and an arbitrary ceiling would
+reject legitimate high-value invoices the ledger can already handle. Review, never
+reject: a negative total is more often a credit note filed as an invoice than
+fraud, and rejecting outright removes the judgement that decides which.
+
+⚠️ **Extraction bug found while verifying this, NOT fixed (out of scope).**
+`extraction._first()` ends with `val = m.group(1).strip(" :.-\t")`, which strips
+a **leading minus sign** off a captured amount. The total regex captures
+`-500.00` correctly and `_to_float` parses it correctly, but `_first` hands on
+`500.00`. So `Total Due: -500.00` extracts as **positive 500**. Accounting
+parentheses — `Total Due: (500.00)` — are unaffected and yield -500.0, which is
+how the negative path was verified end to end. Worth fixing in an extraction
+step: the amount rule cannot catch a sign the extractor already discarded.
+
 ### Invoice arithmetic
 
 `subtotal + tax` must equal the stated `total`, within $0.05
@@ -389,7 +434,7 @@ stages over SSE; the frontend reads it with `fetch()`.
 
 ```
 backend/
-  main.py         352 lines. FastAPI app, the 9-stage pipeline as an async
+  main.py         359 lines. FastAPI app, the 9-stage pipeline as an async
                   generator yielding SSE events, _abort_unreadable() path,
                   all endpoints.
   extraction.py   633 lines. PDF → text (pdfplumber) → fields. Three routes,
@@ -400,7 +445,7 @@ backend/
                   works where the SDK was never installed.
   matching.py      153 lines. PO lookup (explicit refs then inferred),
                   tolerance_for(), empty_match(), split-PO balance maths.
-  rules.py        339 lines. validate_required_fields, vendor_check (tri-state),
+  rules.py        409 lines. validate_required_fields, vendor_check (tri-state),
                   duplicate_check, and decide() — the only place a verdict is
                   produced.
   storage.py      356 lines. SQLite. Seeds POs/vendors from data/*.json on
@@ -425,6 +470,9 @@ sample_invoices/
                        AND is the source of truth for tests. Sample 05 carries
                        BOTH `expect` and `expect_with_vision` — see §7.
 tests/
+  test_invalid_amount.py 21 cases. Zero and negative totals, that zero is no
+                   longer mislabelled as a missing field, no arbitrary ceiling,
+                   and REJECTED still outranking the review.
   test_arithmetic.py     22 cases. Consistent invoices unchanged, rounding slack
                    and its boundary, clear mismatch in both directions, missing
                    components not fabricating a failure, and REJECTED still
@@ -661,10 +709,11 @@ and they outrank every phase below:
 The work cannot be graded while it only runs on one laptop. Neither item needs
 another line of pipeline code.
 
-The suite is now six files — `test_samples.py` (7 end-to-end sample verdicts),
+The suite is now seven files — `test_samples.py` (7 end-to-end sample verdicts),
 `test_security.py` (27 injection cases), `test_po_edge_cases.py` (12 ledger
 cases), `test_inferred_po.py` (13 matching cases), `test_currency.py` (16
-currency cases), `test_arithmetic.py` (22 arithmetic cases). **97 total.** Notes for whoever changes them next:
+currency cases), `test_arithmetic.py` (22 arithmetic cases),
+`test_invalid_amount.py` (21 amount cases). **118 total.** Notes for whoever changes them next:
 
 * It does **not** strip `GEMINI_API_KEY`. With a key present the suite runs the
   real `llm (text)` and `llm (vision)` routes; without one it runs `regex` /
