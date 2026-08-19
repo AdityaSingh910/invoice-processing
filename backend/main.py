@@ -138,6 +138,7 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     # Both are reported here so an operator sees "this document tried something"
     # in the run view, not only in the final reasoning trail.
     missing = rules.validate_required_fields(extracted)
+    arithmetic = rules.validate_arithmetic(extracted)
     security_flags = extract_info.get("security_flags") or []
     if security_flags:
         val_status = "fail"
@@ -147,12 +148,21 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
         )
         if missing:
             val_detail += f" Also missing: {', '.join(missing)}."
+        if arithmetic:
+            val_detail += f" Arithmetic also off by ${arithmetic['diff']:.2f}."
     elif missing:
         val_status = "fail"
         val_detail = f"Missing required field(s): {', '.join(missing)}."
+    elif arithmetic:
+        val_status = "fail"
+        val_detail = (
+            f"Arithmetic mismatch: subtotal ${arithmetic['subtotal']:.2f} + tax "
+            f"${arithmetic['tax']:.2f} = ${arithmetic['expected']:.2f}, but the invoice "
+            f"states ${arithmetic['total']:.2f} (off by ${arithmetic['diff']:.2f})."
+        )
     else:
         val_status = "ok"
-        val_detail = "All required fields present; no injection patterns detected."
+        val_detail = "All required fields present; arithmetic consistent; no injection patterns detected."
     yield sse("stage", {"stage": stage("VALIDATE", val_status, val_detail)})
     await asyncio.sleep(0.25)
     mark()
@@ -205,6 +215,7 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     # 9. DECISION
     status, reasons = rules.decide(
         extract_info, missing, vendor_ok, vendor_detail, dup_row, dup_detail, po_match,
+        arithmetic=arithmetic,
     )
     yield sse("stage", {"stage": stage("DECISION", "ok", f"Final status: {status}.")})
     await asyncio.sleep(0.15)

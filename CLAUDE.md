@@ -44,8 +44,8 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Deployed | ❌ Local only, no git remote, no hosting |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 16 commits at the time of writing (this update is
-the 17th), working tree clean.
+**Git:** local repo only, 17 commits at the time of writing (this update is
+the 18th), working tree clean.
 
 ```
 2865a58 Harden the PO ledger: atomicity, reversal + cascade, configurable tolerance
@@ -305,6 +305,38 @@ What is *not* free, and is implemented:
   `over_within_tolerance` triggers a `warn`-level audit note naming the overage
   in dollars. Under-billing is unbounded and handled separately as a partial.
 
+### Invoice arithmetic
+
+`subtotal + tax` must equal the stated `total`, within $0.05
+(`config.ARITHMETIC_TOLERANCE_DOLLARS`). Computed by
+`rules.validate_arithmetic()`, surfaced in the VALIDATE stage, and turned into
+NEEDS_REVIEW by `decide(..., arithmetic=...)` — an optional keyword argument, so
+the sixteen existing `decide()` call sites were untouched.
+
+Why it matters more than it looks: every downstream check — vendor, PO balance,
+tolerance, duplicate — operates on `total`. A total that contradicts its own
+components is the one figure the entire decision rests on, and nothing had ever
+verified it.
+
+Three judgement calls worth keeping:
+
+* **$0.05, and a separate constant from the PO tolerance.** That one is a
+  business allowance for unpredictable charges; this is cash-rounding slack.
+  Reusing the $50 PO figure would wave through a $40 arithmetic error.
+* **All three fields required.** Comparing `subtotal` to `total` when tax is
+  absent would flag every invoice whose tax the extractor missed — the fastest
+  way to make the check untrustworthy.
+* **Both directions.** A total *below* its components is equally inconsistent;
+  only bounding the over side would miss a misread subtotal.
+
+The check reports the disagreement; it never "corrects" the total. Deciding which
+figure is right is what the human is for.
+
+⚠️ Interaction with extraction: when a document states no total,
+`regex_extract` synthesises one as `subtotal + tax`, so this check passes by
+construction. Correct — there is no printed figure to contradict — but it means
+the check only bites on invoices that actually stated a total.
+
 ### Prompt-injection defence
 
 A vendor invoice is **attacker-controlled input**. Anyone who can send an invoice
@@ -357,7 +389,7 @@ stages over SSE; the frontend reads it with `fetch()`.
 
 ```
 backend/
-  main.py         341 lines. FastAPI app, the 9-stage pipeline as an async
+  main.py         352 lines. FastAPI app, the 9-stage pipeline as an async
                   generator yielding SSE events, _abort_unreadable() path,
                   all endpoints.
   extraction.py   633 lines. PDF → text (pdfplumber) → fields. Three routes,
@@ -368,14 +400,14 @@ backend/
                   works where the SDK was never installed.
   matching.py      153 lines. PO lookup (explicit refs then inferred),
                   tolerance_for(), empty_match(), split-PO balance maths.
-  rules.py        281 lines. validate_required_fields, vendor_check (tri-state),
+  rules.py        339 lines. validate_required_fields, vendor_check (tri-state),
                   duplicate_check, and decide() — the only place a verdict is
                   produced.
   storage.py      356 lines. SQLite. Seeds POs/vendors from data/*.json on
                   EVERY startup. consumed_amount_for_po, find_duplicate,
                   save_run, list_runs.
   schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
-  config.py        82 lines. .env loader, upload/page caps, API_KEY_ENV
+  config.py        99 lines. .env loader, upload/page caps, API_KEY_ENV
                   ("GEMINI_API_KEY"), EXTRACTION_MODEL, api_key(),
                   has_api_key(). Operational settings only — no business rules.
 frontend/
@@ -393,6 +425,10 @@ sample_invoices/
                        AND is the source of truth for tests. Sample 05 carries
                        BOTH `expect` and `expect_with_vision` — see §7.
 tests/
+  test_arithmetic.py     22 cases. Consistent invoices unchanged, rounding slack
+                   and its boundary, clear mismatch in both directions, missing
+                   components not fabricating a failure, and REJECTED still
+                   outranking the review.
   test_currency.py       16 cases. Matching currencies unchanged, mismatch →
                    review with a clear finding, no conversion, unknown currency
                    not invented, and REJECTED still outranking the review.
@@ -562,7 +598,14 @@ approved and the PO was overspent by $6,000.
   Corp` matches approved `Acme Office Supplies`.
 - **Reference data re-seeded from JSON on every startup**, so editing
   `purchase_orders.json` silently changes what historical runs mean.
-- No arithmetic consistency check — nothing verifies `subtotal + tax == total`.
+- ~~No arithmetic consistency check~~ — **CLOSED 2026-08-19.**
+  `rules.validate_arithmetic()` verifies `subtotal + tax == total` within
+  `config.ARITHMETIC_TOLERANCE_DOLLARS` ($0.05) and forces NEEDS_REVIEW. Checks
+  only when all three values are present — a missing tax line is evidence of a
+  missing tax line, not of bad arithmetic — and uses `is None` rather than
+  truthiness so a genuine 0.00 tax is still checked. Deliberately a *separate*
+  constant from the PO tolerance: reusing $50 there would let a $40 arithmetic
+  error through. 22 tests in `tests/test_arithmetic.py`.
 - `config.status()` and `config.extraction_mode()` are **dead code** — nothing
   calls them, so the UI has no way to show which extraction route is live.
 - `_guess_vendor` (`extraction.py:378`) picks the vendor by **line position**.
@@ -618,10 +661,10 @@ and they outrank every phase below:
 The work cannot be graded while it only runs on one laptop. Neither item needs
 another line of pipeline code.
 
-The suite is now five files — `test_samples.py` (7 end-to-end sample verdicts),
+The suite is now six files — `test_samples.py` (7 end-to-end sample verdicts),
 `test_security.py` (27 injection cases), `test_po_edge_cases.py` (12 ledger
 cases), `test_inferred_po.py` (13 matching cases), `test_currency.py` (16
-currency cases). **75 total.** Notes for whoever changes them next:
+currency cases), `test_arithmetic.py` (22 arithmetic cases). **97 total.** Notes for whoever changes them next:
 
 * It does **not** strip `GEMINI_API_KEY`. With a key present the suite runs the
   real `llm (text)` and `llm (vision)` routes; without one it runs `regex` /

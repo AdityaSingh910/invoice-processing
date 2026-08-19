@@ -31,6 +31,23 @@ MAX_PAGES_VISION = 3                  # pages sent to the vision model
 PO_TOLERANCE_PERCENT = 0.01   # 1% of the remaining balance
 PO_TOLERANCE_DOLLARS = 50.0   # ...or this, whichever is larger
 
+# --------------------------------------------------------------------------
+# Invoice arithmetic tolerance
+#
+# How far `subtotal + tax` may sit from the printed `total` before the invoice
+# is treated as internally inconsistent.
+#
+# Deliberately NOT the PO tolerance above. That one is a business allowance for
+# charges a buyer could not predict when the PO was raised; this one is pure
+# floating-point and cash-rounding slack. Reusing the $50 PO figure here would
+# let a $40 arithmetic error through, which is exactly the kind of error this
+# check exists to catch.
+#
+# 5 cents: currency arithmetic is exact to the cent, so the only legitimate
+# drift is per-line rounding (a cent or two) or jurisdictions that round the
+# cash total to the nearest 0.05. Anything larger is a real discrepancy.
+ARITHMETIC_TOLERANCE_DOLLARS = 0.05
+
 # Google Gemini via Google AI Studio. The extraction layer is the only place
 # a model is used at all -- every decision downstream of it is plain Python.
 API_KEY_ENV = "GEMINI_API_KEY"

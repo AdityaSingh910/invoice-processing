@@ -1,5 +1,6 @@
 """Decision rules: required fields, vendor approval, duplicates, and the final
 aggregation of every check into one status + reasons trail."""
+import config
 import storage
 
 REQUIRED_FIELDS = ["vendor_name", "invoice_number", "total"]
@@ -7,6 +8,49 @@ REQUIRED_FIELDS = ["vendor_name", "invoice_number", "total"]
 
 def validate_required_fields(extracted: dict):
     return [f for f in REQUIRED_FIELDS if not extracted.get(f)]
+
+
+def validate_arithmetic(extracted: dict):
+    """Check that the invoice adds up: subtotal + tax == total.
+
+    Returns None when the invoice is consistent OR when there is not enough
+    information to judge, and a dict of the numbers when it is not. Callers treat
+    a dict as "hold this for a human".
+
+    Three deliberate limits:
+
+    * **All three fields must be present.** A missing tax line is not evidence of
+      bad arithmetic -- it is evidence of a missing tax line. Checking
+      `subtotal == total` in that case would fabricate a failure on every invoice
+      whose tax the extractor did not pick up.
+    * **`is None`, not truthiness.** A genuine `tax` of 0.00 is a *present* value
+      and the check applies. Testing `if not tax` would silently skip every
+      zero-rated invoice, which is the population most worth checking.
+    * **subtotal + tax only.** The schema carries exactly these three financial
+      fields -- there is no shipping or freight column to fold in. If one is ever
+      added, it belongs in this sum, and this comment is where to start.
+
+    Note the interaction with extraction: when a document has no printed total,
+    `regex_extract` synthesises one as `subtotal + tax`, so this check passes by
+    construction. That is correct -- there is no printed figure to contradict --
+    but it does mean the check only bites on invoices that actually stated a
+    total.
+    """
+    subtotal, tax, total = extracted.get("subtotal"), extracted.get("tax"), extracted.get("total")
+    if subtotal is None or tax is None or total is None:
+        return None
+    try:
+        expected = round(float(subtotal) + float(tax), 2)
+        diff = round(float(total) - expected, 2)
+    except (TypeError, ValueError):
+        # Non-numeric values are an extraction problem, not an arithmetic one,
+        # and the required-field check already covers a missing total.
+        return None
+
+    if abs(diff) <= config.ARITHMETIC_TOLERANCE_DOLLARS:
+        return None
+    return {"subtotal": float(subtotal), "tax": float(tax), "total": float(total),
+            "expected": expected, "diff": diff}
 
 
 def vendor_check(extracted: dict):
@@ -94,7 +138,7 @@ def _is_balance_reason(text: str) -> bool:
 
 
 def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
-           dup_row, dup_detail, po_match: dict):
+           dup_row, dup_detail, po_match: dict, arithmetic=None):
     """Aggregates every check into one status plus a severity-tagged reasoning trail.
 
     Each reason is {"text": ..., "level": "ok"|"warn"|"fail"|"info"} so the UI can
@@ -153,6 +197,20 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
     if missing_fields:
         review = True
         add(f"Missing required field(s): {', '.join(missing_fields)}. Cannot safely auto-approve.", "fail")
+
+    # Arithmetic sits with the other document-integrity checks, before any PO
+    # reasoning: if the invoice does not add up, which figure the PO should be
+    # compared against is itself in question.
+    if arithmetic:
+        review = True
+        add(
+            f"Invoice arithmetic mismatch: subtotal + tax does not equal total. "
+            f"Subtotal ${arithmetic['subtotal']:.2f} + tax ${arithmetic['tax']:.2f} "
+            f"= ${arithmetic['expected']:.2f}, but the invoice states ${arithmetic['total']:.2f} "
+            f"— a difference of ${arithmetic['diff']:.2f}. Either a figure was misread or the "
+            f"invoice is wrong; confirm the payable amount before paying.",
+            "fail",
+        )
 
     if dup_row:
         reject = True
