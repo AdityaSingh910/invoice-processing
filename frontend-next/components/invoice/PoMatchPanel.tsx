@@ -15,7 +15,7 @@
  */
 import { amount, money } from "@/lib/format";
 import type { Audit, PoMatch } from "@/lib/types";
-import { Badge, Callout, DescriptionList } from "@/components/ui";
+import { Badge, Callout, KeyValues } from "@/components/ui";
 import { IconAlert, IconCheck, IconX } from "@/components/ui/icons";
 
 /** Locate the rule covering a field. Names come from rules.py. */
@@ -30,13 +30,13 @@ type RowState = "match" | "mismatch" | "unknown";
 function StateBadge({ state, label }: { state: RowState; label?: string }) {
   if (state === "match")
     return (
-      <Badge tone="success" icon={<IconCheck size={11} />}>
+      <Badge tone="ok" icon={<IconCheck size={10} />}>
         {label ?? "Match"}
       </Badge>
     );
   if (state === "mismatch")
     return (
-      <Badge tone="danger" icon={<IconX size={11} />}>
+      <Badge tone="bad" icon={<IconX size={10} />}>
         {label ?? "Discrepancy"}
       </Badge>
     );
@@ -113,30 +113,30 @@ export function MatchTable({ pm, audit }: { pm: PoMatch; audit?: Audit }) {
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[540px] border-collapse text-[13px]">
+      <table className="w-full min-w-[520px] border-collapse text-[12.5px]">
         <thead>
-          <tr className="border-b border-border">
-            <th scope="col" className="label px-2 py-1.5 text-left">
+          <tr>
+            <th scope="col" className="t-caption border-b border-line px-2 py-2 text-left">
               Field
             </th>
-            <th scope="col" className="label px-2 py-1.5 text-left">
+            <th scope="col" className="t-caption border-b border-line px-2 py-2 text-left">
               On the invoice
             </th>
-            <th scope="col" className="label px-2 py-1.5 text-left">
+            <th scope="col" className="t-caption border-b border-line px-2 py-2 text-left">
               On the purchase order
             </th>
-            <th scope="col" className="label px-2 py-1.5 text-right">
+            <th scope="col" className="t-caption border-b border-line px-2 py-2 text-right">
               Result
             </th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-border">
+        <tbody className="divide-line">
           {rows.map((r) => (
-            <tr key={r.field} className={r.state === "mismatch" ? "bg-[var(--danger-weak)]" : ""}>
-              <td className="px-2 py-2.5 font-medium whitespace-nowrap">{r.field}</td>
-              <td className="px-2 py-2.5">{r.invoice}</td>
-              <td className="px-2 py-2.5 text-muted">{r.po}</td>
-              <td className="px-2 py-2.5 text-right">
+            <tr key={r.field} className={r.state === "mismatch" ? "bg-bad-quiet" : ""}>
+              <td className="px-2 py-2 font-medium whitespace-nowrap">{r.field}</td>
+              <td className="px-2 py-2">{r.invoice}</td>
+              <td className="px-2 py-2 text-muted">{r.po}</td>
+              <td className="px-2 py-2 text-right">
                 <StateBadge state={r.state} label={r.label} />
               </td>
             </tr>
@@ -171,44 +171,44 @@ export function PoBudget({ pm }: { pm: PoMatch }) {
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-        <span className="text-[13px] text-muted">
-          Authorised <b className="num text-fg">{money(total)}</b> on{" "}
+        <span className="t-meta">
+          Authorised <b className="tnum text-fg">{money(total)}</b> on{" "}
           <span className="font-medium text-fg">{pm.po_number}</span>
         </span>
-        <span className="text-[13px] text-muted">{pm.po_vendor}</span>
+        <span className="t-meta">{pm.po_vendor}</span>
       </div>
 
       <div
-        className="flex h-2.5 w-full overflow-hidden rounded-full bg-surface2"
+        className="flex h-2 w-full overflow-hidden rounded-full bg-sunken"
         role="img"
         aria-label={`${money(consumed)} consumed, this invoice ${money(claim)}, of ${money(total)}`}
       >
-        {seg(consumed, "var(--fg-subtle)", "consumed")}
-        {seg(shown, fits ? "var(--success-solid)" : "var(--warning-solid)", "claim")}
-        {seg(over, "var(--danger-solid)", "over")}
+        {seg(consumed, "var(--fg-faint)", "consumed")}
+        {seg(shown, fits ? "var(--ok-vivid)" : "var(--warn-vivid)", "claim")}
+        {seg(over, "var(--bad-vivid)", "over")}
         {seg(free, "transparent", "free")}
       </div>
 
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
         {[
-          ["Consumed earlier", money(consumed), "var(--fg-subtle)"],
-          ["This invoice", money(claim), fits ? "var(--success-solid)" : "var(--warning-solid)"],
-          ["Remaining before", money(pm.remaining_before), "var(--border-strong)"],
+          ["Consumed earlier", money(consumed), "var(--fg-faint)"],
+          ["This invoice", money(claim), fits ? "var(--ok-vivid)" : "var(--warn-vivid)"],
+          ["Remaining before", money(pm.remaining_before), "var(--line-strong)"],
           [
             "Remaining after",
             money(fits ? pm.remaining_after : pm.remaining_before),
-            "var(--border-strong)",
+            "var(--line-strong)",
           ],
         ].map(([label, value, colour]) => (
           <div key={label as string}>
-            <dt className="flex items-center gap-1.5 text-[11px] text-subtle">
+            <dt className="t-meta flex items-center gap-1.5 text-[11px]">
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
                 style={{ background: colour as string }}
               />
               {label}
             </dt>
-            <dd className="num mt-0.5 text-[14px] font-semibold">{value}</dd>
+            <dd className="tnum mt-0.5 text-[13px] font-semibold">{value}</dd>
           </div>
         ))}
       </dl>
@@ -216,19 +216,19 @@ export function PoBudget({ pm }: { pm: PoMatch }) {
       <div className="mt-4">
         {!fits ? (
           <Callout
-            tone="danger"
-            icon={<IconAlert size={14} />}
+            tone="bad"
+            icon={<IconAlert size={13} />}
             title={`Over the remaining balance by ${money(pm.diff)}`}
           >
             Only {money(pm.remaining_before)} is left on {pm.po_number} and the tolerance is{" "}
             {money(pm.tolerance)}. The vendor is billing beyond what was authorised.
           </Callout>
         ) : pm.is_partial ? (
-          <Callout tone="success" icon={<IconCheck size={14} />} title="Partial invoice — accepted">
+          <Callout tone="ok" icon={<IconCheck size={13} />} title="Partial invoice — accepted">
             {money(pm.remaining_after)} stays available on {pm.po_number} for the next invoice.
           </Callout>
         ) : (
-          <Callout tone="neutral" icon={<IconCheck size={14} />}>
+          <Callout tone="neutral" icon={<IconCheck size={13} />}>
             Within tolerance — variance {money(pm.diff)} against a {money(pm.tolerance)} allowance.
           </Callout>
         )}
@@ -247,7 +247,7 @@ export function PoProvenance({ audit }: { audit?: Audit }) {
     : "—";
 
   return (
-    <DescriptionList
+    <KeyValues
       rows={[
         ["Purchase order", po.po_number || "none"],
         ["Matched via", po.matched_via || "—"],

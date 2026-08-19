@@ -20,6 +20,7 @@ import { useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Button, Callout } from "@/components/ui";
+import { useToast } from "@/components/ui/Toast";
 import Modal from "@/components/ui/Modal";
 import { IconAlert, IconCheck, IconX } from "@/components/ui/icons";
 
@@ -37,6 +38,7 @@ export default function ReviewBar({
   onReviewed?: () => void;
 }) {
   const { can } = useAuth();
+  const toast = useToast();
   const [busy, setBusy] = useState<"ACCEPTED" | "REJECTED" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -61,6 +63,11 @@ export default function ReviewBar({
       }
       setDone(body.final_decision);
       setConfirming(false);
+      toast.push({
+        tone: decision === "ACCEPTED" ? "ok" : "bad",
+        title: decision === "ACCEPTED" ? "Invoice accepted" : "Invoice rejected",
+        detail: `Recorded against run #${runId}. The automated verdict is unchanged.`,
+      });
       onReviewed?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "The server could not be reached.");
@@ -72,8 +79,8 @@ export default function ReviewBar({
   if (done) {
     return (
       <Callout
-        tone={done === "HUMAN_APPROVED" ? "success" : "danger"}
-        icon={<IconCheck size={14} />}
+        tone={done === "HUMAN_APPROVED" ? "ok" : "bad"}
+        icon={<IconCheck size={13} />}
         title={`Recorded — ${done.replace(/_/g, " ").toLowerCase()}`}
       >
         The automated verdict is unchanged and kept on record beside your decision.
@@ -83,10 +90,10 @@ export default function ReviewBar({
 
   return (
     <>
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-border bg-surface2 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-line bg-sunken p-3">
         <div className="min-w-0">
-          <p className="text-[13px] font-semibold">Your decision</p>
-          <p className="text-[13px] text-muted">
+          <p className="text-[12.5px] font-semibold">Your decision</p>
+          <p className="t-meta">
             Review the evidence above, then accept or reject. The automated verdict is kept either
             way.
           </p>
@@ -97,7 +104,7 @@ export default function ReviewBar({
             size="sm"
             onClick={() => setConfirming(true)}
             disabled={!!busy}
-            icon={<IconX size={14} />}
+            icon={<IconX size={13} />}
           >
             Reject
           </Button>
@@ -106,7 +113,7 @@ export default function ReviewBar({
             size="sm"
             onClick={() => rule("ACCEPTED")}
             loading={busy === "ACCEPTED"}
-            icon={busy === "ACCEPTED" ? undefined : <IconCheck size={14} />}
+            icon={busy === "ACCEPTED" ? undefined : <IconCheck size={13} />}
           >
             Accept
           </Button>
@@ -115,7 +122,7 @@ export default function ReviewBar({
 
       {error && (
         <div className="mt-2">
-          <Callout tone="danger" icon={<IconAlert size={14} />} title="Not recorded">
+          <Callout tone="bad" icon={<IconAlert size={13} />} title="Not recorded">
             {error}
           </Callout>
         </div>
@@ -143,7 +150,7 @@ export default function ReviewBar({
           </>
         }
       >
-        <p className="text-[13px] text-muted">
+        <p className="t-meta">
           This records your rejection against run #{runId} and releases any purchase-order budget it
           was holding. The automated verdict stays on record, and this decision cannot be changed
           afterwards — reversing it needs an administrator.

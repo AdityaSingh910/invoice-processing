@@ -7,7 +7,7 @@
  * looks identical whether you are watching it happen or opening it a week
  * later. Two renderings of the same evidence would eventually disagree.
  */
-import { Card, CardHeader } from "@/components/ui";
+import { Panel, PanelHeader } from "@/components/ui";
 import type { Audit, Extracted, PoMatch, Reason, Stage } from "@/lib/types";
 import AuditTrail from "./AuditTrail";
 import ReviewBar from "./ReviewBar";
@@ -45,61 +45,61 @@ export default function RunDetail({
   const hasPo = !!pm?.po_number;
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-4">
       {hasPo && (
-        <Card>
-          <CardHeader
+        <Panel>
+          <PanelHeader
             title="Three-way match"
             description="Each row is decided by the rule engine, not compared in the browser."
           />
-          <div className="mt-4">
+          <div className="mt-3.5">
             <MatchTable pm={pm!} audit={run.audit} />
           </div>
-          <div className="mt-5 border-t border-border pt-4">
+          <div className="mt-4 border-t border-line pt-4">
             <PoBudget pm={pm!} />
           </div>
-        </Card>
+        </Panel>
       )}
 
-      <div className="grid items-start gap-5 xl:grid-cols-2">
-        <Card>
-          <CardHeader title="Why this outcome" />
-          <div className="mt-4">
+      <div className="grid items-start gap-4 xl:grid-cols-2">
+        <Panel>
+          <PanelHeader title="Why this outcome" />
+          <div className="mt-3.5">
             <ReasonList reasons={run.reasons} />
           </div>
-        </Card>
+        </Panel>
 
         {run.extracted && (
-          <Card>
-            <CardHeader title="Extracted data" />
-            <div className="mt-4 flex flex-col gap-4">
+          <Panel>
+            <PanelHeader title="Extracted data" />
+            <div className="mt-3.5 flex flex-col gap-3.5">
               <ExtractionSummary e={run.extracted} />
-              <div className="border-t border-border pt-1">
+              <div className="border-t border-line pt-1">
                 <ExtractedFields e={run.extracted} />
               </div>
             </div>
-          </Card>
+          </Panel>
         )}
       </div>
 
       {showStages && (
-        <Card>
-          <CardHeader
+        <Panel>
+          <PanelHeader
             title="Pipeline"
             description="Stages never short-circuit — every check runs, and only the last one judges."
           />
-          <div className="mt-4">
+          <div className="mt-3.5">
             <StageList stages={run.stages} running={false} />
           </div>
-        </Card>
+        </Panel>
       )}
 
-      <Card>
-        <CardHeader title="Audit trail" description="Exactly what the decision was computed from." />
-        <div className="mt-4">
+      <Panel>
+        <PanelHeader title="Audit trail" description="Exactly what the decision was computed from." />
+        <div className="mt-3.5">
           <AuditTrail audit={run.audit} run={run} />
         </div>
-        <div className="mt-5">
+        <div className="mt-4">
           <ReviewBar
             runId={run.id}
             filename={run.filename}
@@ -108,7 +108,7 @@ export default function RunDetail({
             onReviewed={onReviewed}
           />
         </div>
-      </Card>
+      </Panel>
     </div>
   );
 }

@@ -3,20 +3,36 @@
 /**
  * Sign-in.
  *
- * The API rejects unauthenticated calls regardless of what this screen does —
- * it is a convenience for a human, never the control. No secret lives here: the
- * user supplies their own credentials and the server returns a token scoped to
- * them.
+ * Split layout: product identity and a plain statement of what the process does
+ * on the left, the authentication card on the right. The left panel is built
+ * from the system's real rule names and pipeline stages — it is a description
+ * of this software, not decoration, and it contains no invented figures.
+ *
+ * The API rejects unauthenticated calls regardless of what this screen does; it
+ * is a convenience for a human, never the control. No secret lives here.
  */
 import { useState } from "react";
 import { useAuth } from "@/lib/auth";
-import { Button, Callout, Field, Input } from "@/components/ui";
-import { IconAlert } from "@/components/ui/icons";
+import { Badge, Button, Callout, Field, Input } from "@/components/ui";
+import { IconAlert, IconCheck, IconShield, IconUser } from "@/components/ui/icons";
 
-const DEMO: { user: string; pass: string; role: string }[] = [
+const DEMO = [
   { user: "analyst", pass: "demo-analyst", role: "Process invoices" },
-  { user: "reviewer", pass: "demo-reviewer", role: "Process, accept and reject" },
+  { user: "reviewer", pass: "demo-reviewer", role: "Process, accept, reject" },
   { user: "admin", pass: "demo-admin", role: "Full administrative access" },
+];
+
+/** The nine stages, named as the pipeline names them. */
+const PIPELINE = [
+  "Ingest",
+  "Extract text",
+  "Extract fields",
+  "Validate",
+  "Vendor check",
+  "PO match",
+  "Duplicate check",
+  "Tolerance check",
+  "Decision",
 ];
 
 export default function LoginGate() {
@@ -25,6 +41,7 @@ export default function LoginGate() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -41,29 +58,81 @@ export default function LoginGate() {
   }
 
   return (
-    <div className="grid min-h-screen place-items-center p-4">
-      <div className="w-full max-w-[400px]">
-        <div className="mb-6 flex items-center gap-2.5">
-          <span className="grid h-9 w-9 place-items-center rounded-[var(--radius-md)] bg-accent text-[13px] font-bold text-accent-fg">
+    <div className="grid min-h-screen lg:grid-cols-[1.05fr_minmax(420px,0.95fr)]">
+      {/* ------------------------------------------------- product identity */}
+      <aside className="relative hidden flex-col justify-between border-r border-line bg-surface p-10 lg:flex">
+        <div className="flex items-center gap-2.5">
+          <span className="grid h-7 w-7 place-items-center rounded-[var(--radius-md)] bg-accent text-[11px] font-bold text-accent-fg">
             AP
           </span>
-          <div className="leading-tight">
-            <h1 className="text-[16px] font-semibold tracking-[-0.01em]">Invoice Processing</h1>
-            <p className="text-[12px] text-subtle">The AI reads. The rules decide.</p>
+          <span className="text-[13px] font-semibold tracking-[-0.01em]">Invoice Processing</span>
+        </div>
+
+        <div className="max-w-[440px]">
+          <h1 className="t-display">
+            The AI reads.
+            <br />
+            The rules decide.
+          </h1>
+          <p className="mt-4 text-[14px] leading-relaxed text-secondary">
+            Vendor invoices are read by a language model, then judged by
+            deterministic Python. No model ever touches a dollar comparison, so
+            the same invoice produces the same verdict every time — and the
+            reasoning is on record.
+          </p>
+
+          {/* The nine stages, as a compact rail. Static: this is what the
+              pipeline is, not a live readout. */}
+          <div className="mt-9">
+            <p className="t-caption mb-3">Nine checks, every invoice</p>
+            <ol className="flex flex-wrap gap-1.5">
+              {PIPELINE.map((stage, i) => (
+                <li
+                  key={stage}
+                  className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-line bg-sunken px-2 py-1"
+                >
+                  <span className="tnum text-[10px] text-faint">{i + 1}</span>
+                  <span className="text-[11.5px] text-secondary">{stage}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+
+          <div className="mt-9 flex flex-wrap gap-2">
+            <Badge tone="ok" dot>
+              Approved
+            </Badge>
+            <Badge tone="warn" dot>
+              Needs review
+            </Badge>
+            <Badge tone="bad" dot>
+              Rejected
+            </Badge>
           </div>
         </div>
 
-        <form
-          onSubmit={submit}
-          autoComplete="on"
-          className="rounded-[var(--radius-lg)] border border-border bg-surface p-6 shadow-[var(--shadow-sm)]"
-        >
-          <h2 className="text-[15px] font-semibold">Sign in</h2>
-          <p className="mt-1 text-[13px] text-muted">
-            Access is scoped to your account&apos;s permissions.
-          </p>
+        <p className="t-meta flex items-center gap-1.5">
+          <IconShield size={13} />
+          OAuth 2.0 bearer tokens, scoped per user, rate limited
+        </p>
+      </aside>
 
-          <div className="mt-5 flex flex-col gap-4">
+      {/* --------------------------------------------------- authentication */}
+      <main className="flex items-center justify-center p-6">
+        <div className="w-full max-w-[380px]">
+          <div className="mb-6 lg:hidden">
+            <div className="flex items-center gap-2.5">
+              <span className="grid h-7 w-7 place-items-center rounded-[var(--radius-md)] bg-accent text-[11px] font-bold text-accent-fg">
+                AP
+              </span>
+              <span className="text-[13px] font-semibold">Invoice Processing</span>
+            </div>
+          </div>
+
+          <h2 className="t-page">Sign in</h2>
+          <p className="t-meta mt-1">Access is scoped to your account&apos;s permissions.</p>
+
+          <form onSubmit={submit} autoComplete="on" className="mt-6 flex flex-col gap-4">
             <Field label="Username" htmlFor="username">
               <Input
                 id="username"
@@ -72,7 +141,10 @@ export default function LoginGate() {
                 placeholder="analyst"
                 required
                 value={username}
-                onChange={(e) => setUsername(e.currentTarget.value)}
+                onChange={(e) => {
+                  setUsername(e.currentTarget.value);
+                  setSelected(null);
+                }}
               />
             </Field>
 
@@ -88,43 +160,61 @@ export default function LoginGate() {
                 onChange={(e) => setPassword(e.currentTarget.value)}
               />
             </Field>
-          </div>
 
-          {(error || notice) && (
-            <div className="mt-4">
-              <Callout tone="danger" icon={<IconAlert size={14} />}>
+            {(error || notice) && (
+              <Callout tone="bad" icon={<IconAlert size={13} />}>
                 {error || notice}
               </Callout>
+            )}
+
+            <Button type="submit" variant="primary" className="h-9 w-full" loading={busy}>
+              {busy ? "Signing in" : "Sign in"}
+            </Button>
+          </form>
+
+          {/* ------------------------------------------- demo access panel */}
+          <div className="mt-7 rounded-[var(--radius-lg)] border border-line bg-surface">
+            <div className="flex items-center justify-between border-b border-line px-3 py-2">
+              <span className="t-caption">Demo access</span>
+              <Badge tone="accent">Evaluation</Badge>
             </div>
-          )}
-
-          <Button type="submit" variant="primary" className="mt-5 w-full" loading={busy}>
-            {busy ? "Signing in…" : "Sign in"}
-          </Button>
-        </form>
-
-        <div className="mt-4 rounded-[var(--radius-lg)] border border-border bg-surface2 p-4">
-          <p className="label mb-2.5">Demo accounts</p>
-          <div className="flex flex-col gap-1">
-            {DEMO.map((d) => (
-              <button
-                key={d.user}
-                type="button"
-                onClick={() => {
-                  setUsername(d.user);
-                  setPassword(d.pass);
-                  setError(null);
-                }}
-                className="flex items-center justify-between gap-3 rounded-[var(--radius-sm)] px-2 py-1.5 text-left transition-colors hover:bg-surface3"
-              >
-                <span className="num text-[13px] font-medium">{d.user}</span>
-                <span className="text-[12px] text-subtle">{d.role}</span>
-              </button>
-            ))}
+            <div className="p-1">
+              {DEMO.map((d) => {
+                const active = selected === d.user;
+                return (
+                  <button
+                    key={d.user}
+                    type="button"
+                    onClick={() => {
+                      setUsername(d.user);
+                      setPassword(d.pass);
+                      setSelected(d.user);
+                      setError(null);
+                    }}
+                    className={`flex w-full items-center gap-2.5 rounded-[var(--radius-md)] px-2.5 py-2
+                      text-left transition-colors ${active ? "bg-hover" : "hover:bg-hover"}`}
+                  >
+                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-sunken text-faint">
+                      <IconUser size={12} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[12.5px] font-medium">{d.user}</span>
+                      <span className="t-meta block text-[11px]">{d.role}</span>
+                    </span>
+                    {active ? (
+                      <span className="text-ok">
+                        <IconCheck size={14} />
+                      </span>
+                    ) : (
+                      <span className="t-meta text-[11px]">Use</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          <p className="mt-2.5 text-[12px] text-subtle">Select one to fill the form.</p>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

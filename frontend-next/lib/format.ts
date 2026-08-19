@@ -80,3 +80,40 @@ export const VERDICT_BLURB: Record<string, string> = {
   NEEDS_REVIEW: "Nothing is wrong exactly, but something needs a person to decide.",
   REJECTED: "A hard rule failed. This should not be paid as it stands.",
 };
+
+/**
+ * The nine stages, grouped into the six phases an AP person thinks in.
+ *
+ * This is presentation only: the pipeline still runs and reports all nine
+ * stages, and each phase's state is derived from the stages inside it rather
+ * than tracked separately. Nothing here can report a phase complete that the
+ * backend did not actually finish.
+ */
+export const PHASES: { key: string; label: string; stages: string[] }[] = [
+  { key: "upload", label: "Document", stages: ["INGEST"] },
+  { key: "extract", label: "Extraction", stages: ["EXTRACT_TEXT", "EXTRACT_FIELDS"] },
+  { key: "validate", label: "Validation", stages: ["VALIDATE"] },
+  { key: "match", label: "PO match", stages: ["VENDOR_CHECK", "PO_MATCH"] },
+  { key: "rules", label: "Business rules", stages: ["DUPLICATE_CHECK", "TOLERANCE_CHECK"] },
+  { key: "decision", label: "Decision", stages: ["DECISION"] },
+];
+
+/**
+ * Compact timestamp for dense feeds: the time alone for today, otherwise the
+ * day and month. A full "19/08/2026, 20:06:27" in a narrow column truncates to
+ * something unreadable, and the year is never the interesting part in an
+ * activity feed.
+ */
+export function whenCompact(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+
+  return sameDay
+    ? d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}

@@ -3,32 +3,36 @@
 /**
  * Primitive layer.
  *
- * Everything the app renders is built from these, so spacing, radii, weight and
- * focus behaviour are decided once here rather than re-improvised per screen.
- * If a screen needs a variant, it belongs in this file — not as a one-off set
- * of utility classes at the call site.
+ * Everything the app renders is built from these, so size, weight, radius and
+ * focus behaviour are decided once rather than re-improvised per screen. A
+ * screen needing a new variant should add it here, not compose one-off utility
+ * strings at the call site.
  */
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
+import type {
+  ButtonHTMLAttributes,
+  InputHTMLAttributes,
+  ReactNode,
+  SelectHTMLAttributes,
+} from "react";
 import { IconAlert, IconEmpty, IconSearch } from "./icons";
 
 /* ------------------------------------------------------------------ button */
 
-type Variant = "primary" | "secondary" | "ghost" | "danger";
-type Size = "sm" | "md";
+type Variant = "primary" | "secondary" | "ghost" | "danger" | "subtle";
+type Size = "xs" | "sm" | "md";
 
 const VARIANT: Record<Variant, string> = {
-  primary:
-    "bg-accent text-accent-fg border border-transparent hover:bg-accent-hover shadow-[var(--shadow-xs)]",
-  secondary:
-    "bg-surface text-fg border border-border hover:bg-surface2 hover:border-border-strong shadow-[var(--shadow-xs)]",
-  ghost: "bg-transparent text-muted border border-transparent hover:bg-surface2 hover:text-fg",
-  danger:
-    "bg-surface text-[var(--danger)] border border-[var(--danger-line)] hover:bg-[var(--danger-weak)]",
+  primary: "bg-accent text-accent-fg hover:bg-accent-hover shadow-[var(--shadow-xs)]",
+  secondary: "bg-raised text-fg border border-line hover:bg-hover hover:border-line-strong",
+  subtle: "bg-sunken text-secondary hover:bg-hover hover:text-fg",
+  ghost: "text-muted hover:bg-hover hover:text-fg",
+  danger: "bg-transparent text-bad border border-bad-line hover:bg-bad-quiet",
 };
 
 const SIZE: Record<Size, string> = {
-  sm: "h-8 px-3 text-[13px] gap-1.5 rounded-[var(--radius-sm)]",
-  md: "h-9 px-3.5 text-[14px] gap-2 rounded-[var(--radius-md)]",
+  xs: "h-6 px-2 text-[11.5px] gap-1 rounded-[var(--radius-sm)]",
+  sm: "h-7 px-2.5 text-[12.5px] gap-1.5 rounded-[var(--radius-sm)]",
+  md: "h-8 px-3 text-[13px] gap-1.5 rounded-[var(--radius-md)]",
 };
 
 export function Button({
@@ -52,21 +56,22 @@ export function Button({
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       className={`inline-flex shrink-0 items-center justify-center font-medium whitespace-nowrap
-        transition-colors duration-100 disabled:pointer-events-none disabled:opacity-45
+        transition-[background-color,border-color,color,box-shadow,transform] duration-100
+        active:translate-y-px disabled:pointer-events-none disabled:opacity-40
         ${VARIANT[variant]} ${SIZE[size]} ${className}`}
     >
-      {loading ? <Spinner /> : icon}
+      {loading ? <Spinner size={size === "md" ? 13 : 11} /> : icon}
       {children}
     </button>
   );
 }
 
-export function Spinner({ size = 14 }: { size?: number }) {
+export function Spinner({ size = 13 }: { size?: number }) {
   return (
     <span
       role="status"
       aria-label="Loading"
-      className="inline-block shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
+      className="inline-block shrink-0 animate-spin rounded-full border-[1.5px] border-current border-t-transparent"
       style={{ width: size, height: size }}
     />
   );
@@ -74,25 +79,40 @@ export function Spinner({ size = 14 }: { size?: number }) {
 
 /* ------------------------------------------------------------------- badge */
 
-type Tone = "neutral" | "success" | "warning" | "danger" | "accent";
+export type Tone = "neutral" | "ok" | "warn" | "bad" | "accent";
 
-const TONE: Record<Tone, string> = {
-  neutral: "bg-surface2 text-muted border-border",
-  success: "bg-[var(--success-weak)] text-[var(--success)] border-[var(--success-line)]",
-  warning: "bg-[var(--warning-weak)] text-[var(--warning)] border-[var(--warning-line)]",
-  danger: "bg-[var(--danger-weak)] text-[var(--danger)] border-[var(--danger-line)]",
-  accent: "bg-accent-weak text-accent border-accent-line",
+const TONE_SOFT: Record<Tone, string> = {
+  neutral: "bg-sunken text-muted",
+  ok: "bg-ok-quiet text-ok",
+  warn: "bg-warn-quiet text-warn",
+  bad: "bg-bad-quiet text-bad",
+  accent: "bg-accent-quiet text-accent",
 };
 
+const DOT: Record<Tone, string> = {
+  neutral: "bg-faint",
+  ok: "bg-ok-vivid",
+  warn: "bg-warn-vivid",
+  bad: "bg-bad-vivid",
+  accent: "bg-accent",
+};
+
+/**
+ * Status is carried by a small colour dot plus a word, not by a filled block.
+ * At table density a row of saturated pills becomes the loudest thing on the
+ * screen and drowns the figures the row exists to show.
+ */
 export function Badge({
   tone = "neutral",
   children,
+  dot = false,
   icon,
   className = "",
   title,
 }: {
   tone?: Tone;
   children: ReactNode;
+  dot?: boolean;
   icon?: ReactNode;
   className?: string;
   title?: string;
@@ -100,115 +120,126 @@ export function Badge({
   return (
     <span
       title={title}
-      className={`inline-flex items-center gap-1 rounded-[var(--radius-xs)] border px-1.5 py-0.5
-        text-[11px] font-semibold whitespace-nowrap ${TONE[tone]} ${className}`}
+      className={`inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] px-1.5 py-0.5
+        text-[11.5px] font-medium whitespace-nowrap ${TONE_SOFT[tone]} ${className}`}
     >
+      {dot && <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT[tone]}`} />}
       {icon}
       {children}
     </span>
   );
 }
 
-/** Maps a server-produced verdict onto a tone. The single place that decision
- *  is made, so a status can never be coloured two different ways. */
+/** One place decides how a server verdict is coloured, so it can never be
+ *  shown two different ways on two different screens. */
 export const toneFor = (status?: string | null): Tone => {
   switch (status) {
     case "APPROVED":
     case "HUMAN_APPROVED":
     case "open":
-      return "success";
+      return "ok";
     case "NEEDS_REVIEW":
-      return "warning";
+      return "warn";
     case "REJECTED":
     case "HUMAN_REJECTED":
     case "closed":
-      return "danger";
+      return "bad";
     default:
       return "neutral";
   }
 };
 
+const STATUS_WORD: Record<string, string> = {
+  APPROVED: "Approved",
+  NEEDS_REVIEW: "Needs review",
+  REJECTED: "Rejected",
+  HUMAN_APPROVED: "Approved by reviewer",
+  HUMAN_REJECTED: "Rejected by reviewer",
+};
+
 export function StatusBadge({ status, className }: { status?: string | null; className?: string }) {
   if (!status) return null;
   return (
-    <Badge tone={toneFor(status)} className={className}>
-      {String(status).replace(/_/g, " ").toLowerCase()}
+    <Badge tone={toneFor(status)} dot className={className}>
+      {STATUS_WORD[status] ?? String(status).replace(/_/g, " ").toLowerCase()}
     </Badge>
   );
 }
 
-/* -------------------------------------------------------------------- card */
+/* ----------------------------------------------------------------- surfaces */
 
-export function Card({
+/** The workhorse surface. `flush` drops padding for tables and lists that
+ *  should meet the panel edge. */
+export function Panel({
   children,
   className = "",
-  padded = true,
+  flush = false,
+  hover = false,
 }: {
   children: ReactNode;
   className?: string;
-  padded?: boolean;
+  flush?: boolean;
+  hover?: boolean;
 }) {
   return (
     <section
-      className={`rounded-[var(--radius-lg)] border border-border bg-surface shadow-[var(--shadow-xs)]
-        ${padded ? "p-4 sm:p-5" : ""} ${className}`}
+      className={`panel overflow-hidden ${flush ? "" : "p-4"} ${
+        hover ? "transition-colors hover:border-line-strong" : ""
+      } ${className}`}
     >
       {children}
     </section>
   );
 }
 
-export function CardHeader({
+export function PanelHeader({
   title,
   description,
   actions,
   className = "",
+  bordered = false,
 }: {
   title: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
   className?: string;
+  bordered?: boolean;
 }) {
   return (
-    <div className={`flex flex-wrap items-start justify-between gap-3 ${className}`}>
+    <div
+      className={`flex flex-wrap items-start justify-between gap-3 ${
+        bordered ? "border-b border-line px-4 py-3" : ""
+      } ${className}`}
+    >
       <div className="min-w-0">
-        <h2 className="text-[15px] leading-tight font-semibold tracking-[-0.01em]">{title}</h2>
-        {description && <p className="mt-0.5 text-[13px] text-muted">{description}</p>}
+        <h2 className="t-section">{title}</h2>
+        {description && <p className="t-meta mt-0.5">{description}</p>}
       </div>
-      {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
+      {actions && <div className="flex shrink-0 flex-wrap items-center gap-1.5">{actions}</div>}
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ inputs */
 
-// No width here on purpose: `w-full` in the base fought every caller that
-// wanted an intrinsic width, and which one won depended on Tailwind's output
-// order rather than on the call site.
-const FIELD_BASE =
-  "rounded-[var(--radius-md)] border border-border bg-surface text-[14px] text-fg " +
-  "transition-colors placeholder:text-subtle hover:border-border-strong " +
-  "focus:border-accent focus:outline-none focus-visible:outline-none " +
+const FIELD =
+  "rounded-[var(--radius-md)] border border-line bg-sunken text-[13px] text-fg " +
+  "transition-colors placeholder:text-faint hover:border-line-strong " +
+  "focus:border-accent focus:bg-surface focus:outline-none focus-visible:outline-none " +
   "disabled:cursor-not-allowed disabled:opacity-50";
 
-export function Input({
-  className = "",
-  ...rest
-}: InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...rest} className={`${FIELD_BASE} h-9 w-full px-3 ${className}`} />;
+export function Input({ className = "", ...rest }: InputHTMLAttributes<HTMLInputElement>) {
+  return <input {...rest} className={`${FIELD} h-9 w-full px-3 ${className}`} />;
 }
 
-export function SearchInput({
-  className = "",
-  ...rest
-}: InputHTMLAttributes<HTMLInputElement>) {
+export function SearchInput({ className = "", ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <div className={`relative ${className}`}>
       <IconSearch
-        className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-subtle"
-        size={15}
+        className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-faint"
+        size={14}
       />
-      <input {...rest} type="search" className={`${FIELD_BASE} h-9 w-full pr-3 pl-8`} />
+      <input {...rest} type="search" className={`${FIELD} h-8 w-full pr-3 pl-[30px]`} />
     </div>
   );
 }
@@ -219,7 +250,7 @@ export function Select({
   ...rest
 }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
-    <select {...rest} className={`${FIELD_BASE} h-9 cursor-pointer pr-8 pl-3 ${className}`}>
+    <select {...rest} className={`${FIELD} h-8 cursor-pointer pr-7 pl-2.5 ${className}`}>
       {children}
     </select>
   );
@@ -238,18 +269,18 @@ export function Field({
 }) {
   return (
     <div>
-      <label htmlFor={htmlFor} className="mb-1.5 block text-[13px] font-medium">
+      <label htmlFor={htmlFor} className="mb-1.5 block text-[12.5px] font-medium text-secondary">
         {label}
       </label>
       {children}
-      {hint && <p className="mt-1 text-[12px] text-subtle">{hint}</p>}
+      {hint && <p className="t-meta mt-1">{hint}</p>}
     </div>
   );
 }
 
-/* ------------------------------------------------------------- segmented */
+/* --------------------------------------------------------------- segmented */
 
-export function SegmentedControl<T extends string>({
+export function Segmented<T extends string>({
   options,
   value,
   onChange,
@@ -264,7 +295,7 @@ export function SegmentedControl<T extends string>({
     <div
       role="tablist"
       aria-label={ariaLabel}
-      className="inline-flex items-center gap-0.5 rounded-[var(--radius-md)] border border-border bg-surface2 p-0.5"
+      className="inline-flex items-center gap-0.5 rounded-[var(--radius-md)] border border-line bg-sunken p-0.5"
     >
       {options.map((o) => {
         const active = o.value === value;
@@ -275,17 +306,13 @@ export function SegmentedControl<T extends string>({
             aria-selected={active}
             onClick={() => onChange(o.value)}
             className={`inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 py-1
-              text-[13px] font-medium transition-colors ${
-                active
-                  ? "bg-surface text-fg shadow-[var(--shadow-xs)]"
-                  : "text-muted hover:text-fg"
+              text-[12.5px] font-medium transition-colors ${
+                active ? "bg-raised text-fg shadow-[var(--shadow-xs)]" : "text-muted hover:text-fg"
               }`}
           >
             {o.label}
             {o.count !== undefined && (
-              <span className={`num text-[11px] ${active ? "text-subtle" : "text-subtle"}`}>
-                {o.count}
-              </span>
+              <span className="tnum text-[11px] text-faint">{o.count}</span>
             )}
           </button>
         );
@@ -294,29 +321,31 @@ export function SegmentedControl<T extends string>({
   );
 }
 
-/* ----------------------------------------------------------------- states */
+/* ------------------------------------------------------------------ states */
 
 export function EmptyState({
   title,
   description,
   action,
   icon,
+  compact = false,
 }: {
   title: string;
   description?: ReactNode;
   action?: ReactNode;
   icon?: ReactNode;
+  compact?: boolean;
 }) {
   return (
-    <div className="flex flex-col items-center gap-3 px-6 py-14 text-center">
-      <div className="grid h-10 w-10 place-items-center rounded-[var(--radius-md)] border border-border bg-surface2 text-subtle">
-        {icon ?? <IconEmpty size={18} />}
+    <div
+      className={`flex flex-col items-center gap-2.5 text-center ${compact ? "px-4 py-8" : "px-6 py-14"}`}
+    >
+      <div className="grid h-9 w-9 place-items-center rounded-[var(--radius-md)] border border-line bg-sunken text-faint">
+        {icon ?? <IconEmpty size={16} />}
       </div>
       <div>
-        <p className="text-[14px] font-semibold">{title}</p>
-        {description && (
-          <p className="mx-auto mt-1 max-w-sm text-[13px] text-muted">{description}</p>
-        )}
+        <p className="text-[13px] font-medium">{title}</p>
+        {description && <p className="t-meta mx-auto mt-1 max-w-xs">{description}</p>}
       </div>
       {action}
     </div>
@@ -324,7 +353,7 @@ export function EmptyState({
 }
 
 export function ErrorState({
-  title = "Something went wrong",
+  title = "Could not load",
   description,
   onRetry,
 }: {
@@ -333,42 +362,50 @@ export function ErrorState({
   onRetry?: () => void;
 }) {
   return (
-    <div
-      role="alert"
-      className="flex flex-col items-center gap-3 px-6 py-12 text-center"
-    >
-      <div className="grid h-10 w-10 place-items-center rounded-[var(--radius-md)] border border-[var(--danger-line)] bg-[var(--danger-weak)] text-[var(--danger)]">
-        <IconAlert size={18} />
+    <div role="alert" className="flex flex-col items-center gap-2.5 px-6 py-12 text-center">
+      <div className="grid h-9 w-9 place-items-center rounded-[var(--radius-md)] border border-bad-line bg-bad-quiet text-bad">
+        <IconAlert size={16} />
       </div>
       <div>
-        <p className="text-[14px] font-semibold">{title}</p>
-        {description && (
-          <p className="mx-auto mt-1 max-w-sm text-[13px] text-muted">{description}</p>
-        )}
+        <p className="text-[13px] font-medium">{title}</p>
+        {description && <p className="t-meta mx-auto mt-1 max-w-xs">{description}</p>}
       </div>
       {onRetry && (
         <Button size="sm" onClick={onRetry}>
-          Try again
+          Retry
         </Button>
       )}
     </div>
   );
 }
 
-/** Inline message. `tone` carries the meaning; the icon is decorative. */
+/** Inline message. The left rule carries the tone; the fill stays quiet. */
 export function Callout({
   tone = "neutral",
   title,
   children,
   icon,
+  className = "",
 }: {
   tone?: Tone;
   title?: ReactNode;
   children?: ReactNode;
   icon?: ReactNode;
+  className?: string;
 }) {
+  const accent = {
+    neutral: "var(--line-strong)",
+    ok: "var(--ok-vivid)",
+    warn: "var(--warn-vivid)",
+    bad: "var(--bad-vivid)",
+    accent: "var(--accent)",
+  }[tone];
+
   return (
-    <div className={`rounded-[var(--radius-md)] border px-3 py-2.5 text-[13px] ${TONE[tone]}`}>
+    <div
+      className={`rounded-[var(--radius-md)] px-3 py-2.5 text-[12.5px] ${TONE_SOFT[tone]} ${className}`}
+      style={{ borderLeft: `2px solid ${accent}` }}
+    >
       <div className="flex items-start gap-2">
         {icon && <span className="mt-px shrink-0">{icon}</span>}
         <div className="min-w-0">
@@ -382,22 +419,24 @@ export function Callout({
 
 /* --------------------------------------------------------------- skeleton */
 
-export function Skeleton({ className = "" }: { className?: string }) {
-  return <div className={`skeleton ${className}`} aria-hidden />;
+export function Skeleton({
+  className = "",
+  style,
+}: {
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  return <div className={`skeleton ${className}`} style={style} aria-hidden />;
 }
 
-export function SkeletonRows({ rows = 5, cols = 4 }: { rows?: number; cols?: number }) {
+export function SkeletonRows({ rows = 6, cols = 5 }: { rows?: number; cols?: number }) {
+  const widths = [30, 20, 14, 12, 16, 10];
   return (
-    <div className="divide-y divide-border" aria-busy="true" aria-label="Loading rows">
+    <div className="divide-line" aria-busy="true" aria-label="Loading">
       {Array.from({ length: rows }).map((_, r) => (
-        <div key={r} className="flex items-center gap-4 px-1 py-3">
+        <div key={r} className="flex items-center gap-4 px-4 py-2.5">
           {Array.from({ length: cols }).map((_, c) => (
-            <Skeleton
-              key={c}
-              className="h-3.5"
-              // Varying widths read as content rather than as a loading bar.
-              {...{ style: { width: `${[28, 18, 14, 10, 12][c % 5]}%` } }}
-            />
+            <Skeleton key={c} className="h-3" style={{ width: `${widths[c % 6]}%` }} />
           ))}
         </div>
       ))}
@@ -407,19 +446,30 @@ export function SkeletonRows({ rows = 5, cols = 4 }: { rows?: number; cols?: num
 
 /* ---------------------------------------------------------------- tooltip */
 
-/** CSS-only tooltip. Appears on hover AND keyboard focus, which a title
- *  attribute does not do. */
-export function Tooltip({ label, children }: { label: string; children: ReactNode }) {
+/** Shows on hover AND keyboard focus, which a `title` attribute never does. */
+export function Tooltip({
+  label,
+  children,
+  side = "top",
+}: {
+  label: string;
+  children: ReactNode;
+  side?: "top" | "right";
+}) {
+  const pos =
+    side === "right"
+      ? "left-full top-1/2 ml-2 -translate-y-1/2"
+      : "bottom-full left-1/2 mb-1.5 -translate-x-1/2";
+
   return (
     <span className="group/tt relative inline-flex">
       {children}
       <span
         role="tooltip"
-        className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2
-          scale-95 rounded-[var(--radius-sm)] border border-border bg-surface px-2 py-1 text-[12px]
-          whitespace-nowrap text-fg opacity-0 shadow-[var(--shadow-md)] transition
-          group-hover/tt:scale-100 group-hover/tt:opacity-100
-          group-focus-within/tt:scale-100 group-focus-within/tt:opacity-100"
+        className={`pointer-events-none absolute z-50 ${pos} rounded-[var(--radius-sm)]
+          border border-line bg-raised px-2 py-1 text-[11.5px] whitespace-nowrap text-fg
+          opacity-0 shadow-[var(--shadow-md)] transition-opacity duration-100
+          group-hover/tt:opacity-100 group-focus-within/tt:opacity-100`}
       >
         {label}
       </span>
@@ -439,7 +489,7 @@ export function TH({
     <th
       scope="col"
       {...rest}
-      className={`label sticky top-0 z-10 bg-surface2 px-3 py-2 font-semibold ${
+      className={`t-caption border-b border-line px-3 py-2 ${
         align === "right" ? "text-right" : "text-left"
       } ${className}`}
     >
@@ -457,7 +507,7 @@ export function TD({
   return (
     <td
       {...rest}
-      className={`px-3 py-2.5 align-middle ${align === "right" ? "text-right" : ""} ${className}`}
+      className={`px-3 py-2 align-middle ${align === "right" ? "text-right" : ""} ${className}`}
     >
       {children}
     </td>
@@ -465,15 +515,53 @@ export function TD({
 }
 
 /** Key/value list used across the detail panels. */
-export function DescriptionList({ rows }: { rows: [ReactNode, ReactNode][] }) {
+export function KeyValues({ rows }: { rows: [ReactNode, ReactNode][] }) {
   return (
-    <dl className="divide-y divide-border">
+    <dl className="divide-line">
       {rows.map(([k, v], i) => (
-        <div key={i} className="flex items-baseline justify-between gap-4 py-2">
-          <dt className="shrink-0 text-[13px] text-muted">{k}</dt>
-          <dd className="min-w-0 text-right text-[13px] font-medium break-words">{v}</dd>
+        <div key={i} className="flex items-baseline justify-between gap-4 py-1.5">
+          <dt className="t-meta shrink-0">{k}</dt>
+          <dd className="min-w-0 text-right text-[12.5px] font-medium break-words">{v}</dd>
         </div>
       ))}
     </dl>
+  );
+}
+
+/** Thin proportion bar. Used for budgets and rankings. */
+export function Meter({
+  value,
+  max,
+  tone = "accent",
+  height = 4,
+  ariaLabel,
+}: {
+  value: number;
+  max: number;
+  tone?: Tone;
+  height?: number;
+  ariaLabel: string;
+}) {
+  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  const fill = {
+    neutral: "var(--fg-faint)",
+    ok: "var(--ok-vivid)",
+    warn: "var(--warn-vivid)",
+    bad: "var(--bad-vivid)",
+    accent: "var(--accent)",
+  }[tone];
+
+  return (
+    <div
+      role="img"
+      aria-label={ariaLabel}
+      className="w-full overflow-hidden rounded-full bg-sunken"
+      style={{ height }}
+    >
+      <div
+        className="h-full rounded-full transition-[width] duration-500 ease-out"
+        style={{ width: `${pct}%`, background: fill }}
+      />
+    </div>
   );
 }

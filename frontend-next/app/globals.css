@@ -3,143 +3,154 @@
 /* ===========================================================================
    DESIGN SYSTEM
 
-   A dense, data-heavy operations tool. The visual language is deliberately
-   quiet: a neutral zinc ramp, ONE accent, hairline borders doing most of the
-   structural work, and shadows reserved for things that genuinely float.
+   Dense operations software for finance. The visual language is restrained on
+   purpose: a charcoal surface hierarchy, one interactive accent, and three
+   semantic colours that mean approved / held / rejected and nothing else.
 
-   Colour is information here. The accent means "interactive"; the three status
-   colours mean approved / held / rejected and nothing else. Nothing is tinted
-   for decoration, and there are no gradients.
+   Structure is carried by SURFACE ELEVATION first and borders second. Outlining
+   every element is what makes an interface read as a wireframe; here a panel is
+   distinguished from the canvas by being lighter, and a hairline only appears
+   where two surfaces of similar value actually meet.
    =========================================================================== */
 
 :root {
-  /* --- surfaces ---------------------------------------------------------- */
-  --bg: #fafafa;
+  /* --- canvas → elevated surfaces ---------------------------------------- */
+  --canvas: #f7f8fa;
   --surface: #ffffff;
-  --surface-2: #f4f4f5;
-  --surface-3: #ececee;
+  --raised: #ffffff;
+  --sunken: #f1f2f5;
+  --hover: #f4f5f8;
 
-  /* --- lines ------------------------------------------------------------- */
-  --border: #e4e4e7;
-  --border-strong: #d4d4d8;
+  /* --- lines: two weights, both quiet ------------------------------------ */
+  --line: #e6e8ec;
+  --line-strong: #d5d8de;
 
-  /* --- text -------------------------------------------------------------- */
-  --fg: #18181b;
-  --fg-muted: #52525b;
-  --fg-subtle: #8b8b94;
+  /* --- text: four steps -------------------------------------------------- */
+  --fg: #11131a;
+  --fg-secondary: #444a56;
+  --fg-muted: #6b7280;
+  --fg-faint: #9aa1ad;
 
-  /* --- accent: exactly one ----------------------------------------------- */
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
+  /* --- one interactive accent -------------------------------------------- */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
   --accent-fg: #ffffff;
-  --accent-weak: #eff4ff;
-  --accent-line: #c9dafe;
-  --ring: rgba(37, 99, 235, 0.4);
+  --accent-quiet: #eef0fe;
+  --accent-line: #c9cdf9;
+  --ring: rgba(79, 70, 229, 0.35);
 
-  /* --- status: badges and indicators only -------------------------------- */
-  --success: #15803d;
-  --success-weak: #f0fdf4;
-  --success-line: #bbf7d0;
-  --success-solid: #16a34a;
+  /* --- semantic: meaning only, never decoration -------------------------- */
+  --ok: #067a4d;
+  --ok-quiet: #e9f8f0;
+  --ok-line: #b4e6cd;
+  --ok-vivid: #10b981;
 
-  --warning: #b45309;
-  --warning-weak: #fffbeb;
-  --warning-line: #fde68a;
-  --warning-solid: #f59e0b;
+  --warn: #a35f06;
+  --warn-quiet: #fdf5e7;
+  --warn-line: #f5dcae;
+  --warn-vivid: #f59e0b;
 
-  --danger: #b91c1c;
-  --danger-weak: #fef2f2;
-  --danger-line: #fecaca;
-  --danger-solid: #dc2626;
+  --bad: #bb2634;
+  --bad-quiet: #fdecee;
+  --bad-line: #f7c8cd;
+  --bad-vivid: #ef4444;
 
-  /* --- elevation: minimal ------------------------------------------------ */
-  --shadow-xs: 0 1px 2px rgba(24, 24, 27, 0.04);
-  --shadow-sm: 0 1px 3px rgba(24, 24, 27, 0.06), 0 1px 2px rgba(24, 24, 27, 0.04);
-  --shadow-md: 0 4px 12px rgba(24, 24, 27, 0.08), 0 1px 3px rgba(24, 24, 27, 0.04);
-  --shadow-lg: 0 16px 40px rgba(24, 24, 27, 0.16), 0 4px 12px rgba(24, 24, 27, 0.06);
+  --shadow-xs: 0 1px 2px rgba(16, 19, 26, 0.05);
+  --shadow-sm: 0 1px 3px rgba(16, 19, 26, 0.07), 0 1px 2px rgba(16, 19, 26, 0.04);
+  --shadow-md: 0 8px 24px -8px rgba(16, 19, 26, 0.14), 0 2px 6px rgba(16, 19, 26, 0.05);
+  --shadow-lg: 0 24px 56px -16px rgba(16, 19, 26, 0.24), 0 6px 16px rgba(16, 19, 26, 0.08);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #09090b;
-    --surface: #101012;
-    --surface-2: #17171a;
-    --surface-3: #202024;
+    /* Charcoal, not black. A true-black canvas under large empty regions is
+       what makes a dark UI read as a void; these four steps keep the page
+       feeling built even where content is sparse. */
+    --canvas: #0b0d11;
+    --surface: #131720;
+    --raised: #171c26;
+    --sunken: #0f131a;
+    --hover: #1c2230;
 
-    --border: #26262a;
-    --border-strong: #35353b;
+    --line: #232936;
+    --line-strong: #313949;
 
-    --fg: #fafafa;
-    --fg-muted: #a1a1aa;
-    --fg-subtle: #71717a;
+    --fg: #e9ecf2;
+    --fg-secondary: #b3bac8;
+    --fg-muted: #8b94a6;
+    --fg-faint: #626c80;
 
-    --accent: #5b87f5;
-    --accent-hover: #7ba0f8;
-    --accent-fg: #0b1020;
-    --accent-weak: #131c33;
-    --accent-line: #24365e;
-    --ring: rgba(91, 135, 245, 0.45);
+    --accent: #6d7cf6;
+    --accent-hover: #8a95f8;
+    --accent-fg: #0a0c14;
+    --accent-quiet: #1a1f3a;
+    --accent-line: #2f3766;
+    --ring: rgba(109, 124, 246, 0.4);
 
-    --success: #4ade80;
-    --success-weak: #0c1f16;
-    --success-line: #1d4632;
-    --success-solid: #22c55e;
+    --ok: #3ddc97;
+    --ok-quiet: #0e2a20;
+    --ok-line: #1d4f3c;
+    --ok-vivid: #10b981;
 
-    --warning: #fbbf24;
-    --warning-weak: #241b08;
-    --warning-line: #4d3a12;
-    --warning-solid: #f59e0b;
+    --warn: #f7c05b;
+    --warn-quiet: #2b2109;
+    --warn-line: #55420f;
+    --warn-vivid: #f59e0b;
 
-    --danger: #f87171;
-    --danger-weak: #251114;
-    --danger-line: #532226;
-    --danger-solid: #ef4444;
+    --bad: #fb7c86;
+    --bad-quiet: #2c1216;
+    --bad-line: #5a2229;
+    --bad-vivid: #ef4444;
 
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.55);
-    --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.7);
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.6);
+    --shadow-md: 0 10px 28px -10px rgba(0, 0, 0, 0.75);
+    --shadow-lg: 0 28px 64px -20px rgba(0, 0, 0, 0.85);
   }
 }
 
 @theme inline {
-  --color-bg: var(--bg);
+  --color-canvas: var(--canvas);
   --color-surface: var(--surface);
-  --color-surface2: var(--surface-2);
-  --color-surface3: var(--surface-3);
-  --color-border: var(--border);
-  --color-border-strong: var(--border-strong);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+  --color-hover: var(--hover);
+
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
   --color-fg: var(--fg);
+  --color-secondary: var(--fg-secondary);
   --color-muted: var(--fg-muted);
-  --color-subtle: var(--fg-subtle);
+  --color-faint: var(--fg-faint);
 
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-accent-fg: var(--accent-fg);
-  --color-accent-weak: var(--accent-weak);
+  --color-accent-quiet: var(--accent-quiet);
   --color-accent-line: var(--accent-line);
 
-  --color-success: var(--success);
-  --color-success-weak: var(--success-weak);
-  --color-success-line: var(--success-line);
-  --color-success-solid: var(--success-solid);
+  --color-ok: var(--ok);
+  --color-ok-quiet: var(--ok-quiet);
+  --color-ok-line: var(--ok-line);
+  --color-ok-vivid: var(--ok-vivid);
 
-  --color-warning: var(--warning);
-  --color-warning-weak: var(--warning-weak);
-  --color-warning-line: var(--warning-line);
-  --color-warning-solid: var(--warning-solid);
+  --color-warn: var(--warn);
+  --color-warn-quiet: var(--warn-quiet);
+  --color-warn-line: var(--warn-line);
+  --color-warn-vivid: var(--warn-vivid);
 
-  --color-danger: var(--danger);
-  --color-danger-weak: var(--danger-weak);
-  --color-danger-line: var(--danger-line);
-  --color-danger-solid: var(--danger-solid);
+  --color-bad: var(--bad);
+  --color-bad-quiet: var(--bad-quiet);
+  --color-bad-line: var(--bad-line);
+  --color-bad-vivid: var(--bad-vivid);
 
-  /* One radius scale. 10px is the card; nothing exceeds 12px. */
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 8px;
+  /* Radii stop at 10px. Larger corners on a dense data surface read as
+     consumer software, not as a finance tool. */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
   --radius-lg: 10px;
-  --radius-xl: 12px;
 }
 
 @layer base {
@@ -148,25 +159,24 @@
   }
 
   body {
-    background: var(--bg);
+    background: var(--canvas);
     color: var(--fg);
-    font-family:
-      ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
-      "Helvetica Neue", Arial, sans-serif;
-    font-size: 14px;
+    font-family: var(--font-sans), ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 13.5px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 
-  /* Ledger figures must align vertically. */
+  /* Ledger figures must align vertically and never wobble as they update. */
   .tnum,
   td,
-  th {
+  th,
+  input[type="search"] {
     font-variant-numeric: tabular-nums;
   }
 
-  /* One focus treatment everywhere, keyboard-only. */
   :focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
@@ -174,26 +184,29 @@
   }
 
   ::selection {
-    background: var(--accent-weak);
+    background: var(--ring);
     color: var(--fg);
   }
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: var(--border-strong) transparent;
+    scrollbar-color: var(--line-strong) transparent;
   }
   ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 11px;
+    height: 11px;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--border-strong);
+    background: var(--line-strong);
     border-radius: 99px;
     border: 3px solid transparent;
     background-clip: content-box;
   }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--fg-faint);
+    background-clip: content-box;
+  }
 
-  /* Respect a reduced-motion preference: transitions are polish, not meaning. */
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
@@ -205,25 +218,77 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+   TYPE SCALE
+
+   Seven roles, each with its own size, weight and tracking. Hierarchy comes
+   from the combination — a metric is not simply "big body text", it is heavier
+   and tighter as well, which is what lets a dense screen stay readable.
+   --------------------------------------------------------------------------- */
 @layer utilities {
-  /* Small caps label used for table headers and section eyebrows. */
-  .label {
-    font-size: 11px;
+  .t-display {
+    font-size: 30px;
+    line-height: 1.05;
     font-weight: 600;
-    letter-spacing: 0.04em;
+    letter-spacing: -0.035em;
+  }
+  .t-metric {
+    font-size: 22px;
+    line-height: 1.1;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+  }
+  .t-metric-sm {
+    font-size: 17px;
+    line-height: 1.15;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .t-page {
+    font-size: 17px;
+    line-height: 1.25;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .t-section {
+    font-size: 13px;
+    line-height: 1.3;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+  }
+  .t-body {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .t-meta {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--fg-muted);
+  }
+  .t-caption {
+    font-size: 10.5px;
+    line-height: 1.4;
+    font-weight: 600;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: var(--fg-subtle);
+    color: var(--fg-faint);
   }
 
-  .num {
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.01em;
+  /* Surfaces. `panel` is the workhorse; it is lighter than the canvas rather
+     than merely outlined. */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+  }
+  .divide-line > * + * {
+    border-top: 1px solid var(--line);
   }
 }
 
-/* --- skeleton shimmer ------------------------------------------------------
-   Loading placeholders mirror the shape of the content they stand in for, so
-   the layout does not jump when data lands. */
+/* ---------------------------------------------------------------------------
+   MOTION — short, functional, never decorative.
+   --------------------------------------------------------------------------- */
 @keyframes shimmer {
   100% {
     transform: translateX(100%);
@@ -232,32 +297,49 @@
 .skeleton {
   position: relative;
   overflow: hidden;
-  background: var(--surface-2);
+  background: var(--sunken);
   border-radius: var(--radius-sm);
 }
 .skeleton::after {
   position: absolute;
   inset: 0;
   transform: translateX(-100%);
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--surface-3) 70%, transparent),
-    transparent
-  );
-  animation: shimmer 1.4s infinite;
+  background: linear-gradient(90deg, transparent, var(--hover), transparent);
+  animation: shimmer 1.5s infinite;
   content: "";
 }
 
-/* --- entrance --------------------------------------------------------------
-   Used once, on results arriving. Short enough to feel like a response rather
-   than an animation. */
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(3px);
   }
 }
 .rise {
-  animation: rise 0.18s ease-out both;
+  animation: rise 0.16s ease-out both;
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+.slide-in {
+  animation: slide-in 0.18s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 var(--ring);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+.pulse-ring {
+  animation: pulse-ring 1.8s ease-out infinite;
 }

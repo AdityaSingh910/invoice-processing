@@ -90,7 +90,7 @@ export default function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-3 backdrop-blur-[2px] sm:p-6"
+      className="fixed inset-0 z-50 overflow-y-auto bg-black/50 p-3 backdrop-blur-[2px] sm:p-6"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
@@ -99,30 +99,28 @@ export default function Modal({
         aria-modal="true"
         aria-label={typeof title === "string" ? title : undefined}
         tabIndex={-1}
-        className={`rise mx-auto w-full ${width} overflow-hidden rounded-[var(--radius-xl)]
-          border border-border bg-surface shadow-[var(--shadow-lg)] outline-none`}
+        className={`rise mx-auto w-full ${width} overflow-hidden rounded-[var(--radius-lg)]
+          border border-line bg-surface shadow-[var(--shadow-lg)] outline-none`}
       >
-        <header className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+        <header className="flex items-start justify-between gap-4 border-b border-line px-4 py-3">
           <div className="min-w-0">
-            <h2 className="text-[15px] leading-tight font-semibold tracking-[-0.01em] break-words">
-              {title}
-            </h2>
-            {description && <div className="mt-1 text-[13px] text-muted">{description}</div>}
+            <h2 className="t-section break-words">{title}</h2>
+            {description && <div className="t-meta mt-0.5">{description}</div>}
           </div>
           <Button
             variant="ghost"
             size="sm"
             onClick={onClose}
             aria-label="Close dialog"
-            className="-mt-1 -mr-1 px-2"
-            icon={<IconX size={15} />}
+            className="-mt-0.5 -mr-1"
+            icon={<IconX size={14} />}
           />
         </header>
 
-        <div className="max-h-[70vh] overflow-y-auto px-5 py-4">{children}</div>
+        <div className="max-h-[72vh] overflow-y-auto px-4 py-4">{children}</div>
 
         {footer && (
-          <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-surface2 px-5 py-3">
+          <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-line bg-sunken px-4 py-3">
             {footer}
           </footer>
         )}
