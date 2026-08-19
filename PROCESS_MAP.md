@@ -13,7 +13,7 @@ an explicit PO reference).
    review decision instead of fabricating fields.
 3. **EXTRACT_FIELDS** — parse structured fields out of the text: vendor name, invoice
    number, invoice date, PO reference(s), line items, subtotal, tax, total, currency.
-   Uses an LLM (Anthropic API) extractor when `ANTHROPIC_API_KEY` is set, otherwise
+   Uses an LLM (Google Gemini API) extractor when `GEMINI_API_KEY` is set, otherwise
    falls back to a deterministic regex/heuristic extractor — same output schema either
    way, so the rest of the pipeline doesn't care which one ran.
 4. **VALIDATE** — check that the fields required to make a decision are present

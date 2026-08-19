@@ -37,7 +37,7 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Pipeline | ✅ Working, 9 stages, streamed live over SSE |
 | Samples | ✅ **7/7 passing** from a clean DB |
 | UI | ✅ Run view, dashboard, reference tab; light + dark |
-| Extraction route in use | **`regex`** — no `ANTHROPIC_API_KEY` set |
+| Extraction route in use | **`regex`** — no `GEMINI_API_KEY` set |
 | Automated tests | ✅ **7/7 passing** — `tests/test_samples.py`, manifest-driven, isolated DB |
 | Known defects | **3 live bugs**, all documented, none fixed |
 | Deployed | ❌ Local only, no git remote, no hosting |
@@ -217,16 +217,19 @@ for want of a key.
 What *has* been verified: the rasterisation half of the vision route. Running
 `render_pages_png()` on `05_scanned_no_text.pdf` produces a clean, fully legible
 1224×1584 PNG, so the pypdfium2 plumbing works. The only unproven link is the
-API call itself (`llm_extract_vision`, `extraction.py:171`; `llm_extract_text`
-at `extraction.py:161`). To enable, create `.env` in the project
+API call itself (`llm_extract_vision`, `extraction.py:188`; `llm_extract_text`
+at `extraction.py:178`). To enable, create `.env` in the project
 root:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=...
 ```
 
-`.env` is gitignored; the key is never sent to the browser. Model is
-`claude-sonnet-5` (`config.EXTRACTION_MODEL`). Rasterisation uses **pypdfium2**
+`.env` is gitignored; the key is never sent to the browser. Provider is **Google
+Gemini** via Google AI Studio (`google-genai`); model is `gemini-2.0-flash`
+(`config.EXTRACTION_MODEL`, key name in `config.API_KEY_ENV`). Both routes ask
+for `response_mime_type="application/json"`, though `_parse_llm_json` still runs
+on the reply -- a mime type is a strong constraint, not a guarantee. Rasterisation uses **pypdfium2**
 — a self-contained wheel, deliberately chosen so there is no poppler/tesseract
 system dependency. OCR via pytesseract was removed entirely.
 
@@ -244,7 +247,7 @@ backend/
   main.py         292 lines. FastAPI app, the 9-stage pipeline as an async
                   generator yielding SSE events, _abort_unreadable() path,
                   all endpoints.
-  extraction.py   394 lines. PDF → text (pdfplumber) → fields. Three routes,
+  extraction.py   415 lines. PDF → text (pdfplumber) → fields. Three routes,
                   SCHEMA_PROMPT for the LLM, regex fallback with tiered
                   patterns, _guess_vendor positional heuristic, PdfUnreadable.
   matching.py      84 lines. PO lookup (explicit refs then inferred),
@@ -256,7 +259,7 @@ backend/
                   EVERY startup. consumed_amount_for_po, find_duplicate,
                   save_run, list_runs.
   schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
-  config.py        53 lines. .env loader, upload/page caps, model name.
+  config.py        61 lines. .env loader, upload/page caps, model name.
                   Operational settings only — no business rules.
 frontend/
   index.html      Three tabs: Run, Dashboard, Reference.
@@ -414,7 +417,7 @@ The work cannot be graded while it only runs on one laptop.
 
 Notes on the suite, for whoever changes it next:
 
-* It does **not** strip `ANTHROPIC_API_KEY`. With a key present the suite runs the
+* It does **not** strip `GEMINI_API_KEY`. With a key present the suite runs the
   real `llm (text)` and `llm (vision)` routes; without one it runs `regex` /
   `none`. The fixture prints which mode ran, because a green suite means a
   different thing in each. Know the tradeoff: in live mode the suite costs money,

@@ -92,7 +92,7 @@ def client(tmp_path_factory):
     time, with no environment override, so patching the attribute is the only way
     to redirect it.
 
-    `ANTHROPIC_API_KEY` is deliberately **not** stripped. When a key is present
+    `GEMINI_API_KEY` is deliberately **not** stripped. When a key is present
     the suite exercises the real `llm (text)` and `llm (vision)` routes end to
     end, which is what makes it deployment/demo readiness rather than a mock.
     The tradeoff is real and worth stating: in that mode the suite costs money,
@@ -105,7 +105,7 @@ def client(tmp_path_factory):
     if LIVE_LLM:
         print("\n[extraction mode] LIVE LLM - llm (text) and llm (vision) routes exercised")
     else:
-        print("\n[extraction mode] deterministic regex / none - no ANTHROPIC_API_KEY.")
+        print("\n[extraction mode] deterministic regex / none - no GEMINI_API_KEY.")
         print("[extraction mode] the two LLM routes are NOT covered by this run.")
 
     db_path = tmp_path_factory.mktemp("invoice_db") / "test_app.db"

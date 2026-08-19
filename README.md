@@ -214,8 +214,10 @@ matching and rules never know which ran:
 vision routes, create a `.env` file in the project root:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=...
 ```
+
+Get one free at <https://aistudio.google.com/apikey>.
 
 `.env` is gitignored and the key is never sent to the browser — the UI is only
 told whether a key is present.

@@ -12,8 +12,9 @@ pillow==10.4.0
 # Sample invoice generation (sample_invoices/generate_invoices.py)
 reportlab==4.2.5
 
-# LLM extraction (optional at runtime - only used when ANTHROPIC_API_KEY is set)
-anthropic==0.122.0
+# LLM extraction (optional at runtime - only used when GEMINI_API_KEY is set).
+# Google Gemini via Google AI Studio.
+google-genai==2.18.1
 
 # Test suite (tests/test_samples.py). httpx is required by
 # fastapi.testclient.TestClient, which drives the pipeline in-process so the

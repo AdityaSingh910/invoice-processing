@@ -7,12 +7,14 @@ three extraction routes and they degrade in a defined order:
   2. LLM over page images     -- handles scanned/image-only PDFs (replaces OCR).
   3. Regex heuristics         -- always available, no API key, no network.
 
+Routes 1 and 2 call Google Gemini (google-genai, Google AI Studio) and need
+GEMINI_API_KEY. Route 3 needs nothing.
+
 Whatever the route, the output schema is identical, so matching and rules
 never need to know which one ran. When nothing can be read, the extractor
 returns empty fields rather than guessing -- the rules layer then routes the
 invoice to human review.
 """
-import base64
 import io
 import json
 import os
@@ -154,38 +156,57 @@ def _invoice_from_payload(data: dict, raw_text: str, method: str) -> ExtractedIn
 
 
 def _client():
-    from anthropic import Anthropic
-    return Anthropic()
+    """A Gemini client bound to the key from the environment / .env.
+
+    Imported lazily so the module still imports, and the regex route still runs,
+    on a machine where google-genai was never installed.
+    """
+    from google import genai
+    return genai.Client(api_key=config.api_key())
 
 
-def llm_extract_text(text: str) -> ExtractedInvoice:
-    resp = _client().messages.create(
+def _json_config():
+    """Ask the API for JSON directly rather than hoping prose comes back clean.
+
+    `_parse_llm_json` is still applied to whatever returns -- response_mime_type
+    is a strong constraint, not a guarantee, and the fallback costs nothing.
+    """
+    from google.genai import types
+    return types.GenerateContentConfig(response_mime_type="application/json")
+
+
+def llm_extract_text(text: str, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice:
+    """Route 1: read the fields out of an embedded text layer."""
+    resp = _client().models.generate_content(
         model=config.EXTRACTION_MODEL,
-        max_tokens=2000,
-        system=SCHEMA_PROMPT,
-        messages=[{"role": "user", "content": "Invoice text:\n\n" + text[:60000]}],
+        contents=[prompt, "Invoice text:\n\n" + text[:60000]],
+        config=_json_config(),
     )
-    return _invoice_from_payload(_parse_llm_json(resp.content[0].text), text, "llm (text)")
+    return _invoice_from_payload(_parse_llm_json(resp.text), text, "llm (text)")
 
 
-def llm_extract_vision(images: List[bytes]) -> ExtractedInvoice:
-    content = []
-    for png in images:
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/png",
-                       "data": base64.b64encode(png).decode()},
-        })
-    content.append({"type": "text", "text":
-                    "Extract the invoice fields from these page image(s)."})
+def llm_extract_vision(png_bytes, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice:
+    """Route 2: read the fields off rasterised page images.
 
-    resp = _client().messages.create(
+    `png_bytes` takes either one PNG or a list of them, so the caller can keep
+    sending the first `MAX_PAGES_VISION` pages of a multi-page scan rather than
+    silently losing everything after page one.
+    """
+    from google.genai import types
+
+    pages = [png_bytes] if isinstance(png_bytes, (bytes, bytearray)) else list(png_bytes)
+
+    contents = [prompt]
+    for png in pages:
+        contents.append(types.Part.from_bytes(data=png, mime_type="image/png"))
+    contents.append("Extract the invoice fields from these page image(s).")
+
+    resp = _client().models.generate_content(
         model=config.EXTRACTION_MODEL,
-        max_tokens=2000,
-        system=SCHEMA_PROMPT,
-        messages=[{"role": "user", "content": content}],
+        contents=contents,
+        config=_json_config(),
     )
-    inv = _invoice_from_payload(_parse_llm_json(resp.content[0].text), "", "llm (vision)")
+    inv = _invoice_from_payload(_parse_llm_json(resp.text), "", "llm (vision)")
     inv.raw_text = "[no embedded text layer - fields read from page images]"
     return inv
 
@@ -387,7 +408,7 @@ def extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = Non
     # Route 3: nothing readable -- return empty rather than guess
     info["route"] = "none"
     info["notes"].append(
-        "No embedded text and no vision extraction available. Set ANTHROPIC_API_KEY "
+        "No embedded text and no vision extraction available. Set GEMINI_API_KEY "
         "to read scanned invoices." if not use_llm else
         "No embedded text and vision extraction did not return usable fields.")
     inv = ExtractedInvoice(raw_text="", extraction_method="none")
