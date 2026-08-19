@@ -108,9 +108,27 @@ def vendor_check(extracted: dict):
     is a review case, not a confident rejection. False means a vendor name WAS
     extracted and it's confirmed not on the approved list."""
     vendor_name = extracted.get("vendor_name")
-    if not vendor_name:
+    # Whitespace-only counts as unreadable, not as a name. `not vendor_name` alone
+    # would let "   " through to the lookup, where it matches nothing and reads as
+    # a confident rejection -- exactly the confusion the tri-state exists to avoid.
+    if not vendor_name or not str(vendor_name).strip():
         return None, None, "No vendor name could be extracted -- cannot verify approval status."
-    vendor_row = storage.find_vendor(vendor_name)
+
+    matches = storage.find_vendor_matches(vendor_name)
+
+    # More than one approved vendor normalises to this name. That is ambiguity,
+    # not disapproval: the name IS on the list, we just cannot say which entry it
+    # means, and picking one would be a guess about who gets paid. Review, not
+    # reject -- the same tri-state distinction the rest of this function makes
+    # between "confirmed not approved" and "could not tell".
+    if len(matches) > 1:
+        names = ", ".join(f"\"{m['vendor_name']}\" ({m['vendor_id']})" for m in matches[:4])
+        return None, None, (
+            f"Vendor \"{vendor_name}\" matches {len(matches)} approved vendors -- {names}. "
+            f"Cannot determine which is intended; confirm the vendor before payment."
+        )
+
+    vendor_row = matches[0] if matches else None
     if vendor_row is None:
         return False, None, f"Vendor \"{vendor_name}\" is not on the approved vendor list."
     if vendor_row["status"] != "approved":

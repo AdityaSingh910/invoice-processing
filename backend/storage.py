@@ -1,6 +1,7 @@
 """SQLite persistence: seed data (POs/vendors) + run history / dashboard."""
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -144,22 +145,81 @@ def get_po(po_number: str):
     return dict(row) if row else None
 
 
-def find_vendor(name: str):
-    """Loose match: exact, then case-insensitive, then substring both ways."""
+# Legal-form synonyms, mapped to a canonical token. Synonyms are CANONICALISED
+# rather than deleted: dropping them entirely would collapse "Umbrella Cleaning
+# Co" and "Umbrella Cleaning Ltd" into one vendor, which are different legal
+# entities and may well have different bank details.
+_LEGAL_FORMS = {
+    "corporation": "corp", "corp": "corp",
+    "incorporated": "inc", "inc": "inc",
+    "limited": "ltd", "ltd": "ltd",
+    "company": "co", "co": "co",
+    "llc": "llc", "llp": "llp", "plc": "plc",
+}
+
+
+def normalize_vendor_name(name: str) -> str:
+    """A comparable form of a company name. Deterministic, no fuzziness.
+
+    Handles the differences that are genuinely cosmetic -- case, spacing,
+    punctuation, "&" vs "and", and legal-form abbreviations -- and nothing else.
+    "ABC Corp." and "ABC Corporation" become the same string; "ABC Supplies" and
+    "XYZ Supplies" do not.
+
+    Synonyms are mapped on every token, not only the last, so "ABC Corp. of
+    America" normalises the same way "ABC Corporation of America" does. The
+    mapping is between words that mean the same thing, so this is
+    meaning-preserving wherever it applies.
+    """
     if not name:
-        return None
+        return ""
+    s = name.strip().lower()
+    s = s.replace("&", " and ")
+    # Apostrophes are DELETED, not spaced: "O'Brien" and "OBrien" are the same
+    # name, whereas spacing it would give "o brien" and break the match. Every
+    # other punctuation mark becomes a space, so "Smith-Jones" matches
+    # "Smith Jones".
+    s = re.sub(r"[’']", "", s)
+    s = re.sub(r"[^\w\s]", " ", s)      # periods, commas, hyphens -> space
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return ""
+    return " ".join(_LEGAL_FORMS.get(tok, tok) for tok in s.split())
+
+
+def find_vendor_matches(name: str):
+    """Every approved vendor whose normalised name equals this one.
+
+    Returns a list so callers can tell the three cases apart, which is the whole
+    point: exactly one is a confident match, zero is confidently not on the list,
+    and more than one is ambiguous and belongs to a human.
+
+    There is deliberately NO substring fallback. The previous implementation
+    matched bidirectionally on raw substrings, which meant "Office", "Supplies"
+    and even the single letter "s" all resolved to "Acme Office Supplies" -- while
+    "Stark   Industrial Parts" with a double space matched nothing. Loose exactly
+    where it was dangerous and strict exactly where it was not.
+    """
+    if not name or not name.strip():
+        return []
+    target = normalize_vendor_name(name)
+    if not target:
+        return []
     conn = get_conn()
     rows = [dict(r) for r in conn.execute("SELECT * FROM vendors").fetchall()]
     conn.close()
-    name_norm = name.strip().lower()
-    for v in rows:
-        if v["vendor_name"].strip().lower() == name_norm:
-            return v
-    for v in rows:
-        vn = v["vendor_name"].strip().lower()
-        if vn in name_norm or name_norm in vn:
-            return v
-    return None
+    return [v for v in rows if normalize_vendor_name(v["vendor_name"]) == target]
+
+
+def find_vendor(name: str):
+    """The single approved vendor this name resolves to, or None.
+
+    None covers both "no such vendor" and "more than one candidate" -- callers
+    that need to tell those apart use find_vendor_matches(). Kept at this
+    signature so existing callers are unaffected.
+    """
+    matches = find_vendor_matches(name)
+    return matches[0] if len(matches) == 1 else None
 
 
 def consumed_amount_for_po(po_number: str, exclude_run_id=None):

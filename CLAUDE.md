@@ -44,8 +44,8 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Deployed | ❌ Local only, no git remote, no hosting |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 18 commits at the time of writing (this update is
-the 19th), working tree clean.
+**Git:** local repo only, 19 commits at the time of writing (this update is
+the 20th), working tree clean.
 
 ```
 2865a58 Harden the PO ledger: atomicity, reversal + cascade, configurable tolerance
@@ -305,6 +305,55 @@ What is *not* free, and is implemented:
   `over_within_tolerance` triggers a `warn`-level audit note naming the overage
   in dollars. Under-billing is unbounded and handled separately as a partial.
 
+### Vendor name matching
+
+`storage.normalize_vendor_name()` then an **exact match on the normalised form**.
+No substring fallback, no edit-distance scoring — both reintroduce the
+"close enough" behaviour that caused the problem.
+
+Normalisation collapses only genuinely cosmetic differences: case, whitespace,
+punctuation, `&` vs `and`, and legal-form abbreviations (corp/corporation,
+inc/incorporated, ltd/limited, co/company, llc/llp/plc). Legal forms are
+**canonicalised, not deleted** — dropping them would merge "Umbrella Cleaning Co"
+and "Umbrella Cleaning Ltd", which are different legal entities with potentially
+different bank details. Apostrophes are removed rather than spaced, so "O'Brien"
+matches "OBrien"; every other mark becomes a space, so "Smith-Jones" matches
+"Smith Jones".
+
+`find_vendor_matches()` returns a **list**, which is the point — three outcomes,
+not two:
+
+| matches | meaning | verdict |
+|---|---|---|
+| exactly 1 | confident match | approve / reject on the vendor's own status |
+| 0 | confidently not on the list | **REJECTED** (unchanged) |
+| 2+ | ambiguous — the name IS on the list, but which row? | **NEEDS_REVIEW** |
+
+Ambiguity is review, never rejection: picking one row would be a guess about who
+gets paid. `find_vendor()` keeps its old signature and returns the single match
+or None, so its callers were untouched.
+
+Measured before and after, same inputs:
+
+```
+                                 OLD                      NEW
+'Acme'                           Acme Office Supplies     None      <- fixed
+'Office'                         Acme Office Supplies     None      <- fixed
+'Supplies'                       Acme Office Supplies     None      <- fixed
+'s'                              Acme Office Supplies     None      <- one letter!
+'Initech Consulting Group'       Initech Consulting       None      <- different entity
+'ACME, OFFICE SUPPLIES.'         None                     Acme Office Supplies
+'Stark   Industrial Parts'       None                     Stark Industrial Parts
+```
+
+Loose exactly where it was dangerous, strict exactly where it was not. A single
+letter resolved to an approved vendor **and unlocked that vendor's POs**, since
+`matching.match_po` uses the same lookup for inference.
+
+Also fixed while testing: a whitespace-only vendor name reached the lookup and
+read as a confident rejection. It is unreadable, so it is now review — the
+tri-state distinction the function exists to make.
+
 ### Invoice amount validity
 
 `rules.validate_amount()` requires the total to be **greater than zero**, and
@@ -445,10 +494,10 @@ backend/
                   works where the SDK was never installed.
   matching.py      153 lines. PO lookup (explicit refs then inferred),
                   tolerance_for(), empty_match(), split-PO balance maths.
-  rules.py        409 lines. validate_required_fields, vendor_check (tri-state),
+  rules.py        427 lines. validate_required_fields, vendor_check (tri-state),
                   duplicate_check, and decide() — the only place a verdict is
                   produced.
-  storage.py      356 lines. SQLite. Seeds POs/vendors from data/*.json on
+  storage.py      416 lines. SQLite. Seeds POs/vendors from data/*.json on
                   EVERY startup. consumed_amount_for_po, find_duplicate,
                   save_run, list_runs.
   schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
@@ -470,6 +519,10 @@ sample_invoices/
                        AND is the source of truth for tests. Sample 05 carries
                        BOTH `expect` and `expect_with_vision` — see §7.
 tests/
+  test_vendor_matching.py 40 cases. Normalisation of suffix/case/punctuation/
+                   whitespace/ampersand variants, genuinely different vendors
+                   staying distinct, the dangerous substrings, ambiguity routed
+                   to review, and every seeded vendor still matching itself.
   test_invalid_amount.py 21 cases. Zero and negative totals, that zero is no
                    longer mislabelled as a missing field, no arbitrary ceiling,
                    and REJECTED still outranking the review.
@@ -642,8 +695,8 @@ approved and the PO was overspent by $6,000.
   `subtotal + tax` (`extraction.py:455` in `regex_extract`).
 - **All business rules hardcoded.** Tolerance is two magic numbers in a one-line
   function. `config.py` holds only operational settings.
-- Vendor matching is **bidirectional substring** (`storage.py:160` in `find_vendor`) — `Acme
-  Corp` matches approved `Acme Office Supplies`.
+- ~~Vendor matching is **bidirectional substring**~~ — **CLOSED 2026-08-19.**
+  Replaced with normalise-then-exact-match; see below.
 - **Reference data re-seeded from JSON on every startup**, so editing
   `purchase_orders.json` silently changes what historical runs mean.
 - ~~No arithmetic consistency check~~ — **CLOSED 2026-08-19.**
@@ -709,11 +762,12 @@ and they outrank every phase below:
 The work cannot be graded while it only runs on one laptop. Neither item needs
 another line of pipeline code.
 
-The suite is now seven files — `test_samples.py` (7 end-to-end sample verdicts),
+The suite is now eight files — `test_samples.py` (7 end-to-end sample verdicts),
 `test_security.py` (27 injection cases), `test_po_edge_cases.py` (12 ledger
 cases), `test_inferred_po.py` (13 matching cases), `test_currency.py` (16
 currency cases), `test_arithmetic.py` (22 arithmetic cases),
-`test_invalid_amount.py` (21 amount cases). **118 total.** Notes for whoever changes them next:
+`test_invalid_amount.py` (21 amount cases), `test_vendor_matching.py` (40 vendor
+cases). **158 total.** Notes for whoever changes them next:
 
 * It does **not** strip `GEMINI_API_KEY`. With a key present the suite runs the
   real `llm (text)` and `llm (vision)` routes; without one it runs `regex` /
@@ -738,7 +792,7 @@ REFACTOR_STRATEGY:
 
 | Phase | Work | State |
 |---|---|---|
-| 1 | Cap inferred PO matches + make `warn` bite; currency → review; vendor normalised-exact | ◨ **inferred-PO and currency DONE**; vendor normalised-exact still to do |
+| 1 | Cap inferred PO matches + make `warn` bite; currency → review; vendor normalised-exact | ✅ **DONE** — all three items |
 | 2 | `Tracked[T]` provenance wrapper, per-route confidence, **confidence gate** | ⬜ |
 | 3 | `rules.yaml` versioned policy + typed loader | ◨ tolerance moved to `config.py`; YAML + loader still to do |
 | 4 | Transaction boundaries (`BEGIN IMMEDIATE` + WAL); `run_allocations` table | ◨ **transactions DONE** (§8 #3); allocations table still to do |
