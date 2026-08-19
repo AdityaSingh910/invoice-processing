@@ -1,9 +1,15 @@
 """PO matching, including split-PO balance tracking."""
+import config
 import storage
 
 
 def tolerance_for(amount: float) -> float:
-    return max(amount * 0.02, 25.00)
+    """How far over `amount` an invoice may go and still auto-approve.
+
+    Policy lives in config (PO_TOLERANCE_PERCENT / PO_TOLERANCE_DOLLARS), not
+    here -- this function is the mechanism, those numbers are the decision.
+    """
+    return max(amount * config.PO_TOLERANCE_PERCENT, config.PO_TOLERANCE_DOLLARS)
 
 
 def empty_match(invoice_total):
@@ -23,6 +29,7 @@ def empty_match(invoice_total):
         "diff": None,
         "within_tolerance": False,
         "is_partial": False,
+        "over_within_tolerance": False,
     }
 
 
@@ -66,6 +73,10 @@ def match_po(extracted: dict, exclude_run_id=None):
     # smaller remaining balance for the next one.
     within = diff <= tol
     is_partial = diff < -tol
+    # Over the remaining balance, but inside the tax/freight allowance. This is
+    # the case that must NOT be silent: it approves an invoice for more than the
+    # PO authorised, so it earns an explicit audit note naming the overage.
+    over_within_tolerance = 0 < diff <= tol
 
     return {
         "po_number": po_row["po_number"],
@@ -81,4 +92,5 @@ def match_po(extracted: dict, exclude_run_id=None):
         "diff": diff,
         "within_tolerance": within,
         "is_partial": is_partial,
+        "over_within_tolerance": over_within_tolerance,
     }

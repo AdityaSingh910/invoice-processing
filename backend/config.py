@@ -14,6 +14,23 @@ MAX_UPLOAD_BYTES = 15 * 1024 * 1024   # 15 MB
 MAX_PAGES_TEXT = 25                   # pages scanned for embedded text
 MAX_PAGES_VISION = 3                  # pages sent to the vision model
 
+# --------------------------------------------------------------------------
+# PO tolerance policy
+#
+# How far OVER the remaining PO balance an invoice may go and still auto-approve.
+# The allowance exists for tax and freight added after the PO was raised, which
+# a buyer legitimately cannot predict to the cent.
+#
+# The effective tolerance is the LARGER of the two, so small POs get a usable
+# floor and large POs scale. Under-billing is not bounded by this at all -- a
+# partial invoice is normal and is handled separately (see matching.match_po).
+#
+# These are the first business rules to leave the code. Phase 3 moves the whole
+# policy to a versioned rules.yaml; until then, changing a number here changes
+# what the process approves, so treat edits as a policy change, not a tweak.
+PO_TOLERANCE_PERCENT = 0.01   # 1% of the remaining balance
+PO_TOLERANCE_DOLLARS = 50.0   # ...or this, whichever is larger
+
 # Google Gemini via Google AI Studio. The extraction layer is the only place
 # a model is used at all -- every decision downstream of it is plain Python.
 API_KEY_ENV = "GEMINI_API_KEY"

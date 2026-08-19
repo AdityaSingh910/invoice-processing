@@ -36,6 +36,63 @@ def duplicate_check(extracted: dict, exclude_run_id=None):
     return None, "No prior run matches this vendor/invoice number/total combination."
 
 
+def reevaluate_po_queue(po_number: str, triggered_by: int = None):
+    """Re-run the PO balance check on invoices held for review against this PO.
+
+    Called when a PO's balance changes -- typically because an approved invoice
+    was reversed, freeing budget. Any held invoice that now fits is approved, in
+    submission order, so the one that queued first gets the money.
+
+    Only invoices held *purely* on balance are eligible. A run held because it is
+    a duplicate, has no invoice number, or tripped the security guard stays held:
+    freeing budget says nothing about those, and auto-approving them would turn a
+    reversal into a way to launder a blocked invoice through the system.
+
+    Returns a list of {run_id, from, to, reason} describing what changed.
+    """
+    changed = []
+    for run in storage.runs_pending_on_po(po_number):
+        blockers = [r for r in (run.get("reasons") or [])
+                    if r.get("level") == "fail" and not _is_balance_reason(r.get("text", ""))]
+        if blockers:
+            continue
+
+        total = run.get("total")
+        if total is None:
+            continue
+
+        remaining = storage.remaining_for_po(po_number, exclude_run_id=run["id"])
+        if remaining is None:
+            continue
+
+        import matching
+        tol = matching.tolerance_for(remaining if remaining > 0 else total)
+        if round(total - remaining, 2) > tol:
+            continue
+
+        note = (
+            f"Auto-approved on re-evaluation: ${remaining:.2f} became available on {po_number}"
+            + (f" after run #{triggered_by} was reversed" if triggered_by else "")
+            + f", which covers this ${total:.2f} invoice."
+        )
+        ok, old, _ = storage.set_run_status(run["id"], "APPROVED", note)
+        if ok:
+            changed.append({"run_id": run["id"], "from": old, "to": "APPROVED", "reason": note})
+    return changed
+
+
+# Text fragments that identify a reason as "held on PO balance" rather than a
+# substantive finding. Matched against the reason text the decide() below writes.
+_BALANCE_MARKERS = (
+    "over the remaining PO balance",
+    "Balance changed while this invoice was being processed",
+)
+
+
+def _is_balance_reason(text: str) -> bool:
+    return any(marker in text for marker in _BALANCE_MARKERS)
+
+
 def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
            dup_row, dup_detail, po_match: dict):
     """Aggregates every check into one status plus a severity-tagged reasoning trail.
@@ -142,6 +199,19 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
                 f"${po_match['remaining_before']:.2f} — outside the ${po_match['tolerance']:.2f} tolerance. "
                 f"The vendor is billing for more than is currently authorized on this PO.",
                 "fail",
+            )
+        elif po_match.get("over_within_tolerance"):
+            # Approved for MORE than the PO authorises. Allowed, because tax and
+            # freight are added after a PO is raised, but it must never pass
+            # silently -- the overage is named in dollars so an auditor reading
+            # the trail can see exactly what was waved through and under which
+            # threshold.
+            add(
+                f"Invoice total is ${po_match['diff']:.2f} over the remaining PO balance of "
+                f"${po_match['remaining_before']:.2f}, within the ${po_match['tolerance']:.2f} "
+                f"tax/shipping tolerance. Approved under tolerance rather than blocked; "
+                f"the overage is authorised by policy, not by the purchase order.",
+                "warn",
             )
         elif po_match["is_partial"]:
             invoice_total = po_match["remaining_before"] + po_match["diff"]

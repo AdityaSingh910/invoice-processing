@@ -8,7 +8,7 @@ from dataclasses import asdict
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import Body, FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -210,7 +210,13 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     await asyncio.sleep(0.15)
     mark()
 
-    run_id = storage.save_run(filename, status, extracted, po_match, stages, reasons)
+    # Commit under the ledger write lock, which re-verifies the PO balance and
+    # downgrades a stale APPROVED rather than overspending the PO.
+    run_id, status, extra = storage.save_run_checked(
+        filename, status, extracted, po_match, stages, reasons,
+        tolerance_for=matching.tolerance_for)
+    if extra:
+        reasons = list(reasons) + [extra]
 
     result = {
         "run_id": run_id,
@@ -245,6 +251,35 @@ def get_run(run_id: int):
     if not run:
         return {"error": "not found"}
     return run
+
+
+@app.post("/api/runs/{run_id}/status")
+def change_run_status(run_id: int, payload: dict = Body(...)):
+    """Change a run's status, then re-evaluate anything queued on the same PO.
+
+    This is the reversal path. There is no balance to refund: consumption is
+    derived from APPROVED runs, so moving a run out of APPROVED frees its budget
+    the moment the row is updated. Freed budget then cascades to invoices that
+    were held only because the PO was exhausted.
+    """
+    new_status = (payload or {}).get("status")
+    note = (payload or {}).get("note")
+    ok, old_status, po_number = storage.set_run_status(run_id, new_status, note)
+    if not ok:
+        return {"error": "unknown run, or invalid status"}
+
+    cascaded = []
+    if po_number and old_status != new_status:
+        cascaded = rules.reevaluate_po_queue(po_number, triggered_by=run_id)
+
+    return {
+        "run_id": run_id,
+        "from": old_status,
+        "to": new_status,
+        "po_number": po_number,
+        "remaining_after": storage.remaining_for_po(po_number) if po_number else None,
+        "cascaded": cascaded,
+    }
 
 
 @app.get("/api/reference")

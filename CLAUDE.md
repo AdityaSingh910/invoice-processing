@@ -40,12 +40,12 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Extraction route in use | **live** — `llm (text)` / `llm (vision)` verified against `gemini-3.7-flash` |
 | Automated tests | ✅ **7/7 passing** — `tests/test_samples.py`, manifest-driven, isolated DB |
 | Prompt-injection hardening | ✅ Fenced prompt, closed response schema, post-extraction guard — 34 tests |
-| Known defects | **3 live bugs**, all documented, none fixed |
+| Known defects | **2 live bugs** — the concurrency race (§8 #3) is FIXED |
 | Deployed | ❌ Local only, no git remote, no hosting |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 12 commits at the time of writing (this update is
-the 13th), working tree clean.
+**Git:** local repo only, 13 commits at the time of writing (this update is
+the 14th), working tree clean.
 
 ```
 d7790c3 Fix Gemini client lifetime and model pin; vision route verified working
@@ -263,6 +263,35 @@ entirely.
 is *not* used: an alias changes the model under a running system, and an AP
 process must be able to say which model read an invoice approved months ago.
 
+### PO ledger: reversal, cascade, tolerance
+
+**There is no `remaining_amount` column, and there must not be one.** Balance is
+derived on every read (`po.amount - SUM(approved run totals)`). Two of the
+hardest problems in AP balance tracking are therefore not problems here:
+
+* **Idempotency is structural.** Nothing is deducted, so nothing can be deducted
+  twice. Re-evaluating an approved invoice recomputes the same sum. A stored
+  counter would need a guard flag and would be one missed path away from
+  double-spending a PO.
+* **Reversal is structural.** `set_run_status()` moving a run out of APPROVED
+  drops it from the SUM in the same instant. There is no refund step to forget,
+  and no way for a counter to drift from what was actually approved.
+
+What is *not* free, and is implemented:
+
+* **Atomicity** — see §8 #3.
+* **Cascade re-evaluation** — `rules.reevaluate_po_queue(po_number)`. When budget
+  frees up, held invoices are re-checked oldest-first, so the invoice that queued
+  first gets the money. Exposed as `POST /api/runs/{id}/status`.
+  **Only invoices held purely on balance are eligible.** One held for a missing
+  invoice number, a duplicate, or a security flag stays held — otherwise a
+  reversal becomes a way to launder a blocked invoice into APPROVED. Tested.
+* **Configurable tolerance** — `config.PO_TOLERANCE_PERCENT` (1%) and
+  `PO_TOLERANCE_DOLLARS` ($50), whichever is larger. Covers tax and freight added
+  after a PO is raised. An invoice approved *over* the balance is never silent:
+  `over_within_tolerance` triggers a `warn`-level audit note naming the overage
+  in dollars. Under-billing is unbounded and handled separately as a partial.
+
 ### Prompt-injection defence
 
 A vendor invoice is **attacker-controlled input**. Anyone who can send an invoice
@@ -315,7 +344,7 @@ stages over SSE; the frontend reads it with `fetch()`.
 
 ```
 backend/
-  main.py         306 lines. FastAPI app, the 9-stage pipeline as an async
+  main.py         341 lines. FastAPI app, the 9-stage pipeline as an async
                   generator yielding SSE events, _abort_unreadable() path,
                   all endpoints.
   extraction.py   633 lines. PDF → text (pdfplumber) → fields. Three routes,
@@ -324,16 +353,16 @@ backend/
                   The ONLY module that talks to a model — google-genai is
                   imported lazily inside _client() so the regex route still
                   works where the SDK was never installed.
-  matching.py      84 lines. PO lookup (explicit refs then inferred),
+  matching.py      96 lines. PO lookup (explicit refs then inferred),
                   tolerance_for(), empty_match(), split-PO balance maths.
-  rules.py        169 lines. validate_required_fields, vendor_check (tri-state),
+  rules.py        239 lines. validate_required_fields, vendor_check (tri-state),
                   duplicate_check, and decide() — the only place a verdict is
                   produced.
-  storage.py      196 lines. SQLite. Seeds POs/vendors from data/*.json on
+  storage.py      356 lines. SQLite. Seeds POs/vendors from data/*.json on
                   EVERY startup. consumed_amount_for_po, find_duplicate,
                   save_run, list_runs.
   schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
-  config.py        65 lines. .env loader, upload/page caps, API_KEY_ENV
+  config.py        82 lines. .env loader, upload/page caps, API_KEY_ENV
                   ("GEMINI_API_KEY"), EXTRACTION_MODEL, api_key(),
                   has_api_key(). Operational settings only — no business rules.
 frontend/
@@ -351,6 +380,10 @@ sample_invoices/
                        AND is the source of truth for tests. Sample 05 carries
                        BOTH `expect` and `expect_with_vision` — see §7.
 tests/
+  test_po_edge_cases.py  12 cases. Split-PO execution, idempotency under repeat
+                   evaluation, reversal + cascade (including what must NOT
+                   cascade), tolerance boundaries, and the concurrency race
+                   driven with real threads.
   test_security.py 27 cases. Injection detection, false-positive floor, prompt
                    and schema shape, decision-layer behaviour, and one hostile
                    PDF built at test time (never committed) driven end to end.
@@ -435,7 +468,7 @@ Watch "Remaining before" go **$5,000 → $2,000 → $0** across the three runs.
 
 ## 8. Known bugs — 3 live, none fixed
 
-🐞 **1. Inferred PO match doesn't block approval.** (`matching.py:44-51` in `match_po`, `rules.py:103` in `decide`) When no PO reference is extracted, the process binds to the
+🐞 **1. Inferred PO match doesn't block approval.** (`matching.py:51-51` in `match_po`, `rules.py:178` in `decide`) When no PO reference is extracted, the process binds to the
 vendor's nearest-amount PO with **no distance cap**, then logs a `warn`-level
 reason — but `warn` doesn't change the verdict. An invoice that never named a PO
 can auto-approve against a PO the process picked. Three defects in one: no cap,
@@ -446,11 +479,22 @@ no ambiguity handling, and a decorative severity level.
 column nobody consults. A €3,000 invoice against a $5,000 PO is compared as
 `3000` vs `5000`.
 
-🐞 **3. PO ledger concurrency race.** Every `storage` function opens and closes
-its own connection, so a transaction cannot span read-balance → decide → write.
-Two concurrent invoices for one PO both read the same remaining balance and can
-both be approved, committing more than the PO authorises. **The only defect that
-produces a wrong number rather than a wrong routing.**
+✅ **3. PO ledger concurrency race — FIXED.** Was: every `storage` function opened
+its own connection, so a transaction could not span read-balance → decide →
+write, and two concurrent invoices for one PO could both approve past the
+balance. The only defect that produced a wrong *number* rather than a wrong
+routing.
+
+Fixed by `storage.write_txn()` (`BEGIN IMMEDIATE` + WAL) and
+`save_run_checked()`, which re-reads the consumed total inside the write lock and
+downgrades a stale APPROVED to NEEDS_REVIEW before inserting. The verdict is
+still computed outside the lock — it has to be, since extraction can take seconds
+and holding a write lock across a model call would serialise the whole system —
+so this is optimistic concurrency with an authoritative final check.
+
+Verified under real threads: 8 concurrent $2,000 invoices against a $10,000 PO
+yield exactly 5 APPROVED, 3 NEEDS_REVIEW, $0.00 remaining. Before the fix all 8
+approved and the PO was overspent by $6,000.
 
 ### Design gaps (deliberate, queued)
 
@@ -459,7 +503,7 @@ produces a wrong number rather than a wrong routing.**
   `subtotal + tax` (`extraction.py:455` in `regex_extract`).
 - **All business rules hardcoded.** Tolerance is two magic numbers in a one-line
   function. `config.py` holds only operational settings.
-- Vendor matching is **bidirectional substring** (`storage.py:112` in `find_vendor`) — `Acme
+- Vendor matching is **bidirectional substring** (`storage.py:160` in `find_vendor`) — `Acme
   Corp` matches approved `Acme Office Supplies`.
 - **Reference data re-seeded from JSON on every startup**, so editing
   `purchase_orders.json` silently changes what historical runs mean.
@@ -565,7 +609,7 @@ GitHub repo, an ngrok tunnel, or a real deploy to Render/Railway/Fly).
 | Rules deterministic, LLM extraction-only | Auditability. It is the headline claim and it survived the audit. |
 | Three verdicts, not two | Binary would force guessing on ambiguous invoices; the middle state is where automation hands back to a human. |
 | Tolerance one-sided | Over-billing is a problem; under-billing is a normal partial invoice. |
-| Balance derived from run history, not a stored counter | No counter can drift out of sync with what was actually approved. |
+| Balance derived from run history, not a stored counter | No counter can drift out of sync with what was actually approved — and it makes idempotency and reversal structural rather than defended. Reaffirmed 2026-08-19 when a `remaining_amount` column was proposed. |
 | Only APPROVED runs consume budget | A flagged invoice mustn't block the queue behind it. |
 | Refuse to guess when unreadable | Returns empty fields → review, rather than fabricating. `vendor_check` is deliberately **tri-state**: not-on-list (reject) ≠ couldn't-read-a-name (review). |
 | pypdfium2 over pytesseract | Self-contained wheel; no system binaries for a reviewer to install. |
