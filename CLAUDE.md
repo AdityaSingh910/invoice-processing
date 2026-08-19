@@ -9,21 +9,21 @@ Read this first. It is the handoff for an in-progress build.
 A working AP (accounts payable) automation process built for the **Zamp AI
 Solutions Associate case study, PS-1 (Finance / AP)**.
 
-Upload a vendor invoice PDF → it runs through a 9-stage pipeline live in the
-browser → produces **APPROVED / NEEDS_REVIEW / REJECTED** with a full reasoning
-trail, plus a dashboard of every run.
+Sign in → upload a vendor invoice PDF → it runs through a 9-stage pipeline live
+in the browser → produces **APPROVED / NEEDS_REVIEW / REJECTED** with a
+deterministic audit trail, a human accept/reject path for anything held, and a
+dashboard of every run.
 
 **Case study deliverables:**
 1. A working automated process, live and runnable, with an intuitive UI —
-   a **live run view** (each stage as it executes) and a **dashboard** (history,
-   status, outputs across runs). The UI is explicitly part of the grade.
+   a **live run view** and a **dashboard**. The UI is explicitly part of the grade.
 2. A **5-minute demo video** showing the happy path plus at least one edge case.
 3. Later: a live interview demo, running the process in real time and defending
    every design decision.
 
-The grading criteria are: does it actually run, is the judgment behind the design
-sound, and can it be explained to a **non-technical buyer**. Edge cases were
-self-defined (2–4 required; there are 4).
+Grading: does it actually run, is the judgment behind the design sound, and can
+it be explained to a **non-technical buyer**. Edge cases were self-defined
+(2–4 required; there are 4).
 
 **Working directory:** `c:\Users\adity\OneDrive\Desktop\Invoice processing`
 Windows 11. PowerShell is primary; a Bash tool is also available.
@@ -35,102 +35,95 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | | |
 |---|---|
 | Pipeline | ✅ Working, 9 stages, streamed live over SSE |
-| Samples | ✅ **7/7 passing** from a clean DB |
-| UI | ✅ Run view, dashboard, reference tab; light + dark |
-| Extraction route in use | **live** — `llm (text)` / `llm (vision)` verified against `gemini-3.7-flash` |
-| Automated tests | ✅ **7/7 passing** — `tests/test_samples.py`, manifest-driven, isolated DB |
-| Prompt-injection hardening | ✅ Fenced prompt, closed response schema, post-extraction guard — 34 tests |
-| Known defects | ✅ **all 3 documented bugs FIXED** (§8) |
-| Deployed | ❌ Local only, no git remote, no hosting |
+| Samples | ✅ 7/7 match the manifest, driven through the real pipeline |
+| UI | ✅ Run view, dashboard, reference, audit trail, sign-in; light + dark |
+| Extraction | ✅ **Groq** for text PDFs, **Gemini Vision** for scans |
+| Automated tests | ✅ **329 passing** deterministically, 13 files, both providers mocked |
+| Audit trail | ✅ Structured, deterministic, emitted by the rule engine itself |
+| Human review | ✅ Accept/reject, recorded beside the automated decision |
+| API security | ✅ OAuth2 bearer tokens, scopes, rate limits, input validation |
+| Production safety | ✅ `APP_ENV=production` refuses demo creds / missing secret |
+| Daily AI budget | ✅ Per-provider circuit breaker, SQLite-backed |
+| Original audit defects | ✅ **All 3 fixed** |
+| Gemini vision route | ⚠️ Intermittent **503** from Google — see §9 |
+| Groq input truncation | ⚠️ **Open bug** — 413 on long documents, see §9 |
+| Deployed | ❌ Local only |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 19 commits at the time of writing (this update is
-the 20th), working tree clean.
+**Git:** 27 commits. Recent:
 
 ```
+c0e00e9 Rewrite README for the current state of the project
+f78be67 Separate demo config from production, and cap daily AI spend
+9cffa9d Require authenticated, scoped, rate-limited access to the API
+ff64560 Show the audit trail in the UI and let a reviewer accept or reject
+3e45766 Record human review beside the automated decision, never on top of it
+0b4f8dc Emit a deterministic audit trail from the decision evaluation
+da396f6 Route text PDFs to Groq and keep Gemini for scanned pages only
+ff0b1f3 Match vendors by normalised name instead of bidirectional substring
+921d107 Require invoice totals to be greater than zero
+be7ef8b Validate invoice arithmetic: subtotal + tax must equal the stated total
+8a2c30b Compare invoice and PO currency, and hold mismatches for review
+c2e81a3 Cap and disambiguate inferred PO matches, and make the warning bite
 2865a58 Harden the PO ledger: atomicity, reversal + cascade, configurable tolerance
 056d0f2 Harden the extraction layer against indirect prompt injection
-b7f4b00 Update CLAUDE.md: Gemini swap, live route verification, and what it cost
-d7790c3 Fix Gemini client lifetime and model pin; vision route verified working
 5ed4a53 Swap the LLM extraction layer from Anthropic Claude to Google Gemini
-dd9c1bc Update CLAUDE.md: current git log, line counts, unproven LLM routes
-21bc180 Implement pytest suite and enable API vision extraction for sample 05
-bedc0db Add tests/test_samples.py — Phase 0 Step 3, 7/7 passing
-e103369 Add CLAUDE.md — session handoff document
-f521b21 Update README for the architect review
-ab1a559 Add REFACTOR_STRATEGY.md — architect review with implementation patterns
-b2db656 Rewrite README for current state; fix stale requirements.txt
-51e16b9 Reconcile main.py with extract_invoice(); pipeline runs again
-56102dc Baseline: current state, pipeline broken mid-refactor
 ```
 
-**Last verified 2026-08-19.** Re-checked against the code: every line count in
-§6, every code reference in §8 (all three bugs), the six API endpoints, the seed
-data, and the manifest order. The app was run — all three tabs render with no JS
-console errors.
-
-**The LLM routes are no longer a promise.** Both have now made real API calls
-against `gemini-3.7-flash` with a live key. Sample 05 was extracted from a page
-image and came back APPROVED end to end, every expected field matching:
-
-```
-Route Used       llm-vision                (expected llm-vision)
-Vendor Name      Stark Industrial Parts    (expected Stark Industrial Parts)
-Invoice Number   INV-9004                  (expected INV-9004)
-PO Reference     ['PO-1005']               (expected PO-1005)
-Total Amount     15400.0                   (expected 15400.00)
-invoice_date     2026-07-22   currency USD   (bonus, not asserted)
-```
-
-`pytest` is 7/7 with the live routes active (65s, against 16s on regex).
-
-**The remaining caveat is quota, not correctness** — see the 429 gotcha in §4.
-
-Since then, two hardening rounds landed and are covered by **46 tests**: prompt
-injection (§5) and the PO ledger (§5, §8 #3). The concurrency race was verified
-fixed under real threads, and reversal + cascade end to end over HTTP.
+**[README.md](README.md) is current and accurate** — rewritten `c0e00e9` against
+the code, every figure verified. When the two documents disagree, trust the README.
 
 ---
 
 ## 3. ⚠️ Standing instruction — do not skip
 
-**Phase 1 is gated. Do not start it without explicit user confirmation.**
+**Phases 2–7 (§8) are NOT started and must not be started unprompted.**
 
-The user asked for Phase 0 in three steps, stopping and committing after each:
-1. ✅ git init + baseline commit
-2. ✅ reconcile `main.py`, get 7/7 green
-3. ✅ `tests/test_samples.py` as a real pytest file — **7/7 passing**
+The user works **one discrete step at a time, with a commit after each** — not
+batched work. Every step so far was inspected, tested, verified and committed
+before the next was requested. Keep doing that.
 
-**Phase 0 is complete.** They said: *"Don't start Phase 1 until I confirm."*
-That still holds, and was reaffirmed when Step 3 was commissioned. Phase 1
-touches decision behaviour (capping inferred PO matches, making `warn` bite),
-so the suite now exists precisely to catch regressions there — but do not
-start it unprompted.
-
-The user also prefers **one step at a time with a commit after each**, not
-batched work.
+Open issues in §9 should be **documented and raised, not fixed** without being
+asked.
 
 ---
 
 ## 4. Running it
 
 ```powershell
-# Tests -- no server needed, runs the pipeline in-process against a temp DB
+.\start.ps1          # installs deps, generates samples, starts server, opens browser
+```
+
+Then <http://127.0.0.1:8000> and sign in.
+
+| Username | Password | Can |
+|---|---|---|
+| `viewer` | `demo-viewer` | read |
+| `analyst` | `demo-analyst` | + process invoices |
+| `reviewer` | `demo-reviewer` | + accept/reject held invoices |
+| `admin` | `demo-admin` | + override any run's status |
+
+```powershell
+# Tests -- no server needed, no API key needed, no network
 .\venv\Scripts\python.exe -m pytest tests/ -v
 
-# Full start (creates venv, installs deps, generates samples, opens browser)
-.\start.ps1
-
-# Manual
+# Manual start
 .\venv\Scripts\python.exe -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-Then <http://127.0.0.1:8000>.
-
 ### Hard-won gotchas — these cost time already
 
-**The server holds `data/app.db` open.** `rm data/app.db` fails with *"Device or
-resource busy"* while it runs. Always kill the server first:
+**`start.ps1` launched from a tool call does not survive.** The process tree gets
+cleaned up when the call ends, and the browser then reports *"Run failed: Failed
+to fetch"* — which looks like an app bug and is not. The server must be started
+from a terminal the user owns. Diagnose by checking whether anything is
+listening on 8000 before assuming the app broke.
+
+**Set `AUTH_SECRET` in `.env` before demoing.** Without it a fresh signing key is
+generated per process, so any server restart silently invalidates the token in
+the browser and forces a re-login mid-recording.
+
+**The server holds `data/app.db` open.** Kill it before deleting:
 
 ```bash
 netstat -ano | grep ":8000" | grep LISTENING | awk '{print $5}' \
@@ -138,32 +131,34 @@ netstat -ano | grep ":8000" | grep LISTENING | awk '{print $5}' \
 sleep 1.5 && rm -f data/app.db
 ```
 
-**Starting a `TestClient` wipes any PO you inserted.** FastAPI's startup event
-calls `init_db()`, which does `DELETE FROM purchase_orders` and re-seeds from
-`data/purchase_orders.json`. Insert fixture POs *after* entering the TestClient
-context, not before, or they vanish and every balance assertion reads `None`.
-This is the re-seed-on-startup design gap in §8 showing its teeth.
+**Tests that drive the API must authenticate.** `tests/conftest.py` provides
+`auth_headers(role)`; pass it to `TestClient(main.app, headers=...)`.
 
-**The Gemini free tier rate-limits hard (HTTP 429).** Running all 7 samples
-back to back exhausts quota within a minute, and the pipeline then falls back to
-`regex` -- silently, by design, since a note is attached but the verdict still
-comes out right on these fixtures. Verified: 4 of 7 samples fell back this way on
-a second consecutive full run. **Before demoing "the AI reads it", pause between
-runs or the live route may not actually fire.** A 429 is indistinguishable from
-any other API failure in the run view; both read as "used regex instead".
+**Stripping API keys in a test is not enough.** Entering the `TestClient` context
+fires FastAPI's startup event, which calls `config.load_dotenv()` and puts the
+real keys straight back. Stub the loader too, or the test quietly makes live
+calls (this happened — two security tests were hitting Groq and taking 90s).
+
+**Starting a `TestClient` wipes any PO you inserted.** Startup calls `init_db()`,
+which re-seeds from `data/*.json`. Insert fixture POs *after* entering the
+context.
+
+**Insert POs with named columns.** A positional `INSERT INTO purchase_orders
+VALUES (?,?,?,?,?,?,?)` breaks the moment the schema grows — which it did, twice.
 
 **`/tmp` is not reliably writable** in this Git Bash environment. Use the
-scratchpad directory for temp files, not `/tmp` and not the project root.
+scratchpad directory.
 
 **SSE output ends with a blank line**, so `curl ... | tail -1` returns nothing.
-Use `grep '"final"'` to pull the result event.
+Use `grep '"final"'`.
 
-**Sample order matters** (see §7) — several cases are history-dependent by
-design. Running them out of order gives the wrong verdict and looks like a bug.
+**Sample order matters** (§7) — several cases are history-dependent by design.
 
-**PDFs must stay binary in git.** `.gitattributes` has `*.pdf binary`. Without
-it Git on Windows applies CRLF conversion and silently corrupts the fixtures on
-checkout — it warned about exactly this before the attribute was added.
+**PDFs must stay binary in git.** `.gitattributes` has `*.pdf binary`.
+
+**UI smoke-testing:** wait on `#verdictBar:not(.hidden)` and a `9 / 9 stages`
+reading. Do **not** count `#stageList` children — they are pre-rendered
+placeholders, and an earlier session produced a false pass by counting them.
 
 ---
 
@@ -179,10 +174,17 @@ auditor, so **no model ever touches a dollar comparison**. Everything downstream
 of extraction is deterministic Python. No prompt contains the words approve,
 reject, or tolerance.
 
-The audit confirmed this holds. The caveat worth stating honestly: the LLM still
-*chooses the inputs* the verdict is computed from (which number is the total,
-which strings are PO references), and those currently arrive as bare floats the
-rules trust absolutely. That is what Phase 2 fixes.
+Honest caveat worth stating: the LLM still *chooses the inputs* the verdict is
+computed from, and those arrive as bare floats the rules trust absolutely. That
+is what Phase 2 fixes.
+
+### Request path
+
+```
+Sign in → authenticate → authorize (scope) → rate limit → daily AI budget
+        → validate the file → pipeline → deterministic rules → audit trail
+        → (if held) human accept / reject
+```
 
 ### Pipeline
 
@@ -191,22 +193,20 @@ INGEST → EXTRACT_TEXT → EXTRACT_FIELDS → VALIDATE → VENDOR_CHECK
        → PO_MATCH → DUPLICATE_CHECK → TOLERANCE_CHECK → DECISION
 ```
 
-Stages **do not short-circuit**. A missing invoice number at stage 4 does not
-stop stages 5–8; findings accumulate and only the final stage judges. An AP clerk
-should see the whole picture, not the first thing that went wrong.
+Stages **do not short-circuit**. Findings accumulate and only the final stage
+judges — an AP clerk should see the whole picture, not the first thing that went
+wrong.
 
-One wrinkle worth knowing before reading the code: the tolerance **arithmetic**
-happens in stage 6 (`PO_MATCH` → `matching.match_po`), which computes
-`remaining_before`, `tolerance`, `diff` and `within_tolerance` in one pass.
-Stage 8 (`TOLERANCE_CHECK`) only *reports* what stage 6 already decided. The
-stage split exists for the run view, not for the logic.
+Wrinkle: tolerance **arithmetic** happens in stage 6 (`matching.match_po`).
+Stage 8 only *reports* what stage 6 decided. The split exists for the run view.
 
 ### Decision hierarchy
 
 - **REJECTED** — must not be overridden automatically: duplicates, vendor on file
   but not approved.
 - **NEEDS_REVIEW** — recoverable: missing fields, unreadable scan, over tolerance,
-  no PO match.
+  no PO match, currency mismatch, bad arithmetic, invalid total, inferred PO,
+  injection-shaped text.
 - **APPROVED** — everything passed.
 
 Reject wins over review when both fire.
@@ -217,265 +217,157 @@ Reject wins over review when both fire.
 within = diff <= tol        # NOT abs(diff) <= tol
 ```
 
-Billing **over** the remaining PO balance is a problem — the vendor wants money
-nobody authorised. Billing **under** it is a normal partial invoice. Tolerance is
-`max(2% of remaining, $25)`.
+Billing **over** the remaining PO balance is a problem. Billing **under** it is a
+normal partial invoice. Tolerance is `max(1% of remaining, $50)`
+(`config.PO_TOLERANCE_PERCENT` / `PO_TOLERANCE_DOLLARS`).
 
-This was originally written with `abs()` and it was wrong — it flagged every
-legitimate split-PO invoice. Good story: the tests caught it.
+Originally written with `abs()` and it was wrong — it flagged every legitimate
+split-PO invoice. The tests caught it.
 
 ### Split-PO tracking
 
-No `consumed` column. Remaining balance is derived per run:
+No `consumed` column. Balance is derived per run:
 
 ```
 remaining_before = PO_amount − Σ(totals of prior APPROVED runs on that PO)
 ```
 
-Only **APPROVED** runs consume budget, so a flagged invoice doesn't block the
-queue behind it, and the run history *is* the ledger — no counter can drift.
+Only **APPROVED** runs consume budget. Idempotency and reversal are therefore
+*structural*: nothing is deducted, so nothing can be deducted twice, and moving a
+run out of APPROVED refunds it in the same instant.
 
 ### Extraction routes
 
-Same output schema regardless, so matching and rules never know which ran.
+Chosen by what the document **is** — whether `extract_text()` finds a usable text
+layer — never by extension. Same output schema regardless.
 
-| Route | When | Needs key |
-|---|---|---|
-| `llm (text)` | PDF has an embedded text layer | Yes |
-| `llm (vision)` | Scanned PDF — pages rasterised and sent to the model | Yes |
-| `regex` | No key, or LLM call failed | No |
-| `none` | Nothing readable — returns empty fields rather than guessing | — |
+| Route | When | Provider | Key |
+|---|---|---|---|
+| `groq (text)` | text layer present | Groq | `GROQ_API_KEY` |
+| `gemini (vision)` | image-only PDF | Gemini | `GEMINI_API_KEY` |
+| `regex` | no Groq key, or Groq failed | — | — |
+| `none` | nothing readable — empty fields, never guesses | — | — |
 
-✅ **Both LLM routes are verified working** against `gemini-3.7-flash`
-(2026-08-19). `llm (vision)` reads `05_scanned_no_text.pdf` correctly — vendor,
-invoice number, PO reference, total, and date — and the invoice reaches APPROVED
-end to end. `llm (text)` also returns clean fields. Entry points:
-`llm_extract_vision` at `extraction.py:302`, `llm_extract_text` at
-`extraction.py:287`.
+**Why the split:** Gemini's free tier is 20 requests per *day* and it is the only
+route that can read a picture. Spending it on text PDFs that already have a
+working regex fallback traded the irreplaceable route for the one with an
+alternative. This is an economics decision, not an architectural one —
+`matching.py`, `storage.py` and `rules.py` were untouched by the swap.
 
-The provider is configured through `.env` in the project root:
+**Fallback order is deliberate.** Groq → regex, *not* Groq → Gemini. Falling
+through would spend the scarce vision budget on a route that already has a local
+fallback. A Gemini-only install (no Groq key) still uses `llm_extract_text`, so
+nothing pre-existing was downgraded.
 
-```
-GEMINI_API_KEY=...
-```
-
-`.env` is gitignored; the key is never sent to the browser. Get a key free at
-<https://aistudio.google.com/apikey>.
-
-Provider is **Google Gemini** via Google AI Studio (`google-genai`); model is
-`gemini-3.7-flash` (`config.EXTRACTION_MODEL`; the env var name lives in
-`config.API_KEY_ENV`, so swapping providers again touches one constant). Both
-routes ask for `response_mime_type="application/json"`, but `_parse_llm_json`
-still runs on the reply — a mime type is a strong constraint, not a guarantee.
-
-Rasterisation uses **pypdfium2** — a self-contained wheel, deliberately chosen so
-there is no poppler/tesseract system dependency. OCR via pytesseract was removed
-entirely.
-
-**Model pinning is deliberate.** `gemini-flash-latest` is an available alias and
-is *not* used: an alias changes the model under a running system, and an AP
+Models are **pinned**: `openai/gpt-oss-120b`, `gemini-3.7-flash`, both
+overridable by env. An alias changes the model under a running system, and an AP
 process must be able to say which model read an invoice approved months ago.
 
-### PO ledger: reversal, cascade, tolerance
+`llama-3.3-70b-versatile` is **not reachable** on this Groq account. Ask the API
+what it can reach (`client.models.list()`) rather than trusting a name from
+memory — the same trap `gemini-2.0-flash` sprang.
 
-**There is no `remaining_amount` column, and there must not be one.** Balance is
-derived on every read (`po.amount - SUM(approved run totals)`). Two of the
-hardest problems in AP balance tracking are therefore not problems here:
+Rasterisation uses **pypdfium2** — a self-contained wheel, no poppler/tesseract.
 
-* **Idempotency is structural.** Nothing is deducted, so nothing can be deducted
-  twice. Re-evaluating an approved invoice recomputes the same sum. A stored
-  counter would need a guard flag and would be one missed path away from
-  double-spending a PO.
-* **Reversal is structural.** `set_run_status()` moving a run out of APPROVED
-  drops it from the SUM in the same instant. There is no refund step to forget,
-  and no way for a counter to drift from what was actually approved.
+### The audit trail
 
-What is *not* free, and is implemented:
+`rules.decide(audit={})` fills a structured record **as it evaluates** — each
+`_check(...)` sits next to the branch that sets `reject`/`review` and reads the
+same variable. It is not a second pass.
 
-* **Atomicity** — see §8 #3.
-* **Cascade re-evaluation** — `rules.reevaluate_po_queue(po_number)`. When budget
-  frees up, held invoices are re-checked oldest-first, so the invoice that queued
-  first gets the money. Exposed as `POST /api/runs/{id}/status`.
-  **Only invoices held purely on balance are eligible.** One held for a missing
-  invoice number, a duplicate, or a security flag stays held — otherwise a
-  reversal becomes a way to launder a blocked invoice into APPROVED. Tested.
-* **Configurable tolerance** — `config.PO_TOLERANCE_PERCENT` (1%) and
-  `PO_TOLERANCE_DOLLARS` ($50), whichever is larger. Covers tax and freight added
-  after a PO is raised. An invoice approved *over* the balance is never silent:
-  `over_within_tolerance` triggers a `warn`-level audit note naming the overage
-  in dollars. Under-billing is unbounded and handled separately as a partial.
+That distinction is the whole point: a trail assembled separately can disagree
+with the decision it claims to explain. No model is involved; there is a test
+that fails if evaluation so much as touches a model client, and another pinning
+that `rules.py` imports no SDK.
 
-### Vendor name matching
+Contains: automated decision, deterministic reason, invoice identity, extraction
+route/provider, matched PO with `source_file` + `source_row`, the values
+compared, variance, tolerance, and every rule passed/failed.
 
-`storage.normalize_vendor_name()` then an **exact match on the normalised form**.
-No substring fallback, no edit-distance scoring — both reintroduce the
-"close enough" behaviour that caused the problem.
+PO provenance is seeded from the record's position in `data/purchase_orders.json`
+(1-based); a record carrying its own `source_row` wins, which is what a
+spreadsheet export would provide. Nothing is invented — no derivable position
+stores `NULL` and the trail says the row is unknown.
 
-Normalisation collapses only genuinely cosmetic differences: case, whitespace,
-punctuation, `&` vs `and`, and legal-form abbreviations (corp/corporation,
-inc/incorporated, ltd/limited, co/company, llc/llp/plc). Legal forms are
-**canonicalised, not deleted** — dropping them would merge "Umbrella Cleaning Co"
-and "Umbrella Cleaning Ltd", which are different legal entities with potentially
-different bank details. Apostrophes are removed rather than spaced, so "O'Brien"
-matches "OBrien"; every other mark becomes a space, so "Smith-Jones" matches
-"Smith Jones".
-
-`find_vendor_matches()` returns a **list**, which is the point — three outcomes,
-not two:
-
-| matches | meaning | verdict |
-|---|---|---|
-| exactly 1 | confident match | approve / reject on the vendor's own status |
-| 0 | confidently not on the list | **REJECTED** (unchanged) |
-| 2+ | ambiguous — the name IS on the list, but which row? | **NEEDS_REVIEW** |
-
-Ambiguity is review, never rejection: picking one row would be a guess about who
-gets paid. `find_vendor()` keeps its old signature and returns the single match
-or None, so its callers were untouched.
-
-Measured before and after, same inputs:
+### Human review
 
 ```
-                                 OLD                      NEW
-'Acme'                           Acme Office Supplies     None      <- fixed
-'Office'                         Acme Office Supplies     None      <- fixed
-'Supplies'                       Acme Office Supplies     None      <- fixed
-'s'                              Acme Office Supplies     None      <- one letter!
-'Initech Consulting Group'       Initech Consulting       None      <- different entity
-'ACME, OFFICE SUPPLIES.'         None                     Acme Office Supplies
-'Stark   Industrial Parts'       None                     Stark Industrial Parts
+automated_decision   NEEDS_REVIEW      ← written once, never rewritten
+human_decision       ACCEPTED
+final_decision       HUMAN_APPROVED
 ```
 
-Loose exactly where it was dangerous, strict exactly where it was not. A single
-letter resolved to an approved vendor **and unlocked that vendor's POs**, since
-`matching.match_po` uses the same lookup for inference.
+`status` does move, because that is the column the ledger sums. It moves through
+the existing `set_run_status`, so reversal and cascade keep working.
 
-Also fixed while testing: a whitespace-only vendor name reached the lookup and
-read as a confident rejection. It is unreadable, so it is now review — the
-tri-state distinction the function exists to make.
+Only runs whose **automated** decision was NEEDS_REVIEW are eligible, enforced in
+storage. **One ruling per run** — because `automated_decision` stays NEEDS_REVIEW
+forever, the eligibility check would otherwise keep passing and let a caller
+silently rewrite who decided what. Reversal is an admin action through `/status`.
 
-### Invoice amount validity
+Reviewer identity comes from the **token**, never the request body.
 
-`rules.validate_amount()` requires the total to be **greater than zero**, and
-`decide(..., amount=...)` turns a violation into NEEDS_REVIEW. Checked before the
-arithmetic and before any PO reasoning, because all of those compare against
-`total` — if the figure is not a payable amount, none of what follows means
-anything.
+### API security
 
-Measured against the code before this change:
+The frontend is an untrusted client. CORS is configured but is **not** a security
+boundary — a script ignores it.
 
-```
-total =  1000.00  ->  APPROVED       (correct)
-total =     0.00  ->  NEEDS_REVIEW   (right verdict, WRONG reason)
-total =  -500.00  ->  APPROVED       <- the hole
-total = -5000.00  ->  APPROVED
-```
+- **Authentication** — OAuth 2.0 resource-server pattern, `Authorization: Bearer
+  <JWT>`, validated for signature, expiry **and** issuer. Swapping in a hosted
+  IdP means verifying against its JWKS and changing nothing else.
+- **Authorization** — scopes named for actions: `invoice:read`,
+  `invoice:process`, `invoice:review`, `invoice:admin`. Reviewing is separate
+  from processing: approving payment is a different authority from feeding a PDF
+  to an extractor.
+- **Rate limiting** — per user and per IP, sliding window, default 20
+  processing/min/user. Authentication runs *first*, so an anonymous flood cannot
+  burn a real user's budget.
+- **Daily AI budget** (`quota.py`) — a slower breaker. Twenty polite requests an
+  hour apart never trip a per-minute limit and would still exhaust Gemini for the
+  day. When spent, the provider is **not called** and extraction takes its
+  existing safe fallback. Counter lives in SQLite so it survives a restart.
+  Deliberately **fails open** if its own table breaks — it is a cost guard, not a
+  security control; the security controls all fail closed.
+- **Input** — uploads read in capped chunks (not buffered then measured), PDFs
+  validated by magic bytes, filenames reduced to a safe basename.
+- **Errors** — 401/403/404/409/413/415/429/500 with no stack traces, provider
+  messages or config names. A crash mid-SSE cannot become a 500 (headers already
+  sent), so the pipeline is wrapped to emit one clean error event.
 
-A negative total sailed through because matching compares `total - remaining`,
-and a negative total makes that comfortably negative — which reads as a small
-partial invoice against a healthy PO, the most innocuous shape in the system. A
-negative total is a **credit note**; approving it as a payable moves money the
-wrong way.
-
-Zero *was* caught, but by accident: `validate_required_fields` used
-`not extracted.get("total")`, and `not 0.0` is True, so a printed $0.00 was
-reported as a **missing** total. Right verdict, wrong story, and it sends a clerk
-hunting for a figure that is on the page. Presence is now tested by `_is_missing`
-(None, or a blank string), so a zero total is present-but-invalid and
-`validate_amount` owns it.
-
-**No upper bound, deliberately.** Size is not a validity question — a large
-invoice is judged by the PO and tolerance rules, and an arbitrary ceiling would
-reject legitimate high-value invoices the ledger can already handle. Review, never
-reject: a negative total is more often a credit note filed as an invoice than
-fraud, and rejecting outright removes the judgement that decides which.
-
-⚠️ **Extraction bug found while verifying this, NOT fixed (out of scope).**
-`extraction._first()` ends with `val = m.group(1).strip(" :.-\t")`, which strips
-a **leading minus sign** off a captured amount. The total regex captures
-`-500.00` correctly and `_to_float` parses it correctly, but `_first` hands on
-`500.00`. So `Total Due: -500.00` extracts as **positive 500**. Accounting
-parentheses — `Total Due: (500.00)` — are unaffected and yield -500.0, which is
-how the negative path was verified end to end. Worth fixing in an extraction
-step: the amount rule cannot catch a sign the extractor already discarded.
-
-### Invoice arithmetic
-
-`subtotal + tax` must equal the stated `total`, within $0.05
-(`config.ARITHMETIC_TOLERANCE_DOLLARS`). Computed by
-`rules.validate_arithmetic()`, surfaced in the VALIDATE stage, and turned into
-NEEDS_REVIEW by `decide(..., arithmetic=...)` — an optional keyword argument, so
-the sixteen existing `decide()` call sites were untouched.
-
-Why it matters more than it looks: every downstream check — vendor, PO balance,
-tolerance, duplicate — operates on `total`. A total that contradicts its own
-components is the one figure the entire decision rests on, and nothing had ever
-verified it.
-
-Three judgement calls worth keeping:
-
-* **$0.05, and a separate constant from the PO tolerance.** That one is a
-  business allowance for unpredictable charges; this is cash-rounding slack.
-  Reusing the $50 PO figure would wave through a $40 arithmetic error.
-* **All three fields required.** Comparing `subtotal` to `total` when tax is
-  absent would flag every invoice whose tax the extractor missed — the fastest
-  way to make the check untrustworthy.
-* **Both directions.** A total *below* its components is equally inconsistent;
-  only bounding the over side would miss a misread subtotal.
-
-The check reports the disagreement; it never "corrects" the total. Deciding which
-figure is right is what the human is for.
-
-⚠️ Interaction with extraction: when a document states no total,
-`regex_extract` synthesises one as `subtotal + tax`, so this check passes by
-construction. Correct — there is no printed figure to contradict — but it means
-the check only bites on invoices that actually stated a total.
+**Production safety** — `APP_ENV=production` refuses to start on: missing
+`AUTH_SECRET` (no ephemeral fallback), demo credentials present, empty user
+store, or wildcard CORS. The demo flag lives on the **record**, not the file
+path, so copying `users.json` elsewhere does not launder it. All problems are
+reported at once.
 
 ### Prompt-injection defence
 
-A vendor invoice is **attacker-controlled input**. Anyone who can send an invoice
-can print text on it addressed to the extractor. Four controls, in descending
-order of how much weight they actually carry:
+A vendor invoice is **attacker-controlled input**. Four controls, in descending
+order of weight:
 
-1. **Architecture (was already there).** No model output reaches a verdict.
-   `decide()` computes status from numbers and the PO ledger. There is no field
-   an extractor could set that changes it — so the blast radius of a successful
-   injection is *wrong numbers*, never *wrong decision*.
-2. **Closed response schema** (`extraction.RESPONSE_SCHEMA`). The reply is
-   decoded against a fixed shape, so a document demanding `{"status":"APPROVED"}`
-   cannot produce that key. The bad output is unrepresentable, not merely
-   discouraged. This is the load-bearing *new* control.
-3. **Fenced prompt.** Document text is wrapped in
-   `<untrusted_document_content>` via `wrap_untrusted()`, which also defangs a
-   closing tag already inside the document — otherwise a document could close the
-   fence early and have the rest read as trusted prompt. Images get the same
-   fence: text printed on a scan is exactly as untrusted as a text layer.
-   `SCHEMA_PROMPT` frames the model as a passive transcriber with no authority
-   and explicitly tells it to transcribe hostile text rather than obey or drop it.
-4. **Post-extraction guard** (`validate_extracted_security`). Scans extracted
-   strings *and* `raw_text` for instruction-shaped phrases, and forces
-   NEEDS_REVIEW. Never raises — a guard that crashes is free denial of service.
+1. **Architecture.** No model output reaches a verdict. The blast radius of a
+   successful injection is *wrong numbers*, never *wrong decision*.
+2. **Closed response schema** (Gemini). A document demanding
+   `{"status":"APPROVED"}` cannot produce that key. Groq's JSON mode guarantees
+   valid JSON, not *which* JSON — its closing boundary is
+   `_invoice_from_payload`, which reads only the nine known keys into a fixed
+   dataclass. Tested.
+3. **Fenced prompt.** `wrap_untrusted()` defangs a closing tag already inside the
+   document. Images get the same fence.
+4. **Post-extraction guard** — scans extracted strings *and* `raw_text`, forces
+   NEEDS_REVIEW, never raises.
 
-**It forces review, never rejection.** Auto-rejecting on a keyword would hand
-anyone a way to block a competitor's payment by printing a phrase on an invoice.
-A duplicate still outranks it and still REJECTs; there is a test for that.
+**Forces review, never rejection.** Auto-rejecting on a keyword would let anyone
+block a competitor's payment by printing a phrase on an invoice.
 
-Two findings worth keeping:
-
-* **Field-only scanning was not enough.** The regex extractor drops a hostile
-  line that matches no field pattern, so the guard saw nothing while the
-  injection sat in the document in plain sight. What an indirect injection
-  targets is the text the *model* reads, so `raw_text` is screened too. Found by
-  the end-to-end test, not by reading the code.
-* **The patterns are deliberately narrow.** Scoring or fuzzy matching would flag
-  "System Integration Services" and train a clerk to click through the warning —
-  worse than no guard. `tests/test_security.py` pins six benign-but-similar
-  strings that must stay silent.
+Patterns are deliberately **narrow** — a guard that flags "System Integration
+Services" trains clerks to click through warnings, which is worse than no guard.
 
 ### Stack
 
 FastAPI + SQLite + vanilla JS (no build step). `POST /api/runs/stream` streams
-stages over SSE; the frontend reads it with `fetch()`.
+stages over SSE, read with `fetch()`. `pyjwt` for tokens; PBKDF2-HMAC-SHA256
+password hashing from the stdlib.
 
 ---
 
@@ -483,89 +375,75 @@ stages over SSE; the frontend reads it with `fetch()`.
 
 ```
 backend/
-  main.py         359 lines. FastAPI app, the 9-stage pipeline as an async
-                  generator yielding SSE events, _abort_unreadable() path,
-                  all endpoints.
-  extraction.py   633 lines. PDF → text (pdfplumber) → fields. Three routes,
-                  SCHEMA_PROMPT for the LLM, regex fallback with tiered
-                  patterns, _guess_vendor positional heuristic, PdfUnreadable.
-                  The ONLY module that talks to a model — google-genai is
-                  imported lazily inside _client() so the regex route still
-                  works where the SDK was never installed.
-  matching.py      153 lines. PO lookup (explicit refs then inferred),
-                  tolerance_for(), empty_match(), split-PO balance maths.
-  rules.py        427 lines. validate_required_fields, vendor_check (tri-state),
-                  duplicate_check, and decide() — the only place a verdict is
-                  produced.
-  storage.py      416 lines. SQLite. Seeds POs/vendors from data/*.json on
-                  EVERY startup. consumed_amount_for_po, find_duplicate,
-                  save_run, list_runs.
+  main.py         622 lines. FastAPI app, 9-stage pipeline as an async generator,
+                  auth endpoints, error handlers, upload validation.
+  extraction.py   744 lines. PDF → text → fields. Groq/Gemini/regex/none,
+                  SCHEMA_PROMPT, injection guard. The ONLY module that talks
+                  to a model; both SDKs imported lazily.
+  rules.py        575 lines. Validation, vendor tri-state, duplicates, decide()
+                  and build_audit(). The only place a verdict is produced.
+  storage.py      617 lines. SQLite, ledger, write_txn(), save_run_checked(),
+                  record_human_review(), migrations via _ensure_columns().
+  auth.py         324 lines. OAuth2 bearer tokens, scopes, user store,
+                  production config enforcement.
+  config.py       244 lines. .env loader, APP_ENV, provider settings, tolerances,
+                  rate limits, daily quotas. Operational settings + policy numbers.
+  matching.py     174 lines. PO lookup, tolerance_for(), split-PO maths, currency.
+  quota.py        142 lines. Daily per-provider budget, SQLite-backed.
+  ratelimit.py    130 lines. Sliding-window per user/IP.
   schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
-  config.py        99 lines. .env loader, upload/page caps, API_KEY_ENV
-                  ("GEMINI_API_KEY"), EXTRACTION_MODEL, api_key(),
-                  has_api_key(). Operational settings only — no business rules.
-frontend/
-  index.html      Three tabs: Run, Dashboard, Reference.
-  style.css       CSS custom properties, dark mode via prefers-color-scheme.
-  app.js          SSE consumption, live stage rendering, PO balance bar,
-                  dashboard, modal. No framework, no build.
+frontend/         index.html, style.css, app.js — sign-in, run view, dashboard,
+                  reference, audit panel, accept/reject. No framework, no build.
 data/
-  purchase_orders.json / approved_vendors.json   Seed data (TRACKED in git)
-  app.db                                         Runtime DB (NOT tracked)
-sample_invoices/
-  *.pdf (7)            Test fixtures
-  generate_invoices.py Regenerates them (reportlab)
-  manifest.json        Scenario labels + expected verdicts; drives the UI list
-                       AND is the source of truth for tests. Sample 05 carries
-                       BOTH `expect` and `expect_with_vision` — see §7.
-tests/
-  test_vendor_matching.py 40 cases. Normalisation of suffix/case/punctuation/
-                   whitespace/ampersand variants, genuinely different vendors
-                   staying distinct, the dangerous substrings, ambiguity routed
-                   to review, and every seeded vendor still matching itself.
-  test_invalid_amount.py 21 cases. Zero and negative totals, that zero is no
-                   longer mislabelled as a missing field, no arbitrary ceiling,
-                   and REJECTED still outranking the review.
-  test_arithmetic.py     22 cases. Consistent invoices unchanged, rounding slack
-                   and its boundary, clear mismatch in both directions, missing
-                   components not fabricating a failure, and REJECTED still
-                   outranking the review.
-  test_currency.py       16 cases. Matching currencies unchanged, mismatch →
-                   review with a clear finding, no conversion, unknown currency
-                   not invented, and REJECTED still outranking the review.
-  test_inferred_po.py    13 cases. The distance cap, the ambiguity guard, that
-                   the inferred warning drives the verdict, and that explicit
-                   matching / split-PO / duplicate behaviour did not move.
-  test_po_edge_cases.py  12 cases. Split-PO execution, idempotency under repeat
-                   evaluation, reversal + cascade (including what must NOT
-                   cascade), tolerance boundaries, and the concurrency race
-                   driven with real threads.
-  test_security.py 27 cases. Injection detection, false-positive floor, prompt
-                   and schema shape, decision-layer behaviour, and one hostile
-                   PDF built at test time (never committed) driven end to end.
-  test_samples.py  269 lines. 7 parametrized cases, one per sample, run sequentially in
-                   manifest order against a temp DB. Verdicts come from
-                   manifest.json, resolved against config.has_api_key(); each
-                   case also pins the numbers behind the verdict (PO balances,
-                   duplicate citation, extraction route). Does NOT strip the API
-                   key -- with one present it runs the real LLM routes.
-AUDIT.md              What is wrong and why — the self-audit
-REFACTOR_STRATEGY.md  How to fix it — architect review, code patterns
-PROCESS_MAP.md        The on-paper design done before building
-README.md             Project overview + status
+  purchase_orders.json / approved_vendors.json / users.json   (TRACKED)
+  app.db                                                      (NOT tracked)
+sample_invoices/  7 PDFs, generate_invoices.py, manifest.json
+tests/            13 files, 329 tests. conftest.py provides auth_headers().
 ```
+
+### Test suite — 329 tests, 13 files
+
+| File | n | Covers |
+|---|---|---|
+| `test_api_security.py` | 59 | authn, authz, rate limits, secrets, input, errors |
+| `test_vendor_matching.py` | 40 | normalisation, substrings, ambiguity |
+| `test_production_safety.py` | 39 | APP_ENV gates, demo creds, daily quota |
+| `test_human_review.py` | 28 | accept/reject, ledger effect, eligibility |
+| `test_security.py` | 27 | prompt injection, false-positive floor |
+| `test_extraction_routing.py` | 23 | Groq/Gemini routing, failure fallbacks |
+| `test_audit_trail.py` | 22 | trail structure, provenance, determinism |
+| `test_arithmetic.py` | 22 | subtotal + tax == total |
+| `test_invalid_amount.py` | 21 | zero / negative totals |
+| `test_currency.py` | 16 | mismatch → review, no conversion |
+| `test_inferred_po.py` | 13 | distance cap, ambiguity guard |
+| `test_po_edge_cases.py` | 12 | split-PO, idempotency, reversal, concurrency |
+| `test_samples.py` | 7 | the 7 samples end to end, in manifest order |
+
+Notes for whoever changes them:
+
+* Both providers are **mocked at the transport boundary**, so the suite needs no
+  key, no network and no quota. `test_samples.py` is the exception — it honours
+  a live key and exercises the real routes, printing which mode ran.
+* `test_samples.py` cases share one DB and run in manifest order. An early
+  failure cascades — inherent, since later cases are *about* the state earlier
+  ones left.
+* The concurrency test uses real threads and a `Barrier`, exercising actual
+  SQLite locking. Its retry-on-locked loop is part of what it asserts.
 
 ### API endpoints
 
 ```
-POST /api/runs/stream          multipart PDF → SSE stream of stages, then final
-GET  /api/runs                 run history
-GET  /api/runs/{id}            single run
-POST /api/runs/{id}/status     change a run's status; cascades to invoices held
-                               on the same PO. Body: {"status": ..., "note": ...}
-GET  /api/reference            POs + vendors
-GET  /api/sample-invoices      list + manifest metadata
-GET  /api/sample-invoices/{n}  fetch one sample PDF
+GET  /api/health                 public
+POST /api/auth/token             OAuth2 password grant  (rate limited per IP)
+GET  /api/auth/me                authenticated
+POST /api/runs/stream            [invoice:process]  + rate limit + daily budget
+GET  /api/runs                   [invoice:read]
+GET  /api/runs/{id}              [invoice:read]   includes the audit trail
+POST /api/runs/{id}/review       [invoice:review]
+POST /api/runs/{id}/status       [invoice:admin]  cascades to held invoices
+GET  /api/reference              [invoice:read]
+GET  /api/sample-invoices        [invoice:read]
+GET  /api/sample-invoices/{name} [invoice:read]
 ```
 
 ### Seed data
@@ -578,7 +456,7 @@ GET  /api/sample-invoices/{n}  fetch one sample PDF
 | PO-1004 | Umbrella Cleaning Co | $600.00 | **closed** |
 | PO-1005 | Stark Industrial Parts | $15,400.00 | open |
 
-All five vendors are `approved` (V-001 … V-005).
+All five vendors approved (V-001 … V-005).
 
 ---
 
@@ -597,222 +475,101 @@ All five vendors are `approved` (V-001 … V-005).
 **Run 2 → 3 → 4 in order** or the split-PO story doesn't work. **Run 1 before 7**
 or the duplicate has nothing to collide with.
 
-† **Sample 05's verdict is route-dependent, and deliberately so.** With no key
-there is nothing to read, so the process refuses to guess → NEEDS_REVIEW. With a
-key the vision route reads INV-9004 / PO-1005 / $15,400.00 off the page image,
-which matches open PO-1005 exactly → **APPROVED**. The manifest carries both:
-`expect` and `expect_with_vision`. The test suite and `/api/sample-invoices`
-both resolve against `config.has_api_key()`, so the UI badge can never
-contradict the run beside it. Verified by flipping the flag; the other six
-samples do not move.
+† Sample 05 is route-dependent by design: no key → nothing to read → refuse to
+guess → NEEDS_REVIEW; with the vision route → reads INV-9004 / PO-1005 /
+$15,400.00 → APPROVED. `manifest.json` carries both, resolved against
+`config.has_api_key()`.
 
-**Both halves are now observed, not predicted.** With a live key the vision
-route returns Stark Industrial Parts / INV-9004 / PO-1005 / $15,400.00 and the
-run reaches APPROVED. Without one it is `route=none` → NEEDS_REVIEW. This is the
-*second* same-bytes/opposite-verdict story in the project, and a better one than
-the split-PO case for a non-technical audience: the file did not change, the
-capability did.
+**Sample 04 legitimately fails two rules.** Its PDF states Subtotal $8,200 + Tax
+$0.00 = Total $8,150, which does not add up. Both routes read it identically, so
+the arithmetic check is correct — the fixture is inconsistent. Verdict unaffected.
 
 ### The demo money-shot
 
-Run `03b` **alone against a fresh DB** → it comes back **APPROVED**. Same bytes,
-opposite verdict, because $2,500 against an untouched $5,000 PO is an ordinary
-partial invoice. The decision depends on the PO's history, not the file alone.
-That is the single best thing to show in the video.
-
-Watch "Remaining before" go **$5,000 → $2,000 → $0** across the three runs.
+Run `03b` **alone against a fresh DB** → **APPROVED**. Same bytes, opposite
+verdict, because $2,500 against an untouched $5,000 PO is an ordinary partial
+invoice. The decision depends on the PO's history, not the file alone. Watch
+"Remaining before" go **$5,000 → $2,000 → $0**.
 
 ---
 
-## 8. Known bugs — 3 live, none fixed
-
-✅ **1. Inferred PO match doesn't block approval — FIXED** (Phase 1, 2026-08-19).
-Was three defects in one: no distance cap, no ambiguity handling, and a
-decorative severity level. `min(pos, key=nearest)` always returned something, so
-an invoice that never named a PO could auto-approve against one the process
-guessed.
-
-Now, in `match_po`, inference must pass **both** guards: the PO amount within
-`tolerance_for()` of the invoice total (reusing the configured tolerance rather
-than a second magic number), and **exactly one** candidate qualifying. Failing
-either binds nothing, and `po_match["inference"]` records why
-(`"ambiguous"` / `"no_close_candidate"`) so the trail explains itself. In
-`decide()`, an accepted inferred match now sets `review = True`: the invoice
-never named this PO, so the match is a suggestion for a human to confirm, not
-grounds for approval. Explicit references are untouched and still authoritative.
-
-Verified against the pre-change code: it APPROVED a $1,000 invoice that named no
-PO, and silently picked one of two identical $1,000 POs. Both are NEEDS_REVIEW
-now. 13 tests in `tests/test_inferred_po.py`.
-
-✅ **2. Currency extracted, never read — FIXED** (Phase 1, 2026-08-19). Was:
-zero references to `currency` in `matching.py` or `rules.py`, so a €3,000 invoice
-against a $5,000 PO was compared as `3000` vs `5000` and read as a comfortable
-partial.
-
-`match_po` now emits `invoice_currency`, `po_currency` and `currency_mismatch`
-(compared case- and whitespace-insensitively, and **only when both sides are
-known** — an absent currency is not evidence of a different one). `decide()`
-turns a mismatch into NEEDS_REVIEW with a `fail`-level finding, placed *before*
-the amount reasoning because when the units differ none of that reasoning means
-anything.
-
-**No conversion, no rate lookup, no FX provider** — a verdict that depended on a
-rate fetched at run time would not be reproducible by an auditor, which is the
-property the whole design exists to protect. Amounts pass through untouched.
-
-Verified end to end: a EUR invoice against an untouched USD PO-1002 has
-`within_tolerance=True` and `is_partial=True` — every numeric check passes — yet
-returns NEEDS_REVIEW on exactly one fail-level finding, and consumes no budget.
-16 tests in `tests/test_currency.py`.
-
-⚠️ **Known limitation, unchanged by this fix:** the extractor falls back to
-`"USD"` when a document carries no currency signal, so a genuinely unmarked
-invoice is indistinguishable from a USD-marked one. That is an extraction
-concern, not a matching one, and was left alone deliberately.
-
-✅ **3. PO ledger concurrency race — FIXED.** Was: every `storage` function opened
-its own connection, so a transaction could not span read-balance → decide →
-write, and two concurrent invoices for one PO could both approve past the
-balance. The only defect that produced a wrong *number* rather than a wrong
-routing.
-
-Fixed by `storage.write_txn()` (`BEGIN IMMEDIATE` + WAL) and
-`save_run_checked()`, which re-reads the consumed total inside the write lock and
-downgrades a stale APPROVED to NEEDS_REVIEW before inserting. The verdict is
-still computed outside the lock — it has to be, since extraction can take seconds
-and holding a write lock across a model call would serialise the whole system —
-so this is optimistic concurrency with an authoritative final check.
-
-Verified under real threads: 8 concurrent $2,000 invoices against a $10,000 PO
-yield exactly 5 APPROVED, 3 NEEDS_REVIEW, $0.00 remaining. Before the fix all 8
-approved and the PO was overspent by $6,000.
-
-### Design gaps (deliberate, queued)
-
-- Extracted fields are **bare values** — no confidence, no provenance. A total
-  read off the page is indistinguishable from one the code synthesised as
-  `subtotal + tax` (`extraction.py:455` in `regex_extract`).
-- **All business rules hardcoded.** Tolerance is two magic numbers in a one-line
-  function. `config.py` holds only operational settings.
-- ~~Vendor matching is **bidirectional substring**~~ — **CLOSED 2026-08-19.**
-  Replaced with normalise-then-exact-match; see below.
-- **Reference data re-seeded from JSON on every startup**, so editing
-  `purchase_orders.json` silently changes what historical runs mean.
-- ~~No arithmetic consistency check~~ — **CLOSED 2026-08-19.**
-  `rules.validate_arithmetic()` verifies `subtotal + tax == total` within
-  `config.ARITHMETIC_TOLERANCE_DOLLARS` ($0.05) and forces NEEDS_REVIEW. Checks
-  only when all three values are present — a missing tax line is evidence of a
-  missing tax line, not of bad arithmetic — and uses `is None` rather than
-  truthiness so a genuine 0.00 tax is still checked. Deliberately a *separate*
-  constant from the PO tolerance: reusing $50 there would let a $40 arithmetic
-  error through. 22 tests in `tests/test_arithmetic.py`.
-- `config.status()` and `config.extraction_mode()` are **dead code** — nothing
-  calls them, so the UI has no way to show which extraction route is live.
-- `_guess_vendor` (`extraction.py:378`) picks the vendor by **line position**.
-
-Full detail: [AUDIT.md](AUDIT.md). Fix patterns: [REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md).
-
----
-
-## 9. Done vs remaining
-
-### Done
-
-- Process map on paper, then the build; 7 sample PDFs + PO/vendor dataset.
-- Full pipeline, SSE live run view, dashboard, reference tab.
-- **UI rebuild**: verdict bar, segmented **PO balance bar** (consumed / this
-  invoice / remaining, overflow hatched red), severity-coded reasoning,
-  per-stage timings, labelled samples, PO-consumption view, dark mode.
-- "Accept any external PDF" extraction rewrite (LLM text + vision + better regex).
-- `AUDIT.md` — honest self-audit answering 5 architecture questions.
-- `REFACTOR_STRATEGY.md` — architect review with implementation patterns.
-- **Phase 0 complete** — Steps 1 & 2 (git baseline; reconciliation), and
-  Step 3: `tests/test_samples.py`, 7/7 green, isolated from `data/app.db`.
-- Fixed `requirements.txt` — it was missing `pypdfium2` and would have broken a
-  fresh clone.
-- **Provider swapped to Google Gemini** (`google-genai`, Google AI Studio),
-  replacing Anthropic. Contained entirely to the extraction layer — `matching.py`
-  and `rules.py` are byte-for-byte unchanged, which is the whole point of the
-  architecture. `anthropic` removed from `requirements.txt` and the venv.
-- **Both LLM routes verified live** — see §2. This closed the largest standing
-  unknown in the project.
-- **Prompt-injection hardening** — fenced prompt, closed response schema,
-  post-extraction guard, 27 security tests. A hostile invoice that would
-  otherwise auto-approve (approved vendor, matched PO, within tolerance, no
-  duplicate) is now held for review.
-- **API failures now say why** — `describe_api_error()` maps status codes, so
-  "out of quota" is distinguishable from "bad key" without a debugger. This is a
-  security concern, not just convenience: when the LLM route fails it falls back
-  to regex, which means the hardened prompt is not running.
-
-### Remaining
-
-**Immediate — nothing engineering-side is blocking.** Phase 0 is done and the
-LLM routes are proven. The two outstanding items are *case-study deliverables*,
-and they outrank every phase below:
-
-1. **Record the 5-minute demo video.** Read the 429 gotcha in §4 first — pace the
-   runs, or the live route quietly stops firing mid-demo.
-2. **Produce a shareable link.** No git remote, no deployment — options are a
-   GitHub repo, an ngrok tunnel, or Render/Railway/Fly. Note that a real
-   deployment needs `GEMINI_API_KEY` set as a host env var, not a committed
-   `.env`.
-
-The work cannot be graded while it only runs on one laptop. Neither item needs
-another line of pipeline code.
-
-The suite is now eight files — `test_samples.py` (7 end-to-end sample verdicts),
-`test_security.py` (27 injection cases), `test_po_edge_cases.py` (12 ledger
-cases), `test_inferred_po.py` (13 matching cases), `test_currency.py` (16
-currency cases), `test_arithmetic.py` (22 arithmetic cases),
-`test_invalid_amount.py` (21 amount cases), `test_vendor_matching.py` (40 vendor
-cases). **158 total.** Notes for whoever changes them next:
-
-* It does **not** strip `GEMINI_API_KEY`. With a key present the suite runs the
-  real `llm (text)` and `llm (vision)` routes; without one it runs `regex` /
-  `none`. The fixture prints which mode ran, because a green suite means a
-  different thing in each. **Both modes have now been run green** — 16s on regex,
-  65s live. In live mode the suite needs a network and burns quota, and a 429
-  makes it fall back rather than fail, so a green live run is not by itself proof
-  the model was consulted. Read the printed mode and the routes.
-* Cases share one DB and run in manifest order. An early failure cascades — that
-  is inherent, since the later cases are *about* the state the earlier ones left.
-* Verified to actually bite: running `-k overflow` alone turns `03b` **APPROVED**
-  and fails the suite, which is the same-bytes/opposite-verdict demo from §7.
-* `test_po_edge_cases.py` uses a per-test `db` fixture and drives rules/storage
-  directly rather than through PDFs — the scenarios are about the ledger, and
-  generating $1,000,000 fixture invoices would test reportlab, not balance logic.
-* The concurrency test uses real threads and a `Barrier`, so it exercises actual
-  SQLite locking. Its retry-on-locked loop is not incidental: it is what a caller
-  must do, and is part of what the test asserts.
-
-**Then (gated on user confirmation) — Phases 1-7**, per the table in README /
-REFACTOR_STRATEGY:
+## 8. Phase table
 
 | Phase | Work | State |
 |---|---|---|
-| 1 | Cap inferred PO matches + make `warn` bite; currency → review; vendor normalised-exact | ✅ **DONE** — all three items |
-| 2 | `Tracked[T]` provenance wrapper, per-route confidence, **confidence gate** | ⬜ |
-| 3 | `rules.yaml` versioned policy + typed loader | ◨ tolerance moved to `config.py`; YAML + loader still to do |
-| 4 | Transaction boundaries (`BEGIN IMMEDIATE` + WAL); `run_allocations` table | ◨ **transactions DONE** (§8 #3); allocations table still to do |
-| 5 | `DecisionTrace` + reference snapshot; stop re-seeding on startup | ⬜ |
+| 0 | Green build, pytest suite | ✅ done |
+| 1 | Inferred-PO safety, currency, arithmetic, invalid amounts, vendor matching | ✅ done |
+| 2 | `Tracked[T]` provenance, per-route confidence, **confidence gate** | ⬜ |
+| 3 | `rules.yaml` versioned policy + typed loader | ◨ thresholds in `config.py`; YAML to do |
+| 4 | Transactions; `run_allocations` table | ◨ transactions done; allocations to do |
+| 5 | `DecisionTrace` + reference snapshot; stop re-seeding | ◨ audit trail done; snapshot to do |
 | 6 | Line-item decomposition, multi-PO consolidation, FX provider | ⬜ |
 | 7 | UI: confidence badges, evidence snippets, allocation view | ⬜ |
-
-The `run_allocations` table is the remaining half of Phase 4 and it still gates
-Phase 6: the schema stores one `po_number` per run and consumption sums run
-totals, so a consolidated invoice would over-consume every PO it touched. The
-transaction work landing does **not** unblock multi-PO.
 
 **Sequencing trap:** multi-PO consolidation is a **ledger** feature, not a
 matching feature. The schema stores one `po_number` per run and consumption sums
 run totals, so a consolidated invoice would over-consume every PO it touched.
 Phase 4 must land before Phase 6.
 
-**For the case study itself, still outstanding:** record the 5-minute demo
-video; decide on a shareable link (no git remote, no deployment — options are a
-GitHub repo, an ngrok tunnel, or a real deploy to Render/Railway/Fly).
+**Most valuable thing left:** Phase 2's confidence gate — it closes the
+low-confidence auto-approve problem as a *class*. But nothing in Phases 2–7
+changes a verdict on any of the seven samples, so none of it blocks the case
+study.
+
+---
+
+## 9. Open issues
+
+⚠️ **1. Groq 413 on long documents — OPEN BUG, not fixed.**
+`groq_extract_text` truncates document text at **60,000 characters**, a limit
+inherited from the Gemini path. Groq rejects well before that. Measured against
+an 11-page, 30,831-character PDF:
+
+```
+30,000 chars -> 413
+20,000 chars -> OK
+12,000 chars -> OK
+```
+
+So **any document past roughly 20k characters (~7+ pages) silently loses the LLM
+route** and drops to regex. The failure is safe and visible in the run trail
+("Groq text extraction failed - APIStatusError (413). Used regex instead."), but
+a real multi-page invoice would be read by regex without anyone intending it. All
+seven samples are one page, so it has never surfaced there. Fix is one constant.
+
+⚠️ **2. Gemini vision returns intermittent 503.** Google-side unavailability, not
+quota and not our code. Observed 0/5 on one probe and working minutes later. The
+fallback is correct (route `none` → NEEDS_REVIEW, nothing fabricated), but the
+scanned-sample demo is not reliably reproducible, and `manifest.json` resolves
+that sample's badge on key *presence* rather than provider *availability* — so
+the badge can contradict the run beside it. **Decide before recording.**
+
+⚠️ **3. `data/app.db` accumulates test runs.** Reset before the demo (§4) and
+replay samples 1→7 in order for a clean dashboard.
+
+⚠️ **4. `extraction._first()` strips a leading minus sign** off a captured
+amount, so `Total Due: -500.00` extracts as +500. Accounting parentheses are
+unaffected. The amount rule cannot catch a sign the extractor discarded.
+
+### Design gaps (deliberate, queued)
+
+- Extracted fields are **bare values** — no confidence, no provenance. Phase 2.
+- Business rules are **constants in `config.py`**, not versioned policy. Phase 3.
+- Reference data **re-seeded from JSON on every startup**, so editing
+  `purchase_orders.json` silently changes what historical runs mean. Phase 5.
+- Schema stores **one `po_number` per run** — no multi-PO. Phase 4b/6.
+- Rate-limit counters are **per process** — several workers multiply the limit.
+- `_guess_vendor` picks the vendor by **line position**.
+
+### Case-study deliverables still outstanding
+
+1. Settle the sample-05 badge question (issue 2).
+2. Reset the database and replay 1→7.
+3. **Publish to GitHub** — in progress.
+4. Deploy somewhere shareable, and smoke-test the *deployed* instance (the DB
+   path, the env and SSE buffering all change). `GEMINI_API_KEY`, `GROQ_API_KEY`
+   and `AUTH_SECRET` must be **host env vars**, never a committed `.env`.
+5. **Record the 5-minute demo video.**
 
 ---
 
@@ -820,43 +577,51 @@ GitHub repo, an ngrok tunnel, or a real deploy to Render/Railway/Fly).
 
 | Decision | Why |
 |---|---|
-| **PS-1** over PS-2/PS-3 | Only PS where inputs are real artefacts and the decision is verifiable. PS-3 needs live web research — fragile in a live demo, and the output can't be proved correct. |
-| Rules deterministic, LLM extraction-only | Auditability. It is the headline claim and it survived the audit. |
-| Three verdicts, not two | Binary would force guessing on ambiguous invoices; the middle state is where automation hands back to a human. |
-| Tolerance one-sided | Over-billing is a problem; under-billing is a normal partial invoice. |
-| Balance derived from run history, not a stored counter | No counter can drift out of sync with what was actually approved — and it makes idempotency and reversal structural rather than defended. Reaffirmed 2026-08-19 when a `remaining_amount` column was proposed. |
+| **PS-1** over PS-2/PS-3 | Only PS where inputs are real artefacts and the decision is verifiable. |
+| Rules deterministic, LLM extraction-only | Auditability. The headline claim; it survived the audit. |
+| Three verdicts, not two | Binary forces guessing on ambiguous invoices; the middle state is where automation hands back to a human. |
+| Tolerance one-sided | Over-billing is a problem; under-billing is a normal partial. |
+| Balance derived from run history, not a stored counter | No counter can drift from what was actually approved, and it makes idempotency and reversal structural. Reaffirmed when a `remaining_amount` column was proposed. |
 | Only APPROVED runs consume budget | A flagged invoice mustn't block the queue behind it. |
-| Refuse to guess when unreadable | Returns empty fields → review, rather than fabricating. `vendor_check` is deliberately **tri-state**: not-on-list (reject) ≠ couldn't-read-a-name (review). |
+| Refuse to guess when unreadable | Empty fields → review, rather than fabricating. `vendor_check` is tri-state: not-on-list (reject) ≠ couldn't-read-a-name (review). |
 | pypdfium2 over pytesseract | Self-contained wheel; no system binaries for a reviewer to install. |
-| No rule engine (JSON-logic etc.) | One-sided tolerance and ledger-derived balances express badly in a DSL; a sign error in exactly that comparison has already been a bug twice. YAML for policy, Python for predicates. |
-| FX conversion must not widen auto-approval | Auto-approving on a rate fetched at run time makes the verdict depend on a third party and the clock. Default `convert_and_review`. |
-| Pydantic `Field()` rejected for confidence | It is class-level schema metadata; confidence is per-instance data. Use a generic `Tracked[T]` wrapper. |
-| Seed data tracked in git, `app.db` not | Tests assert against seed data; the DB is rebuilt on startup. |
-| **Google Gemini over Anthropic** | User's call, 2026-08-19. Free tier removes the "do I want to pay to demo this" question. The swap touched only `extraction.py` + `config.py` — proof the provider was never load-bearing. |
-| Model **pinned**, not `gemini-flash-latest` | An alias changes the model under a running system. An AP process must be able to say which model read an invoice approved months ago. |
-| `gemini-3.7-flash` over `gemini-3.6-flash` | Both extracted every field correctly from the scan; 3.7 did it in 3.7s vs 11.6s. Speed matters in a live demo. |
-| Injection guard forces review, never reject | Auto-rejecting on a keyword lets anyone block a competitor's payment by printing a phrase on their invoice. |
-| Injection patterns narrow, not fuzzy | A guard that flags "System Integration Services" trains clerks to click through warnings — worse than no guard. |
-| Guard never edits the invoice | The run view should show what the document actually said; the value is that a human sees the real text. |
-| Test suite honours a live key rather than mocking | A mocked LLM proves nothing about whether extraction works. The cost is non-determinism, accepted knowingly — see §9. |
+| No rule engine (JSON-logic etc.) | One-sided tolerance and ledger-derived balances express badly in a DSL; a sign error in exactly that comparison has been a bug twice. YAML for policy, Python for predicates. |
+| FX conversion must not widen auto-approval | A verdict depending on a rate fetched at run time is not reproducible by an auditor. |
+| Pydantic `Field()` rejected for confidence | Class-level schema metadata; confidence is per-instance data. Use `Tracked[T]`. |
+| **Groq for text, Gemini for vision** | Gemini's free tier is 20/day and is the only route that can read a picture. Economics, not architecture — the swap touched only `extraction.py` + `config.py`. |
+| Groq failure → regex, NOT → Gemini | Falling through would spend the scarce vision budget on a route that already has a local fallback. |
+| Models **pinned**, not aliased | An alias changes the model under a running system. |
+| Audit trail built inside `decide()` | A trail assembled by a second pass can disagree with the decision it claims to explain. |
+| Human decision stored **beside** the automated one | An audit wants to know whether a person overrode the process, who, and when — unanswerable once the original verdict is overwritten. |
+| One human ruling per run | `automated_decision` stays NEEDS_REVIEW forever, so the eligibility check would otherwise let a client silently rewrite the audit record. |
+| Reviewer identity from the token only | A record saying whatever the client typed is not evidence of anything. |
+| OAuth2 password grant, not a custom scheme | Standard grant, standard token shape; swapping in a hosted IdP changes only how the signature is verified. |
+| No default signing secret, ever | A secret in a repository is not a secret; a deployment that forgot to set one would silently sign forgeable tokens. |
+| Quota breaker fails **open** | It is a cost guard, not a security control. Security controls all fail closed; the asymmetry is intentional. |
+| Injection guard forces review, never reject | Auto-rejecting on a keyword lets anyone block a competitor's payment. |
+| Injection patterns narrow, not fuzzy | A guard that flags "System Integration Services" trains clerks to click through warnings. |
+| Test suite honours a live key rather than mocking (samples only) | A mocked LLM proves nothing about whether extraction works. Everything else is mocked so CI needs no key. |
 
 ### Bugs already found and fixed — don't reintroduce
 
-1. `Total` regex matched inside `Subtotal` → wrong amount extracted.
-2. Invoice-number regex matched prose in a footnote → a missing field looked present.
-3. `abs()` in the tolerance check → every legitimate partial invoice flagged.
-4. PO regex emitted both `1002` and `PO-1002` → deduplicated; a bare number could
-   collide with an unrelated PO.
-5. `requirements.txt` missing `pypdfium2`, still listing dead `pytesseract`.
-6. **Gemini client garbage-collected mid-call.**
-   `_client().models.generate_content(...)` left the `Client` unreferenced;
-   google-genai closes its HTTP transport when the Client is collected, so every
-   call died with *"Cannot send a request, as the client has been closed."* Hold
-   the client in a local. Note what made this expensive: the regex fallback
-   *masked* it — it surfaced as a tidy `route=none`, not a crash.
-7. **`gemini-2.0-flash` is retired** — the API 404s on it. Ask the API what it
-   can reach (`client.models.list()`) rather than trusting a model name from
-   documentation or memory.
+1. `Total` regex matched inside `Subtotal` → wrong amount.
+2. Invoice-number regex matched prose in a footnote.
+3. `abs()` in the tolerance check → every legitimate partial flagged.
+4. PO regex emitted both `1002` and `PO-1002` → deduplicated.
+5. `requirements.txt` missing `pypdfium2`.
+6. **Gemini client garbage-collected mid-call.** Hold the client in a local —
+   google-genai closes its transport when the Client is collected. The regex
+   fallback *masked* it as a tidy `route=none`, not a crash.
+7. **`gemini-2.0-flash` is retired** — ask the API what it can reach.
+8. **`llama-3.3-70b-versatile` unavailable on this Groq account** — same lesson.
+9. **A run could be reviewed repeatedly**, each ruling overwriting the last.
+10. **Non-string `decision` reached `.strip()`** → 500 instead of 400.
+11. **`describe_api_error()` leaked config names** (`GEMINI_API_KEY`,
+    `config.EXTRACTION_MODEL`) into a message stored on the run and shown in the
+    browser.
+12. **Path traversal** in `/api/sample-invoices/{name}` — on Windows a
+    backslash parent reference escaped the samples directory.
+13. **`MAX_UPLOAD_BYTES` was dead** — defined in config, never enforced.
 
 ---
 
@@ -868,24 +633,18 @@ GitHub repo, an ngrok tunnel, or a real deploy to Render/Railway/Fly).
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ```
 
-Messages so far are detailed — what changed, why, and what was verified. Match
-that. Commit after each discrete step, not in batches.
+Messages are detailed — what changed, why, and what was verified. Match that.
+Commit after each discrete step, not in batches.
 
-**Verify empirically, don't assume.** Every claim in `AUDIT.md` was checked by
-reading code or grepping. When the app was broken, that was confirmed by running
-it, not inferred. Keep doing that.
+**Verify empirically, don't assume.** Every claim in the README was checked
+against the code before it was written. Keep doing that.
 
 **Be honest about what doesn't work.** The user has responded well to being told
-the app was broken, that `requirements.txt` would break a clone, and that the LLM
-routes are untested. Don't paper over gaps.
+the app was broken, that `requirements.txt` would break a clone, that tests were
+making live API calls, and that a security test was passing against a file it
+was not sending. Don't paper over gaps.
 
 **Temp scripts:** the scratchpad directory, or `_*.py` in the project root
 (gitignored). Delete them afterwards.
 
-**Browser checks:** Playwright + Chromium are installed in the venv. Useful for
-screenshotting the UI and catching JS console errors.
-
-```bash
-# Run the 7 samples against a live server (throwaway pattern; formalise in Step 3)
-./venv/Scripts/python.exe -c "import json; ..."   # see git history for check.py
-```
+**Browser checks:** Playwright + Chromium are installed in the venv.
