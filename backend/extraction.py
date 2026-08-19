@@ -1,14 +1,19 @@
 """Turns an arbitrary invoice PDF into an ExtractedInvoice.
 
-Designed to handle invoices this process has never seen before, so there are
-three extraction routes and they degrade in a defined order:
+Designed to handle invoices this process has never seen before. The route is
+chosen by what the document IS -- whether a usable text layer can be read out of
+it -- not by anything the file claims about itself:
 
-  1. LLM over embedded text   -- best for clean PDFs from unknown vendors.
-  2. LLM over page images     -- handles scanned/image-only PDFs (replaces OCR).
-  3. Regex heuristics         -- always available, no API key, no network.
+  1. Groq over embedded text  -- PDFs with a text layer. Needs GROQ_API_KEY.
+  2. Gemini over page images  -- scanned/image-only PDFs (replaces OCR).
+                                 Needs GEMINI_API_KEY. The only route that can
+                                 read a picture, so it is never spent on text.
+  3. Regex heuristics         -- always available, no API key, no network. The
+                                 fallback when route 1 is unavailable or fails.
 
-Routes 1 and 2 call Google Gemini (google-genai, Google AI Studio) and need
-GEMINI_API_KEY. Route 3 needs nothing.
+A Gemini text route still exists (`llm_extract_text`) and is used only when
+GEMINI_API_KEY is configured and GROQ_API_KEY is not, so an install that predates
+Groq keeps working exactly as it did.
 
 Whatever the route, the output schema is identical, so matching and rules
 never need to know which one ran. When nothing can be read, the extractor
@@ -198,7 +203,7 @@ def _invoice_from_payload(data: dict, raw_text: str, method: str) -> ExtractedIn
     )
 
 
-def describe_api_error(exc: Exception) -> str:
+def describe_api_error(exc: Exception, provider: str = "gemini") -> str:
     """A short, safe description of why an API call failed.
 
     "ClientError" alone cannot distinguish "out of quota" from "bad key" from
@@ -214,11 +219,18 @@ def describe_api_error(exc: Exception) -> str:
     if code is None:
         m = re.search(r"\b([45]\d{2})\b", str(exc)[:200])
         code = int(m.group(1)) if m else None
+    # Name the setting the operator actually has to go and check. Two providers
+    # now fail independently, and "check GEMINI_API_KEY" is actively misleading
+    # when it was the Groq call that returned 401.
+    key_env, model_setting = (
+        (config.GROQ_API_KEY_ENV, "config.groq_model()") if provider == "groq"
+        else (config.API_KEY_ENV, "config.EXTRACTION_MODEL")
+    )
     known = {
         400: "request rejected (400)",
-        401: "authentication failed (401) — check GEMINI_API_KEY",
+        401: f"authentication failed (401) — check {key_env}",
         403: "permission denied (403) — key lacks access to this model",
-        404: "model not found (404) — check config.EXTRACTION_MODEL",
+        404: f"model not found (404) — check {model_setting}",
         429: "rate limit / quota exhausted (429) — free tier throttles quickly",
         500: "provider error (500)",
         503: "provider unavailable (503)",
@@ -296,7 +308,7 @@ def llm_extract_text(text: str, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice
         contents=[prompt, wrap_untrusted(text[:60000])],
         config=_json_config(),
     )
-    return _invoice_from_payload(_parse_llm_json(resp.text), text, "llm (text)")
+    return _invoice_from_payload(_parse_llm_json(resp.text), text, "gemini (text)")
 
 
 def llm_extract_vision(png_bytes, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice:
@@ -325,9 +337,55 @@ def llm_extract_vision(png_bytes, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoi
         contents=contents,
         config=_json_config(),
     )
-    inv = _invoice_from_payload(_parse_llm_json(resp.text), "", "llm (vision)")
+    inv = _invoice_from_payload(_parse_llm_json(resp.text), "", "gemini (vision)")
     inv.raw_text = "[no embedded text layer - fields read from page images]"
     return inv
+
+
+# --------------------------------------------------------------------------
+# Groq -- the text route
+#
+# Same prompt, same key set, same ExtractedInvoice as the Gemini routes above.
+# Only the transport differs, which is the point: the pipeline downstream cannot
+# tell which provider read the document.
+# --------------------------------------------------------------------------
+
+def _groq_client():
+    """A Groq client bound to the key from the environment / .env.
+
+    Imported lazily for the same reason as the Gemini client: the module must
+    still import, and the regex route must still run, on a machine where the SDK
+    was never installed.
+    """
+    from groq import Groq
+    return Groq(api_key=config.groq_api_key())
+
+
+def groq_extract_text(text: str, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice:
+    """Route 1: read the fields out of an embedded text layer, using Groq.
+
+    Note the difference from the Gemini path, because it matters for the
+    injection defence. Gemini is given `RESPONSE_SCHEMA` and constrains the reply
+    at the decode step, so an extra top-level key is literally unrepresentable.
+    Groq's JSON mode guarantees *valid JSON*, not *which* JSON. The closing
+    boundary here is therefore `_invoice_from_payload`, which reads only the nine
+    known keys and assembles a fixed dataclass -- so a document that talks the
+    model into emitting {"status": "APPROVED"} still produces an ExtractedInvoice
+    with no such field, and nothing downstream ever sees it. The blast radius
+    stays what it has always been: wrong numbers, never a wrong decision.
+    """
+    client = _groq_client()
+    resp = client.chat.completions.create(
+        model=config.groq_model(),
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": wrap_untrusted(text[:60000])},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
+    )
+    payload = _parse_llm_json(resp.choices[0].message.content or "")
+    return _invoice_from_payload(payload, text, "groq (text)")
 
 
 # --------------------------------------------------------------------------
@@ -586,48 +644,73 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
     separately, and passes the result here rather than re-opening the PDF.
     """
     info = {"page_count": 0, "has_text_layer": False, "route": None,
-            "vision_used": False, "notes": [], "error": None}
+            "provider": None, "vision_used": False, "notes": [], "error": None}
 
     text, page_count, has_text = pre if pre is not None else extract_text(pdf_bytes)
     info["page_count"] = page_count
     info["has_text_layer"] = has_text
 
-    use_llm = config.has_api_key()
+    # The routing question is what the DOCUMENT is, not what the file is called:
+    # `has_text` comes from actually trying to read a text layer (extract_text),
+    # so a .pdf that is really a photograph routes to vision on the evidence.
+    use_groq = config.has_groq_key()     # LLM text route
+    use_vision = config.has_api_key()    # Gemini, the only route that reads images
 
-    # Route 1: text present
+    # Route 1: the document has a usable text layer -> Groq.
     if has_text:
-        if use_llm:
+        if use_groq:
             try:
-                inv = llm_extract_text(text)
-                info["route"] = "llm-text"
+                inv = groq_extract_text(text)
+                info["route"] = "groq-text"
+                info["provider"] = "groq"
                 return inv, info
             except Exception as exc:
-                info["notes"].append("LLM text extraction failed - %s. Used regex instead."
-                                     % describe_api_error(exc))
+                # Deliberately NOT falling through to Gemini here. Gemini's free
+                # tier is 20 requests per day and it is the only thing that can
+                # read a scanned invoice; spending it on text PDFs that already
+                # have a working regex fallback would trade a strong fallback for
+                # a weak one and leave nothing for the route with no alternative.
+                info["notes"].append("Groq text extraction failed - %s. Used regex instead."
+                                     % describe_api_error(exc, "groq"))
+        elif use_vision:
+            # No Groq configured, but Gemini is: keep the pre-Groq behaviour
+            # rather than silently downgrading an existing install to regex.
+            try:
+                inv = llm_extract_text(text)
+                info["route"] = "gemini-text"
+                info["provider"] = "gemini"
+                return inv, info
+            except Exception as exc:
+                info["notes"].append("Gemini text extraction failed - %s. Used regex instead."
+                                     % describe_api_error(exc, "gemini"))
         inv = regex_extract(text)
         info["route"] = "regex"
+        info["provider"] = "none (local regex)"
         return inv, info
 
-    # Route 2: no text layer -> vision
-    if use_llm:
+    # Route 2: no text layer -> Gemini vision. Groq is text-only in this
+    # pipeline and is never offered a page image.
+    if use_vision:
         try:
             images = render_pages_png(pdf_bytes, config.MAX_PAGES_VISION)
             if images:
                 inv = llm_extract_vision(images)
-                info["route"] = "llm-vision"
+                info["route"] = "gemini-vision"
+                info["provider"] = "gemini"
                 info["vision_used"] = True
                 if page_count > config.MAX_PAGES_VISION:
                     info["notes"].append("Only the first %d of %d pages were read."
                                          % (config.MAX_PAGES_VISION, page_count))
                 return inv, info
         except Exception as exc:
-            info["notes"].append("Vision extraction failed - %s." % describe_api_error(exc))
+            info["notes"].append("Vision extraction failed - %s." % describe_api_error(exc, "gemini"))
 
     # Route 3: nothing readable -- return empty rather than guess
     info["route"] = "none"
+    info["provider"] = None
     info["notes"].append(
         "No embedded text and no vision extraction available. Set GEMINI_API_KEY "
-        "to read scanned invoices." if not use_llm else
+        "to read scanned invoices." if not use_vision else
         "No embedded text and vision extraction did not return usable fields.")
     inv = ExtractedInvoice(raw_text="", extraction_method="none")
     return inv, info

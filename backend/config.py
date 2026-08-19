@@ -48,14 +48,46 @@ PO_TOLERANCE_DOLLARS = 50.0   # ...or this, whichever is larger
 # cash total to the nearest 0.05. Anything larger is a real discrepancy.
 ARITHMETIC_TOLERANCE_DOLLARS = 0.05
 
-# Google Gemini via Google AI Studio. The extraction layer is the only place
-# a model is used at all -- every decision downstream of it is plain Python.
+# --------------------------------------------------------------------------
+# Extraction providers
+#
+# TWO providers, split by what the document physically is:
+#
+#   PDF with a usable text layer  ->  Groq            (most invoices)
+#   image-only / scanned PDF      ->  Gemini Vision   (reads page images)
+#
+# This split is an economics decision, not an architectural one. Gemini's free
+# tier allows 20 requests per DAY per model, which a single demo run of seven
+# invoices very nearly exhausts; Groq is fast and far more generous on text. So
+# the scarce resource is spent only where it is the only option -- reading a
+# scan. Groq is text-only in this pipeline and never sees a page image.
+#
+# Nothing downstream knows or cares which provider ran: both return the same
+# ExtractedInvoice, and every decision after extraction is plain Python.
+# --------------------------------------------------------------------------
+
+# Google Gemini via Google AI Studio -- the VISION route.
 API_KEY_ENV = "GEMINI_API_KEY"
 # Pinned to a specific version, not the "gemini-flash-latest" alias: an alias
 # silently changes the model under a running system, and an AP process has to
 # be able to say which model read an invoice that was approved months ago.
 # gemini-2.0-flash was retired -- the API returns 404 for it.
 EXTRACTION_MODEL = "gemini-3.7-flash"
+
+# Groq -- the TEXT route.
+GROQ_API_KEY_ENV = "GROQ_API_KEY"
+GROQ_MODEL_ENV = "GROQ_MODEL"
+# Same pinning argument as Gemini above: a named model, never a floating alias,
+# so a run can always say which model read the invoice. Overridable through the
+# environment so swapping it is a config change rather than a code change.
+#
+# Chosen by asking the API what it could actually reach and then measuring, not
+# from memory -- `llama-3.3-70b-versatile` is NOT available on this account, the
+# same trap `gemini-2.0-flash` sprang earlier. Against all six text samples
+# gpt-oss-120b and gpt-oss-20b extracted every field identically and correctly;
+# 120b was the faster of the two in aggregate (9.7s vs 15.0s) and is the larger
+# model, so it wins on both robustness and demo speed.
+GROQ_MODEL_DEFAULT = "openai/gpt-oss-120b"
 
 
 def load_dotenv():
@@ -82,17 +114,41 @@ def api_key() -> str:
 
 
 def has_api_key() -> bool:
+    """True when the Gemini key is set. Gemini is the VISION route, so this is
+    also the answer to "can this process read a scanned invoice at all?"."""
     return bool(api_key())
 
 
+def groq_api_key() -> str:
+    """The raw Groq key, or "" when unset. Never logged, never sent to the browser."""
+    return os.environ.get(GROQ_API_KEY_ENV, "").strip()
+
+
+def has_groq_key() -> bool:
+    """True when the Groq key is set -- i.e. the LLM text route is available."""
+    return bool(groq_api_key())
+
+
+def groq_model() -> str:
+    """The Groq model to extract with.
+
+    Read from the environment at call time rather than at import, because
+    load_dotenv() runs after this module is imported -- a module-level constant
+    would silently ignore a GROQ_MODEL set in .env.
+    """
+    return os.environ.get(GROQ_MODEL_ENV, "").strip() or GROQ_MODEL_DEFAULT
+
+
 def extraction_mode() -> str:
-    return "llm" if has_api_key() else "regex"
+    return "llm" if (has_groq_key() or has_api_key()) else "regex"
 
 
 def status() -> dict:
     return {
         "extraction_mode": extraction_mode(),
-        "model": EXTRACTION_MODEL if has_api_key() else None,
+        "text_model": groq_model() if has_groq_key() else None,
+        "vision_model": EXTRACTION_MODEL if has_api_key() else None,
+        "text_llm_available": has_groq_key(),
         "vision_available": has_api_key(),
         "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
         "env_file_present": os.path.isfile(ENV_PATH),

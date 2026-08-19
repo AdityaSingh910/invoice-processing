@@ -151,7 +151,7 @@ def _clean_po_match():
 
 def test_security_flag_forces_review_on_an_otherwise_perfect_invoice():
     """Everything else passes; the flag alone must stop the auto-approval."""
-    clean_info = {"route": "llm-text", "notes": [], "security_flags": []}
+    clean_info = {"route": "groq-text", "notes": [], "security_flags": []}
     status, _ = rules.decide(clean_info, [], True, "Vendor approved.", None, "No dup.", _clean_po_match())
     assert status == "APPROVED", "control case should approve, else this test proves nothing"
 

@@ -251,7 +251,7 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
             "manual entry or ask the vendor to re-send a text-based PDF.",
             "fail",
         )
-    elif route == "llm-vision":
+    elif route == "gemini-vision":
         add(
             "No embedded text layer — fields were read from page images rather than text. "
             "Values are worth a second look before payment.",

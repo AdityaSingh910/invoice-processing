@@ -73,7 +73,8 @@ def load_manifest(vision_available):
 # Resolved at import time so parametrize ids reflect the mode actually running.
 # config.load_dotenv() is what picks up a key from .env; the real environment wins.
 config.load_dotenv()
-LIVE_LLM = config.has_api_key()
+LIVE_LLM = config.has_api_key()      # Gemini -> the vision route
+LIVE_GROQ = config.has_groq_key()    # Groq   -> the LLM text route
 MANIFEST = load_manifest(LIVE_LLM)
 
 
@@ -92,9 +93,11 @@ def client(tmp_path_factory):
     time, with no environment override, so patching the attribute is the only way
     to redirect it.
 
-    `GEMINI_API_KEY` is deliberately **not** stripped. When a key is present
-    the suite exercises the real `llm (text)` and `llm (vision)` routes end to
-    end, which is what makes it deployment/demo readiness rather than a mock.
+    `GEMINI_API_KEY` and `GROQ_API_KEY` are deliberately **not** stripped. When a
+    key is present the suite exercises the real `groq (text)` / `gemini (vision)`
+    routes end to end, which is what makes it deployment/demo readiness rather
+    than a mock. Route-level behaviour is covered deterministically with mocks in
+    tests/test_extraction_routing.py; this file is the live counterpart.
     The tradeoff is real and worth stating: in that mode the suite costs money,
     needs a network, and is only as reproducible as the model is. The verdicts
     should still be stable, because the decision logic downstream of extraction
@@ -102,11 +105,12 @@ def client(tmp_path_factory):
     """
     # A green suite means something different in each mode, so say which one ran
     # rather than leaving a reader to infer it from the absence of a key.
-    if LIVE_LLM:
-        print("\n[extraction mode] LIVE LLM - llm (text) and llm (vision) routes exercised")
-    else:
-        print("\n[extraction mode] deterministic regex / none - no GEMINI_API_KEY.")
-        print("[extraction mode] the two LLM routes are NOT covered by this run.")
+    print("\n[extraction mode] text route : %s" %
+          ("LIVE groq (text) - %s" % config.groq_model() if LIVE_GROQ
+           else "regex fallback - no GROQ_API_KEY"))
+    print("[extraction mode] scan route : %s" %
+          ("LIVE gemini (vision) - %s" % config.EXTRACTION_MODEL if LIVE_LLM
+           else "route 'none' - no GEMINI_API_KEY"))
 
     db_path = tmp_path_factory.mktemp("invoice_db") / "test_app.db"
 
@@ -218,7 +222,7 @@ def _check_scanned(result):
     """The one sample whose behaviour is route-dependent -- see load_manifest()."""
     if LIVE_LLM:
         # Vision route: pages rasterised by pypdfium2 and read by the model.
-        assert result["extracted"]["extraction_method"] == "llm (vision)"
+        assert result["extracted"]["extraction_method"] == "gemini (vision)"
         assert result["extracted"]["invoice_number"] == "INV-9004"
         assert result["po_match"]["po_number"] == "PO-1005"
         assert result["po_match"]["within_tolerance"] is True

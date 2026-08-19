@@ -12,9 +12,16 @@ pillow==10.4.0
 # Sample invoice generation (sample_invoices/generate_invoices.py)
 reportlab==4.2.5
 
-# LLM extraction (optional at runtime - only used when GEMINI_API_KEY is set).
-# Google Gemini via Google AI Studio.
+# LLM extraction. Both are optional at runtime: each route falls back safely
+# when its key is absent, and the regex route needs neither.
+#
+# Google Gemini via Google AI Studio - the VISION route, for scanned PDFs.
+# Used when GEMINI_API_KEY is set.
 google-genai==2.18.1
+
+# Groq - the TEXT route, for PDFs with a readable text layer.
+# Used when GROQ_API_KEY is set.
+groq==1.6.0
 
 # Test suite (tests/test_samples.py). httpx is required by
 # fastapi.testclient.TestClient, which drives the pipeline in-process so the
