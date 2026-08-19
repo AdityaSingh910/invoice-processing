@@ -53,8 +53,14 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DB_PATH", str(tmp_path / "po_edge.db"))
     storage.init_db(reset_runs=True)
     conn = storage.get_conn()
-    conn.execute("INSERT INTO purchase_orders VALUES (?,?,?,?,?,?,?)",
-                 (BIG_PO, VENDOR, 1_000_000.0, "USD", "2026-01-01", "open", "Large works order"))
+    # Columns named rather than positional: a bare VALUES(...) breaks the moment
+    # the schema grows, which is exactly what happened when PO provenance was
+    # added. A fixture should not be the reason a schema change looks like a bug.
+    conn.execute(
+        """INSERT INTO purchase_orders
+           (po_number, vendor, amount, currency, issued_date, status, description)
+           VALUES (?,?,?,?,?,?,?)""",
+        (BIG_PO, VENDOR, 1_000_000.0, "USD", "2026-01-01", "open", "Large works order"))
     conn.commit()
     conn.close()
     return storage.DB_PATH
@@ -327,7 +333,9 @@ def test_concurrent_invoices_cannot_overspend_a_po(db):
     import threading
 
     conn = storage.get_conn()
-    conn.execute("INSERT INTO purchase_orders VALUES (?,?,?,?,?,?,?)",
+    conn.execute("""INSERT INTO purchase_orders
+           (po_number, vendor, amount, currency, issued_date, status, description)
+           VALUES (?,?,?,?,?,?,?)""",
                  ("PO-RACE", VENDOR, 10_000.0, "USD", "2026-01-01", "open", "race"))
     conn.commit()
     conn.close()

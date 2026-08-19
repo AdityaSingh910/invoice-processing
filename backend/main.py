@@ -220,9 +220,14 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     mark()
 
     # 9. DECISION
+    #
+    # `audit` is filled in by the same evaluation that produces the status --
+    # not by a second pass over the result -- so the structured trail and the
+    # verdict cannot disagree.
+    audit = {}
     status, reasons = rules.decide(
         extract_info, missing, vendor_ok, vendor_detail, dup_row, dup_detail, po_match,
-        arithmetic=arithmetic, amount=amount,
+        arithmetic=arithmetic, amount=amount, audit=audit, extracted=extracted,
     )
     yield sse("stage", {"stage": stage("DECISION", "ok", f"Final status: {status}.")})
     await asyncio.sleep(0.15)
@@ -232,9 +237,15 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     # downgrades a stale APPROVED rather than overspending the PO.
     run_id, status, extra = storage.save_run_checked(
         filename, status, extracted, po_match, stages, reasons,
-        tolerance_for=matching.tolerance_for)
+        tolerance_for=matching.tolerance_for, audit=audit)
     if extra:
         reasons = list(reasons) + [extra]
+        # save_run_checked re-checked the balance under the write lock and
+        # downgraded this run; re-read the stored trail so the response carries
+        # the version that was actually committed.
+        stored = storage.get_run(run_id)
+        if stored and stored.get("audit"):
+            audit = stored["audit"]
 
     result = {
         "run_id": run_id,
@@ -244,6 +255,7 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
         "extracted": extracted,
         "po_match": po_match,
         "stages": stages,
+        "audit": audit,
     }
     yield sse("final", {"result": result})
 

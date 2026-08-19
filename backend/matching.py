@@ -12,6 +12,19 @@ def tolerance_for(amount: float) -> float:
     return max(amount * config.PO_TOLERANCE_PERCENT, config.PO_TOLERANCE_DOLLARS)
 
 
+def _row_get(row, key):
+    """Read an optional column from a PO row.
+
+    `sqlite3.Row` raises IndexError on an unknown key rather than returning
+    None, and a database created before the provenance columns existed will not
+    have them. Missing provenance must read as "unknown", never as a crash.
+    """
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
 def _norm_currency(value):
     """A comparable currency code, or None when nothing usable is present.
 
@@ -30,6 +43,8 @@ def empty_match(invoice_total):
         "po_vendor": None,
         "po_amount": None,
         "po_status": None,
+        "po_source_file": None,
+        "po_source_row": None,
         "matched_via": "none",
         "consumed_before": None,
         "invoice_total": invoice_total,
@@ -136,6 +151,12 @@ def match_po(extracted: dict, exclude_run_id=None):
         "po_vendor": po_row["vendor"],
         "po_amount": po_row["amount"],
         "po_status": po_row["status"],
+        # Where the PO record itself came from, carried through so the audit
+        # trail can cite the source of the balance it compared against rather
+        # than presenting a number with no origin. Read off the stored row --
+        # never derived here, so an unknown source stays unknown.
+        "po_source_file": _row_get(po_row, "source_file"),
+        "po_source_row": _row_get(po_row, "source_row"),
         "matched_via": matched_via,
         "consumed_before": round(consumed, 2),
         "invoice_total": round(total, 2),

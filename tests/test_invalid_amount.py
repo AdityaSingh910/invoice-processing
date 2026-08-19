@@ -46,7 +46,9 @@ def db(tmp_path, monkeypatch):
     storage.init_db(reset_runs=True)
     conn = storage.get_conn()
     conn.execute("DELETE FROM purchase_orders")
-    conn.execute("INSERT INTO purchase_orders VALUES (?,?,?,?,?,?,?)",
+    conn.execute("""INSERT INTO purchase_orders
+           (po_number, vendor, amount, currency, issued_date, status, description)
+           VALUES (?,?,?,?,?,?,?)""",
                  ("PO-7001", VENDOR, 50_000.00, "USD", "2026-01-01", "open", "test"))
     conn.commit()
     conn.close()

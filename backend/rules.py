@@ -205,8 +205,28 @@ def _is_balance_reason(text: str) -> bool:
 
 
 def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
-           dup_row, dup_detail, po_match: dict, arithmetic=None, amount=None):
+           dup_row, dup_detail, po_match: dict, arithmetic=None, amount=None,
+           audit=None, extracted=None):
     """Aggregates every check into one status plus a severity-tagged reasoning trail.
+
+    AUDIT TRAIL
+
+    Pass a dict as `audit` and it is filled in with a structured record of this
+    evaluation: the values compared, the PO and where its record came from, the
+    variance, the tolerance, every rule that passed or failed, and the
+    deterministic reason for the outcome.
+
+    It is built HERE, by the same pass that sets `reject` / `review`, and not by
+    a second function that re-derives the outcome. That is the point: a trail
+    assembled by re-running the logic is a trail that can disagree with the
+    decision it claims to explain. Each `_check(...)` call sits next to the
+    branch it describes and reads the same variable that branch reads.
+
+    No model is involved in any of it. Every sentence in the trail is written by
+    this function from numbers computed by Python.
+
+    `extracted` is optional and supplies invoice identity (number, vendor) for
+    the trail. When it is absent those fields are null rather than guessed.
 
     Each reason is {"text": ..., "level": "ok"|"warn"|"fail"|"info"} so the UI can
     colour-code the trail rather than showing a flat list of bullets. "fail" marks
@@ -219,9 +239,24 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
     reasons = []
     reject = False
     review = False
+    checks = []
 
     def add(text, level="info"):
         reasons.append({"text": text, "level": level})
+
+    def _check(name, passed, detail, reason=None):
+        """Record one named rule result for the audit trail.
+
+        `reason` is the short, canonical sentence used as THE reason for the
+        decision when this is the first rule to fail -- deterministic text
+        chosen by the branch, never generated.
+        """
+        checks.append({
+            "name": name,
+            "passed": bool(passed),
+            "detail": detail,
+            "reason": reason if not passed else None,
+        })
 
     route = (extract_info or {}).get("route")
 
@@ -242,6 +277,10 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
             + (f" (and {len(security_flags) - 5} more)" if len(security_flags) > 5 else ""),
             "fail",
         )
+    _check("Security screen", not security_flags,
+           f"{len(security_flags)} instruction-like finding(s) in the document"
+           if security_flags else "No instruction-like text found in the document",
+           reason="Document contains text aimed at the extraction system.")
 
     if route == "none":
         review = True
@@ -251,7 +290,12 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
             "manual entry or ask the vendor to re-send a text-based PDF.",
             "fail",
         )
-    elif route == "gemini-vision":
+    _check("Document readable", route != "none",
+           "Nothing could be read from the document" if route == "none"
+           else f"Fields extracted via route '{route}'",
+           reason="Nothing could be read from the document.")
+
+    if route == "gemini-vision":
         add(
             "No embedded text layer — fields were read from page images rather than text. "
             "Values are worth a second look before payment.",
@@ -264,6 +308,11 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
     if missing_fields:
         review = True
         add(f"Missing required field(s): {', '.join(missing_fields)}. Cannot safely auto-approve.", "fail")
+    _check("Required fields present", not missing_fields,
+           f"Missing: {', '.join(missing_fields)}" if missing_fields
+           else "All required fields present",
+           reason=(f"Required field(s) missing: {', '.join(missing_fields)}."
+                   if missing_fields else None))
 
     # An invalid total is checked before the arithmetic and before any PO
     # reasoning, because every one of those compares against `total`. If the
@@ -285,6 +334,10 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
                 "figure than a genuine zero-value bill. Confirm the amount against the document.",
                 "fail",
             )
+    _check("Invoice amount valid", not amount,
+           f"Total {amount['total']:.2f} is not a payable amount" if amount
+           else "Total is greater than zero",
+           reason="Invoice total is not a payable amount." if amount else None)
 
     # Arithmetic sits with the other document-integrity checks, before any PO
     # reasoning: if the invoice does not add up, which figure the PO should be
@@ -299,10 +352,19 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
             f"invoice is wrong; confirm the payable amount before paying.",
             "fail",
         )
+    _check("Invoice arithmetic", not arithmetic,
+           (f"subtotal {arithmetic['subtotal']:.2f} + tax {arithmetic['tax']:.2f} "
+            f"= {arithmetic['expected']:.2f}, stated total {arithmetic['total']:.2f}")
+           if arithmetic else "subtotal + tax equals the stated total",
+           reason="Invoice does not add up: subtotal + tax does not equal the total.")
 
     if dup_row:
         reject = True
         add(dup_detail, "fail")
+    _check("Duplicate check", not dup_row,
+           f"Matches earlier run #{dup_row['id']}" if dup_row
+           else "No earlier run matches this invoice",
+           reason="Invoice duplicates an earlier submission.")
 
     if vendor_ok is False:
         reject = True
@@ -312,6 +374,9 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
         add(vendor_detail, "warn")
     else:
         add(vendor_detail, "ok")
+    _check("Vendor approved", vendor_ok is True, vendor_detail,
+           reason=("Vendor is not on the approved list."
+                   if vendor_ok is False else "Vendor could not be identified confidently."))
 
     if po_match["po_number"] is None:
         review = True
@@ -333,7 +398,12 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
             )
         else:
             add("No matching purchase order found (no explicit PO reference, and no vendor+amount match).", "fail")
+        _check("PO matched", False,
+               f"No purchase order bound (inference: {po_match.get('inference') or 'not attempted'})",
+               reason="No matching purchase order could be identified.")
     else:
+        _check("PO matched", True,
+               f"{po_match['po_number']} ({po_match['matched_via']} match)")
         if po_match["po_status"] == "closed":
             review = True
             add(f"Matched PO {po_match['po_number']} but it is already closed.", "fail")
@@ -353,6 +423,10 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
                 f"No conversion was applied — confirm the correct amount before payment.",
                 "fail",
             )
+        _check("Currency match", not po_match.get("currency_mismatch"),
+               f"invoice {po_match.get('invoice_currency') or 'unknown'} vs "
+               f"PO {po_match.get('po_currency') or 'unknown'}",
+               reason="Invoice currency does not match the purchase order currency.")
 
         if po_match["matched_via"] == "inferred":
             # An inferred match is a suggestion, not an authorisation. The
@@ -379,6 +453,14 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
                 f"approved invoices, ${po_match['remaining_before']:.2f} remaining before this invoice.",
                 "info",
             )
+
+        _check(
+            "PO remaining check", po_match["within_tolerance"],
+            (f"invoice {po_match['invoice_total']:.2f} vs remaining "
+             f"{po_match['remaining_before']:.2f}, variance {po_match['diff']:.2f}, "
+             f"tolerance {po_match['tolerance']:.2f}")
+            if po_match["remaining_before"] is not None else "no balance to compare",
+            reason="Invoice total exceeds PO remaining amount.")
 
         if not po_match["within_tolerance"]:
             review = True
@@ -424,4 +506,70 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
     else:
         status = "APPROVED"
 
+    if audit is not None:
+        audit.update(build_audit(status, checks, reasons, extract_info, po_match, extracted))
+
     return status, reasons
+
+
+def build_audit(status, checks, reasons, extract_info, po_match, extracted=None):
+    """Assemble the structured trail from an evaluation that has already run.
+
+    Takes only values `decide()` computed -- it makes no comparison of its own
+    and reaches no conclusion of its own, so it cannot drift from the decision.
+    Split out purely for readability.
+    """
+    extracted = extracted or {}
+    po_match = po_match or {}
+    info = extract_info or {}
+
+    failed = [c for c in checks if not c["passed"]]
+    if status == "APPROVED":
+        reason = "All checks passed."
+    else:
+        # The FIRST failing rule is the reason. Checks are appended in evaluation
+        # order, which is deliberate: document integrity is established before
+        # anything is compared against a PO, so the first failure is the one
+        # closest to the root of the problem.
+        reason = next((c["reason"] for c in failed if c["reason"]), None)             or "One or more checks did not pass."
+
+    return {
+        "automated_decision": status,
+        "reason": reason,
+        "invoice": {
+            "invoice_number": extracted.get("invoice_number"),
+            "vendor": extracted.get("vendor_name"),
+            "total": extracted.get("total"),
+            "currency": extracted.get("currency"),
+        },
+        "extraction": {
+            "route": info.get("route"),
+            "provider": info.get("provider"),
+            "method": extracted.get("extraction_method"),
+            "notes": list(info.get("notes") or []),
+        },
+        "purchase_order": {
+            "po_number": po_match.get("po_number"),
+            "matched_via": po_match.get("matched_via"),
+            "po_status": po_match.get("po_status"),
+            "po_amount": po_match.get("po_amount"),
+            "po_currency": po_match.get("po_currency"),
+            # Provenance of the PO record itself. Null when the data layer does
+            # not know -- never filled in with a plausible guess.
+            "source_file": po_match.get("po_source_file"),
+            "source_row": po_match.get("po_source_row"),
+        },
+        "comparison": {
+            "invoice_total": po_match.get("invoice_total"),
+            "po_amount": po_match.get("po_amount"),
+            "consumed_before": po_match.get("consumed_before"),
+            "po_remaining": po_match.get("remaining_before"),
+            "variance": po_match.get("diff"),
+            "tolerance": po_match.get("tolerance"),
+            "remaining_after": po_match.get("remaining_after"),
+        },
+        "rules": checks,
+        "rules_passed": [c["name"] for c in checks if c["passed"]],
+        "rules_failed": [c["name"] for c in failed],
+        "reasons": list(reasons),
+    }

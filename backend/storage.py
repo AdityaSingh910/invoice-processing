@@ -43,6 +43,20 @@ def write_txn():
         conn.close()
 
 
+def _ensure_columns(conn, table, columns: dict):
+    """Add any missing columns to an existing table.
+
+    `CREATE TABLE IF NOT EXISTS` is a no-op against a database that already
+    exists, so a new column would silently never appear on anyone's working
+    copy -- including `data/app.db`, which carries real run history. SQLite has
+    no `ADD COLUMN IF NOT EXISTS`, so the existing columns are read first.
+    """
+    have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    for name, decl in columns.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
 def _consumed(conn, po_number, exclude_run_id=None):
     """Balance consumed on a PO, read on a caller-supplied connection.
 
@@ -75,9 +89,14 @@ def init_db(reset_runs: bool = False):
             currency TEXT,
             issued_date TEXT,
             status TEXT,
-            description TEXT
+            description TEXT,
+            source_file TEXT,
+            source_row INTEGER
         )"""
     )
+    # Existing databases predate the provenance columns.
+    _ensure_columns(conn, "purchase_orders",
+                    {"source_file": "TEXT", "source_row": "INTEGER"})
     cur.execute(
         """CREATE TABLE IF NOT EXISTS vendors (
             vendor_name TEXT PRIMARY KEY,
@@ -98,9 +117,11 @@ def init_db(reset_runs: bool = False):
             extracted_json TEXT,
             po_match_json TEXT,
             stages_json TEXT,
-            reasons_json TEXT
+            reasons_json TEXT,
+            audit_json TEXT
         )"""
     )
+    _ensure_columns(conn, "runs", {"audit_json": "TEXT"})
     if reset_runs:
         cur.execute("DELETE FROM runs")
 
@@ -108,10 +129,31 @@ def init_db(reset_runs: bool = False):
     with open(PO_SEED) as f:
         pos = json.load(f)
     cur.execute("DELETE FROM purchase_orders")
-    for po in pos:
+    source_file = os.path.basename(PO_SEED)
+    for i, po in enumerate(pos):
+        # Where this PO came from, so an audit trail can cite it instead of
+        # asserting a balance with no provenance.
+        #
+        # `source_row` is the record's position in the procurement file, 1-based.
+        # For a JSON array that IS the row, and it is read from the data rather
+        # than assumed -- if a record carries its own `source_row` (which is what
+        # an export from a spreadsheet would provide) that value wins, because it
+        # refers to the real sheet row and the array index would not.
+        #
+        # Nothing here invents a number. A record with no derivable position
+        # stores NULL, and the audit trail then says the row is unknown rather
+        # than printing a plausible-looking one.
+        row_no = po.get("source_row")
+        if row_no is None:
+            row_no = i + 1
         cur.execute(
-            "INSERT INTO purchase_orders VALUES (?,?,?,?,?,?,?)",
-            (po["po_number"], po["vendor"], po["amount"], po["currency"], po["issued_date"], po["status"], po["description"]),
+            """INSERT INTO purchase_orders
+               (po_number, vendor, amount, currency, issued_date, status, description,
+                source_file, source_row)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (po["po_number"], po["vendor"], po["amount"], po["currency"],
+             po["issued_date"], po["status"], po["description"],
+             po.get("source_file") or source_file, row_no),
         )
 
     with open(VENDOR_SEED) as f:
@@ -258,7 +300,7 @@ def find_duplicate(vendor_name, invoice_number, total):
 
 
 def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: list,
-                     reasons: list, tolerance_for=None):
+                     reasons: list, tolerance_for=None, audit=None):
     """Persist a run, re-verifying the PO balance under the write lock first.
 
     The pipeline computes its verdict outside any transaction -- it has to, since
@@ -305,14 +347,38 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
                                     diff=round(total - remaining, 2),
                                     within_tolerance=False)
 
+        # Keep the trail consistent with what was actually committed. If the
+        # balance re-check above downgraded this run, the audit must say so --
+        # a trail that still reads APPROVED beside a NEEDS_REVIEW row is worse
+        # than no trail.
+        if audit is not None and extra is not None:
+            audit = dict(audit)
+            audit["automated_decision"] = status
+            audit["reason"] = extra["text"]
+            audit["reasons"] = list(audit.get("reasons") or []) + [extra]
+            audit["comparison"] = dict(audit.get("comparison") or {},
+                                       po_remaining=po_match.get("remaining_before"),
+                                       variance=po_match.get("diff"),
+                                       remaining_after=po_match.get("remaining_after"))
+            audit["rules"] = [
+                dict(c, passed=False,
+                     detail="PO balance changed before commit; re-checked under the write lock",
+                     reason="Invoice total exceeds PO remaining amount.")
+                if c.get("name") == "PO remaining check" else c
+                for c in (audit.get("rules") or [])
+            ]
+            audit["rules_passed"] = [c["name"] for c in audit["rules"] if c["passed"]]
+            audit["rules_failed"] = [c["name"] for c in audit["rules"] if not c["passed"]]
+
         cur = conn.execute(
             """INSERT INTO runs (filename, status, created_at, vendor_name, invoice_number, total,
-               po_number, extracted_json, po_match_json, stages_json, reasons_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+               po_number, extracted_json, po_match_json, stages_json, reasons_json, audit_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (filename, status, datetime.now(timezone.utc).isoformat(),
              extracted.get("vendor_name"), extracted.get("invoice_number"),
              extracted.get("total"), po_number, json.dumps(extracted),
-             json.dumps(po_match), json.dumps(stages), json.dumps(reasons)),
+             json.dumps(po_match), json.dumps(stages), json.dumps(reasons),
+             json.dumps(audit) if audit is not None else None),
         )
         return cur.lastrowid, status, extra
 
@@ -397,7 +463,8 @@ def _hydrate(d: dict) -> dict:
     """Expand a run row's JSON columns. One definition, so a new column cannot be
     parsed in list_runs and forgotten in get_run."""
     for col, key in (("extracted_json", "extracted"), ("po_match_json", "po_match"),
-                     ("stages_json", "stages"), ("reasons_json", "reasons")):
+                     ("stages_json", "stages"), ("reasons_json", "reasons"),
+                     ("audit_json", "audit")):
         d[key] = json.loads(d.pop(col) or "null")
     return d
 

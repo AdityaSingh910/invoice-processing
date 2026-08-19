@@ -48,7 +48,9 @@ def db(tmp_path, monkeypatch):
 
 def add_po(po_number, amount, currency, vendor=VENDOR, status="open"):
     conn = storage.get_conn()
-    conn.execute("INSERT INTO purchase_orders VALUES (?,?,?,?,?,?,?)",
+    conn.execute("""INSERT INTO purchase_orders
+           (po_number, vendor, amount, currency, issued_date, status, description)
+           VALUES (?,?,?,?,?,?,?)""",
                  (po_number, vendor, amount, currency, "2026-01-01", status, "test"))
     conn.commit()
     conn.close()
