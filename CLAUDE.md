@@ -47,10 +47,15 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Original audit defects | ✅ **All 3 fixed** |
 | Gemini vision route | ⚠️ Intermittent **503** from Google — see §9 |
 | Groq input truncation | ⚠️ **Open bug** — 413 on long documents, see §9 |
-| Deployed | ❌ Local only |
+| Published | ✅ **<https://github.com/AdityaSingh910/invoice-processing>** (public, 28 commits) |
+| Deployed (hosted) | ❌ Runs locally only |
 | Demo video | ❌ Not recorded |
 
-**Git:** 27 commits. Recent:
+**Git:** 28 commits on `main`, pushed to
+<https://github.com/AdityaSingh910/invoice-processing> (public). Working tree
+clean, local and remote identical. Verified at push time that `.env`,
+`data/app.db` and `data/app.db.bak` are absent from the published tree and that
+no key material appears in any commit. Recent:
 
 ```
 c0e00e9 Rewrite README for the current state of the project
@@ -565,11 +570,26 @@ unaffected. The amount rule cannot catch a sign the extractor discarded.
 
 1. Settle the sample-05 badge question (issue 2).
 2. Reset the database and replay 1→7.
-3. **Publish to GitHub** — in progress.
-4. Deploy somewhere shareable, and smoke-test the *deployed* instance (the DB
-   path, the env and SSE buffering all change). `GEMINI_API_KEY`, `GROQ_API_KEY`
-   and `AUTH_SECRET` must be **host env vars**, never a committed `.env`.
-5. **Record the 5-minute demo video.**
+3. ✅ **Published to GitHub** — public, 28 commits, secrets verified absent.
+4. *(Optional)* Deploy to a host, and smoke-test the *deployed* instance — the DB
+   path, the env and SSE buffering all change. `GEMINI_API_KEY`, `GROQ_API_KEY`
+   and `AUTH_SECRET` must be **host env vars**, never a committed `.env`. The
+   GitHub link may be sufficient as "a shareable link"; confirm with the user
+   before building this.
+5. **Record the 5-minute demo video.** ← the main thing left.
+
+### If you are starting a fresh session, do this first
+
+1. Read this file, then [README.md](README.md) (current and verified).
+2. `git log --oneline -10` and `git status` — confirm nothing moved.
+3. `.env\Scripts\python.exe -m pytest tests/ -q` — expect **329 passed**.
+   No key or network needed. If it is not 329, something changed; find out what
+   before building anything.
+4. **Ask the user what they want next.** Do not start Phases 2–7, and do not fix
+   the open issues in this section, without being asked (§3).
+
+The single highest-value next task is **recording the demo video**, and the
+housekeeping in §9 issues 2 and 3 should be settled before that happens.
 
 ---
 
