@@ -30,6 +30,9 @@ def empty_match(invoice_total):
         "within_tolerance": False,
         "is_partial": False,
         "over_within_tolerance": False,
+        # Why inference declined to bind a PO, when it was attempted:
+        # None | "ambiguous" | "no_close_candidate".
+        "inference": None,
     }
 
 
@@ -47,18 +50,40 @@ def match_po(extracted: dict, exclude_run_id=None):
             matched_via = "explicit"
             break
 
+    # No explicit reference: fall back to inferring one from vendor + amount.
+    #
+    # This used to take the vendor's nearest-amount PO with no distance cap and
+    # no tie-breaking, so a $9,000 invoice could bind to a $200 PO simply because
+    # it was the only one on file. Two guards now apply, and both must pass:
+    #
+    #   1. CLOSE  -- the PO amount must be within tolerance of the invoice total.
+    #      Reuses tolerance_for(), so the closeness policy is the same configured
+    #      number as everything else rather than a second magic constant.
+    #   2. UNAMBIGUOUS -- exactly one PO may qualify. If two are equally
+    #      plausible, picking either is a guess, and guessing which PO to charge
+    #      is precisely the judgement that belongs to a human.
+    #
+    # Failing either guard binds nothing. `inference` records why, so the
+    # reasoning trail can say "amount matched no PO" rather than the much less
+    # useful "no PO found".
+    inference = None
     if po_row is None:
         vendor = storage.find_vendor(extracted.get("vendor_name") or "")
-        if vendor:
-            pos = [p for p in storage.list_purchase_orders() if p["vendor"] == vendor["vendor_name"]]
-            total = extracted.get("total")
-            if pos and total:
-                best = min(pos, key=lambda p: abs((p["amount"]) - total))
-                po_row = best
+        total = extracted.get("total")
+        if vendor and total:
+            pos = [p for p in storage.list_purchase_orders()
+                   if p["vendor"] == vendor["vendor_name"]]
+            near = [p for p in pos if abs(p["amount"] - total) <= tolerance_for(p["amount"])]
+            if len(near) == 1:
+                po_row = near[0]
                 matched_via = "inferred"
+            elif len(near) > 1:
+                inference = "ambiguous"
+            elif pos:
+                inference = "no_close_candidate"
 
     if po_row is None:
-        return empty_match(extracted.get("total"))
+        return dict(empty_match(extracted.get("total")), inference=inference)
 
     consumed = storage.consumed_amount_for_po(po_row["po_number"], exclude_run_id=exclude_run_id)
     remaining_before = round(po_row["amount"] - consumed, 2)
@@ -93,4 +118,5 @@ def match_po(extracted: dict, exclude_run_id=None):
         "within_tolerance": within,
         "is_partial": is_partial,
         "over_within_tolerance": over_within_tolerance,
+        "inference": inference,
     }

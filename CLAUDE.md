@@ -40,12 +40,12 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Extraction route in use | **live** — `llm (text)` / `llm (vision)` verified against `gemini-3.7-flash` |
 | Automated tests | ✅ **7/7 passing** — `tests/test_samples.py`, manifest-driven, isolated DB |
 | Prompt-injection hardening | ✅ Fenced prompt, closed response schema, post-extraction guard — 34 tests |
-| Known defects | **2 live bugs** — the concurrency race (§8 #3) is FIXED |
+| Known defects | **1 live bug** — currency (§8 #2). #1 inferred-PO and #3 concurrency are FIXED |
 | Deployed | ❌ Local only, no git remote, no hosting |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 14 commits at the time of writing (this update is
-the 15th), working tree clean.
+**Git:** local repo only, 15 commits at the time of writing (this update is
+the 16th), working tree clean.
 
 ```
 2865a58 Harden the PO ledger: atomicity, reversal + cascade, configurable tolerance
@@ -366,9 +366,9 @@ backend/
                   The ONLY module that talks to a model — google-genai is
                   imported lazily inside _client() so the regex route still
                   works where the SDK was never installed.
-  matching.py      96 lines. PO lookup (explicit refs then inferred),
+  matching.py      122 lines. PO lookup (explicit refs then inferred),
                   tolerance_for(), empty_match(), split-PO balance maths.
-  rules.py        239 lines. validate_required_fields, vendor_check (tri-state),
+  rules.py        265 lines. validate_required_fields, vendor_check (tri-state),
                   duplicate_check, and decide() — the only place a verdict is
                   produced.
   storage.py      356 lines. SQLite. Seeds POs/vendors from data/*.json on
@@ -393,6 +393,9 @@ sample_invoices/
                        AND is the source of truth for tests. Sample 05 carries
                        BOTH `expect` and `expect_with_vision` — see §7.
 tests/
+  test_inferred_po.py    13 cases. The distance cap, the ambiguity guard, that
+                   the inferred warning drives the verdict, and that explicit
+                   matching / split-PO / duplicate behaviour did not move.
   test_po_edge_cases.py  12 cases. Split-PO execution, idempotency under repeat
                    evaluation, reversal + cascade (including what must NOT
                    cascade), tolerance boundaries, and the concurrency race
@@ -483,11 +486,24 @@ Watch "Remaining before" go **$5,000 → $2,000 → $0** across the three runs.
 
 ## 8. Known bugs — 3 live, none fixed
 
-🐞 **1. Inferred PO match doesn't block approval.** (`matching.py:51-51` in `match_po`, `rules.py:178` in `decide`) When no PO reference is extracted, the process binds to the
-vendor's nearest-amount PO with **no distance cap**, then logs a `warn`-level
-reason — but `warn` doesn't change the verdict. An invoice that never named a PO
-can auto-approve against a PO the process picked. Three defects in one: no cap,
-no ambiguity handling, and a decorative severity level.
+✅ **1. Inferred PO match doesn't block approval — FIXED** (Phase 1, 2026-08-19).
+Was three defects in one: no distance cap, no ambiguity handling, and a
+decorative severity level. `min(pos, key=nearest)` always returned something, so
+an invoice that never named a PO could auto-approve against one the process
+guessed.
+
+Now, in `match_po`, inference must pass **both** guards: the PO amount within
+`tolerance_for()` of the invoice total (reusing the configured tolerance rather
+than a second magic number), and **exactly one** candidate qualifying. Failing
+either binds nothing, and `po_match["inference"]` records why
+(`"ambiguous"` / `"no_close_candidate"`) so the trail explains itself. In
+`decide()`, an accepted inferred match now sets `review = True`: the invoice
+never named this PO, so the match is a suggestion for a human to confirm, not
+grounds for approval. Explicit references are untouched and still authoritative.
+
+Verified against the pre-change code: it APPROVED a $1,000 invoice that named no
+PO, and silently picked one of two identical $1,000 POs. Both are NEEDS_REVIEW
+now. 13 tests in `tests/test_inferred_po.py`.
 
 🐞 **2. Currency extracted, never read.** Zero references to `currency` in
 `matching.py` or `rules.py` (verified by grep). The PO table *has* a `currency`
@@ -578,9 +594,9 @@ and they outrank every phase below:
 The work cannot be graded while it only runs on one laptop. Neither item needs
 another line of pipeline code.
 
-The suite is now three files — `test_samples.py` (7 end-to-end sample verdicts),
+The suite is now four files — `test_samples.py` (7 end-to-end sample verdicts),
 `test_security.py` (27 injection cases), `test_po_edge_cases.py` (12 ledger
-cases). **46 total.** Notes for whoever changes them next:
+cases), `test_inferred_po.py` (13 matching cases). **59 total.** Notes for whoever changes them next:
 
 * It does **not** strip `GEMINI_API_KEY`. With a key present the suite runs the
   real `llm (text)` and `llm (vision)` routes; without one it runs `regex` /
@@ -605,7 +621,7 @@ REFACTOR_STRATEGY:
 
 | Phase | Work | State |
 |---|---|---|
-| 1 | Cap inferred PO matches + make `warn` bite; currency → review; vendor normalised-exact | ⬜ gated |
+| 1 | Cap inferred PO matches + make `warn` bite; currency → review; vendor normalised-exact | ◨ **inferred-PO DONE**; currency and vendor-matching still to do |
 | 2 | `Tracked[T]` provenance wrapper, per-route confidence, **confidence gate** | ⬜ |
 | 3 | `rules.yaml` versioned policy + typed loader | ◨ tolerance moved to `config.py`; YAML + loader still to do |
 | 4 | Transaction boundaries (`BEGIN IMMEDIATE` + WAL); `run_allocations` table | ◨ **transactions DONE** (§8 #3); allocations table still to do |

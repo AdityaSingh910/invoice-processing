@@ -169,16 +169,42 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
 
     if po_match["po_number"] is None:
         review = True
-        add("No matching purchase order found (no explicit PO reference, and no vendor+amount match).", "fail")
+        # Say *why* nothing bound. "No PO found" sends a clerk hunting; "two POs
+        # were equally plausible" tells them exactly what to decide.
+        inference = po_match.get("inference")
+        if inference == "ambiguous":
+            add(
+                "No explicit PO reference, and more than one purchase order for this vendor "
+                "matches the invoice amount closely enough to be plausible. Binding to either "
+                "would be a guess, so none was chosen — confirm which PO this belongs to.",
+                "fail",
+            )
+        elif inference == "no_close_candidate":
+            add(
+                "No explicit PO reference, and no purchase order for this vendor is close "
+                "enough in amount to infer one. The invoice was not bound to a PO.",
+                "fail",
+            )
+        else:
+            add("No matching purchase order found (no explicit PO reference, and no vendor+amount match).", "fail")
     else:
         if po_match["po_status"] == "closed":
             review = True
             add(f"Matched PO {po_match['po_number']} but it is already closed.", "fail")
 
         if po_match["matched_via"] == "inferred":
+            # An inferred match is a suggestion, not an authorisation. The
+            # invoice never named this PO -- the process picked it -- so a human
+            # confirms the binding before money moves. Previously this was a
+            # warn-level note that changed nothing, which meant an invoice that
+            # named no PO at all could auto-approve against a PO the process
+            # guessed. The note now carries the verdict with it.
+            review = True
             add(
-                f"No explicit PO reference on the invoice — inferred {po_match['po_number']} "
-                f"from vendor + amount.",
+                f"No explicit PO reference on the invoice — {po_match['po_number']} was "
+                f"inferred from the vendor and a matching amount. The invoice never named "
+                f"this PO, so the match is a suggestion for a human to confirm, not grounds "
+                f"for automatic approval.",
                 "warn",
             )
         else:
