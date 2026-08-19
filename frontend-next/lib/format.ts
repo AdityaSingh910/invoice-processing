@@ -11,16 +11,21 @@ const nf = (v: number) =>
 /** Dollar-assuming formatter, for the places the original UI assumed USD. */
 export function money(v: number | null | undefined): string {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
-  return "$" + nf(Number(v));
+  const n = Number(v);
+  // The minus sign belongs in front of the currency symbol: "$-2,000.00" reads
+  // as a corrupted figure, "-$2,000.00" reads as a credit.
+  return `${n < 0 ? "-" : ""}$${nf(Math.abs(n))}`;
 }
 
 /** Currency-aware formatter for the audit trail: printing "$" beside a rupee
  *  figure would make the trail say something untrue. */
 export function amount(v: number | null | undefined, currency?: string | null): string {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
+  const raw = Number(v);
+  const sign = raw < 0 ? "-" : "";
   const sym = CURRENCY_SYMBOL[String(currency || "").toUpperCase()];
-  const n = nf(Number(v));
-  return sym ? sym + n : `${n} ${currency || ""}`.trim();
+  const n = nf(Math.abs(raw));
+  return sym ? `${sign}${sym}${n}` : `${sign}${n} ${currency || ""}`.trim();
 }
 
 export const humanise = (s: string | null | undefined) =>

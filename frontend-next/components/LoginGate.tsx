@@ -1,18 +1,22 @@
 "use client";
 
 /**
- * Sign-in gate. The API rejects unauthenticated calls regardless of what this
- * overlay does -- it is a convenience for a human, never the control. No secret
- * lives here: the user supplies their own credentials and the server returns a
- * token scoped to them.
+ * Sign-in.
+ *
+ * The API rejects unauthenticated calls regardless of what this screen does —
+ * it is a convenience for a human, never the control. No secret lives here: the
+ * user supplies their own credentials and the server returns a token scoped to
+ * them.
  */
 import { useState } from "react";
 import { useAuth } from "@/lib/auth";
+import { Button, Callout, Field, Input } from "@/components/ui";
+import { IconAlert } from "@/components/ui/icons";
 
-const DEMO_ACCOUNTS: [string, string, string][] = [
-  ["analyst", "demo-analyst", "process invoices"],
-  ["reviewer", "demo-reviewer", "process + accept/reject"],
-  ["admin", "demo-admin", "override any run"],
+const DEMO: { user: string; pass: string; role: string }[] = [
+  { user: "analyst", pass: "demo-analyst", role: "Process invoices" },
+  { user: "reviewer", pass: "demo-reviewer", role: "Process, accept and reject" },
+  { user: "admin", pass: "demo-admin", role: "Full administrative access" },
 ];
 
 export default function LoginGate() {
@@ -36,117 +40,91 @@ export default function LoginGate() {
     }
   }
 
-  const field =
-    "w-full rounded-[var(--radius-inner)] border-2 border-border bg-panel2 px-4 py-3 text-[15px] " +
-    "text-text outline-none transition-all placeholder:text-faint focus:border-accent focus:bg-panel";
-
   return (
-    <div className="relative grid min-h-screen place-items-center overflow-hidden p-5">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(45rem 30rem at 20% 0%, var(--bg-tint-a), transparent 65%),"+
-            "radial-gradient(45rem 30rem at 85% 10%, var(--bg-tint-b), transparent 65%),"+
-            "radial-gradient(40rem 28rem at 50% 100%, var(--bg-tint-c), transparent 65%)",
-        }}
-      />
-
-      <form onSubmit={submit} autoComplete="on" className="card relative w-full max-w-[430px] p-8">
-        <div className="flex items-center gap-3">
-          <span
-            className="grid h-12 w-12 place-items-center rounded-2xl text-[16px] font-black text-white shadow-[var(--shadow)]"
-            style={{ background: "var(--grad-accent)" }}
-          >
-            IP
+    <div className="grid min-h-screen place-items-center p-4">
+      <div className="w-full max-w-[400px]">
+        <div className="mb-6 flex items-center gap-2.5">
+          <span className="grid h-9 w-9 place-items-center rounded-[var(--radius-md)] bg-accent text-[13px] font-bold text-accent-fg">
+            AP
           </span>
-          <div>
-            <h1 className="grad-text text-[22px] font-black tracking-[-0.03em]">Invoice Processing</h1>
-            <p className="text-[13px] text-dim">The AI reads. The rules decide.</p>
+          <div className="leading-tight">
+            <h1 className="text-[16px] font-semibold tracking-[-0.01em]">Invoice Processing</h1>
+            <p className="text-[12px] text-subtle">The AI reads. The rules decide.</p>
           </div>
         </div>
 
-        <div className="mt-7 grid gap-4">
-          <label className="block">
-            <span className="mb-1.5 block text-[13px] font-semibold">Username</span>
-            <input
-              className={field}
-              type="text"
-              name="username"
-              autoComplete="username"
-              placeholder="analyst"
-              required
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-            />
-          </label>
+        <form
+          onSubmit={submit}
+          autoComplete="on"
+          className="rounded-[var(--radius-lg)] border border-border bg-surface p-6 shadow-[var(--shadow-sm)]"
+        >
+          <h2 className="text-[15px] font-semibold">Sign in</h2>
+          <p className="mt-1 text-[13px] text-muted">
+            Access is scoped to your account&apos;s permissions.
+          </p>
 
-          <label className="block">
-            <span className="mb-1.5 block text-[13px] font-semibold">Password</span>
-            <input
-              className={field}
-              type="password"
-              name="password"
-              autoComplete="current-password"
-              placeholder="••••••••"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </label>
-        </div>
+          <div className="mt-5 flex flex-col gap-4">
+            <Field label="Username" htmlFor="username">
+              <Input
+                id="username"
+                name="username"
+                autoComplete="username"
+                placeholder="analyst"
+                required
+                value={username}
+                onChange={(e) => setUsername(e.currentTarget.value)}
+              />
+            </Field>
 
-        {(error || notice) && (
-          <div
-            role="alert"
-            className="mt-4 flex items-start gap-2.5 rounded-[var(--radius-inner)] border px-3.5 py-2.5 text-[14px]"
-            style={{
-              borderColor: "var(--fail-border)",
-              background: "var(--fail-soft)",
-              color: "var(--fail)",
-            }}
-          >
-            <span className="mt-0.5 font-bold" aria-hidden>
-              !
-            </span>
-            <span>{error || notice}</span>
+            <Field label="Password" htmlFor="password">
+              <Input
+                id="password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                placeholder="••••••••"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.currentTarget.value)}
+              />
+            </Field>
           </div>
-        )}
 
-        <button type="submit" disabled={busy} className="btn btn-primary mt-5 w-full">
-          {busy ? (
-            <>
-              <span className="block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-              Signing in…
-            </>
-          ) : (
-            "Sign in"
+          {(error || notice) && (
+            <div className="mt-4">
+              <Callout tone="danger" icon={<IconAlert size={14} />}>
+                {error || notice}
+              </Callout>
+            </div>
           )}
-        </button>
 
-        <div className="mt-7 border-t border-border pt-5">
-          <div className="eyebrow mb-2.5">Demo accounts</div>
-          <div className="grid gap-1.5">
-            {DEMO_ACCOUNTS.map(([u, p, what]) => (
+          <Button type="submit" variant="primary" className="mt-5 w-full" loading={busy}>
+            {busy ? "Signing in…" : "Sign in"}
+          </Button>
+        </form>
+
+        <div className="mt-4 rounded-[var(--radius-lg)] border border-border bg-surface2 p-4">
+          <p className="label mb-2.5">Demo accounts</p>
+          <div className="flex flex-col gap-1">
+            {DEMO.map((d) => (
               <button
-                key={u}
+                key={d.user}
                 type="button"
                 onClick={() => {
-                  setUsername(u);
-                  setPassword(p);
+                  setUsername(d.user);
+                  setPassword(d.pass);
                   setError(null);
                 }}
-                className="flex items-center justify-between gap-3 rounded-[var(--radius-inner)] border border-border bg-panel2 px-3 py-2 text-left transition-colors hover:border-accent hover:bg-accent-soft hover:-translate-y-px"
+                className="flex items-center justify-between gap-3 rounded-[var(--radius-sm)] px-2 py-1.5 text-left transition-colors hover:bg-surface3"
               >
-                <span className="font-mono text-[13px] font-semibold">{u}</span>
-                <span className="text-[12px] text-dim">{what}</span>
+                <span className="num text-[13px] font-medium">{d.user}</span>
+                <span className="text-[12px] text-subtle">{d.role}</span>
               </button>
             ))}
           </div>
-          <p className="mt-2.5 text-[12px] text-faint">Click one to fill the form.</p>
+          <p className="mt-2.5 text-[12px] text-subtle">Select one to fill the form.</p>
         </div>
-      </form>
+      </div>
     </div>
   );
 }

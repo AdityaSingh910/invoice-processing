@@ -1,0 +1,173 @@
+/**
+ * Icon set — inline SVG, no dependency.
+ *
+ * One geometry for all of them: 16px grid, 1.5 stroke, round caps, currentColor.
+ * A mixed-weight icon set is one of the fastest ways for an interface to look
+ * assembled rather than designed.
+ */
+import type { SVGProps } from "react";
+
+type IconProps = SVGProps<SVGSVGElement> & { size?: number };
+
+function Svg({ size = 16, children, ...rest }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...rest}
+    >
+      {children}
+    </svg>
+  );
+}
+
+export const IconOverview = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2" y="2" width="5" height="5" rx="1.2" />
+    <rect x="9" y="2" width="5" height="5" rx="1.2" />
+    <rect x="2" y="9" width="5" height="5" rx="1.2" />
+    <rect x="9" y="9" width="5" height="5" rx="1.2" />
+  </Svg>
+);
+
+export const IconUpload = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M8 10.5V2.5" />
+    <path d="M5 5.5 8 2.5l3 3" />
+    <path d="M2.5 10v2A1.5 1.5 0 0 0 4 13.5h8a1.5 1.5 0 0 0 1.5-1.5v-2" />
+  </Svg>
+);
+
+export const IconInvoice = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3.5 1.5h6l3 3v10h-9z" />
+    <path d="M9.5 1.5v3h3" />
+    <path d="M5.5 8h5M5.5 10.5h3" />
+  </Svg>
+);
+
+export const IconLedger = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+    <path d="M2 6h12M6 6v7.5" />
+  </Svg>
+);
+
+export const IconCheck = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 8.5 6.5 12 13 4.5" />
+  </Svg>
+);
+
+export const IconAlert = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="6" />
+    <path d="M8 5v3.5M8 11h.01" />
+  </Svg>
+);
+
+export const IconX = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 4l8 8M12 4l-8 8" />
+  </Svg>
+);
+
+export const IconSearch = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="7" cy="7" r="4.5" />
+    <path d="M10.5 10.5 14 14" />
+  </Svg>
+);
+
+export const IconChevronDown = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 6l4 4 4-4" />
+  </Svg>
+);
+
+export const IconChevronLeft = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M10 3 5 8l5 5" />
+  </Svg>
+);
+
+export const IconChevronRight = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M6 3l5 5-5 5" />
+  </Svg>
+);
+
+export const IconArrowUp = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M8 13V3M4 7l4-4 4 4" />
+  </Svg>
+);
+
+export const IconMenu = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />
+  </Svg>
+);
+
+export const IconSignOut = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M6 14H3.5A1.5 1.5 0 0 1 2 12.5v-9A1.5 1.5 0 0 1 3.5 2H6" />
+    <path d="M10.5 11 14 8l-3.5-3M14 8H6" />
+  </Svg>
+);
+
+export const IconRefresh = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M13.5 7a5.5 5.5 0 1 0-.7 3.4" />
+    <path d="M13.5 3.5V7H10" />
+  </Svg>
+);
+
+export const IconFile = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 1.5h5l3 3v10H4z" />
+    <path d="M9 1.5v3h3" />
+  </Svg>
+);
+
+export const IconClock = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="6" />
+    <path d="M8 4.5V8l2.5 1.5" />
+  </Svg>
+);
+
+export const IconUser = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="5.5" r="2.5" />
+    <path d="M3 13.5a5 5 0 0 1 10 0" />
+  </Svg>
+);
+
+export const IconLink = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M6.5 9.5a2.5 2.5 0 0 0 3.5 0l2-2a2.5 2.5 0 0 0-3.5-3.5l-.8.8" />
+    <path d="M9.5 6.5a2.5 2.5 0 0 0-3.5 0l-2 2A2.5 2.5 0 0 0 7.5 12l.8-.8" />
+  </Svg>
+);
+
+export const IconShield = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M8 1.8 13 3.5v4c0 3.2-2.1 5.7-5 6.7-2.9-1-5-3.5-5-6.7v-4z" />
+    <path d="M6 8l1.5 1.5L10.5 6.5" />
+  </Svg>
+);
+
+export const IconEmpty = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2" y="3.5" width="12" height="9" rx="1.5" strokeDasharray="2.5 2" />
+    <path d="M5.5 8h5" />
+  </Svg>
+);

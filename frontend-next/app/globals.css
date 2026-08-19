@@ -1,151 +1,145 @@
 @import "tailwindcss";
 
-/* ---------------------------------------------------------------------------
-   DESIGN SYSTEM  —  warm, colourful, friendly
+/* ===========================================================================
+   DESIGN SYSTEM
 
-   The audience for this screen is an AP clerk and a non-technical buyer, not an
-   engineer. So the surface is soft and welcoming: violet-tinted neutrals rather
-   than grey, generous radii, gradients, and shadows that carry the accent's hue
-   instead of a flat black.
+   A dense, data-heavy operations tool. The visual language is deliberately
+   quiet: a neutral zinc ramp, ONE accent, hairline borders doing most of the
+   structural work, and shadows reserved for things that genuinely float.
 
-   The three status colours still mean exactly one thing each -- approved, held,
-   rejected -- and are never used decoratively. Everything else is free to be
-   friendly.
-   --------------------------------------------------------------------------- */
+   Colour is information here. The accent means "interactive"; the three status
+   colours mean approved / held / rejected and nothing else. Nothing is tinted
+   for decoration, and there are no gradients.
+   =========================================================================== */
+
 :root {
-  /* neutrals, warmed toward violet so nothing reads as battleship grey */
-  --bg: #fbfaff;
-  --bg-tint-a: #efe9ff;
-  --bg-tint-b: #e6f0ff;
-  --bg-tint-c: #ffeef6;
-  --panel: #ffffff;
-  --panel-2: #f8f6ff;
-  --panel-3: #f1edfe;
-  --border: #ebe6fa;
-  --border-strong: #d6cdf3;
-  --text: #1c1338;
-  --text-dim: #6b6389;
-  --text-faint: #a49dbe;
+  /* --- surfaces ---------------------------------------------------------- */
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-2: #f4f4f5;
+  --surface-3: #ececee;
 
-  /* accent -- a violet→blue gradient is the brand device */
-  --accent: #7c5cff;
-  --accent-2: #4f8cff;
-  --accent-hover: #6a46ff;
-  --accent-soft: #f0ebff;
-  --accent-ring: rgba(124, 92, 255, 0.25);
-  --on-accent: #ffffff;
-  --grad-accent: linear-gradient(135deg, #7c5cff, #4f8cff);
+  /* --- lines ------------------------------------------------------------- */
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
 
-  /* semantic -- saturated, but with pastel companions for fills */
-  --ok: #04815a;
-  --ok-soft: #e4faf1;
-  --ok-solid: #10c88a;
-  --ok-border: #a8ecd2;
-  --grad-ok: linear-gradient(135deg, #10c88a, #35d0a8);
+  /* --- text -------------------------------------------------------------- */
+  --fg: #18181b;
+  --fg-muted: #52525b;
+  --fg-subtle: #8b8b94;
 
-  --warn: #a35a00;
-  --warn-soft: #fff3e0;
-  --warn-solid: #ff9f1c;
-  --warn-border: #ffd9a3;
-  --grad-warn: linear-gradient(135deg, #ff9f1c, #ffbe4d);
+  /* --- accent: exactly one ----------------------------------------------- */
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-fg: #ffffff;
+  --accent-weak: #eff4ff;
+  --accent-line: #c9dafe;
+  --ring: rgba(37, 99, 235, 0.4);
 
-  --fail: #c31d46;
-  --fail-soft: #ffebf0;
-  --fail-solid: #ff5c7a;
-  --fail-border: #ffc2ce;
-  --grad-fail: linear-gradient(135deg, #ff5c7a, #ff87a1);
+  /* --- status: badges and indicators only -------------------------------- */
+  --success: #15803d;
+  --success-weak: #f0fdf4;
+  --success-line: #bbf7d0;
+  --success-solid: #16a34a;
 
-  /* shadows carry the accent hue -- a neutral black shadow is what makes a
-     light UI look cheap */
-  --shadow-sm: 0 1px 2px rgba(46, 27, 92, 0.05);
-  --shadow: 0 2px 4px rgba(46, 27, 92, 0.04), 0 12px 28px -10px rgba(74, 47, 145, 0.16);
-  --shadow-lg: 0 4px 8px rgba(46, 27, 92, 0.05), 0 28px 56px -16px rgba(74, 47, 145, 0.26);
+  --warning: #b45309;
+  --warning-weak: #fffbeb;
+  --warning-line: #fde68a;
+  --warning-solid: #f59e0b;
+
+  --danger: #b91c1c;
+  --danger-weak: #fef2f2;
+  --danger-line: #fecaca;
+  --danger-solid: #dc2626;
+
+  /* --- elevation: minimal ------------------------------------------------ */
+  --shadow-xs: 0 1px 2px rgba(24, 24, 27, 0.04);
+  --shadow-sm: 0 1px 3px rgba(24, 24, 27, 0.06), 0 1px 2px rgba(24, 24, 27, 0.04);
+  --shadow-md: 0 4px 12px rgba(24, 24, 27, 0.08), 0 1px 3px rgba(24, 24, 27, 0.04);
+  --shadow-lg: 0 16px 40px rgba(24, 24, 27, 0.16), 0 4px 12px rgba(24, 24, 27, 0.06);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #100d1f;
-    --bg-tint-a: #241a4a;
-    --bg-tint-b: #142a4d;
-    --bg-tint-c: #35163a;
-    --panel: #191530;
-    --panel-2: #201b3c;
-    --panel-3: #29224b;
-    --border: #2f2856;
-    --border-strong: #443a75;
-    --text: #f1edff;
-    --text-dim: #a49cc9;
-    --text-faint: #6f6699;
+    --bg: #09090b;
+    --surface: #101012;
+    --surface-2: #17171a;
+    --surface-3: #202024;
 
-    --accent: #9b7cff;
-    --accent-2: #6ba4ff;
-    --accent-hover: #b298ff;
-    --accent-soft: #251d47;
-    --accent-ring: rgba(155, 124, 255, 0.3);
-    --on-accent: #16102e;
-    --grad-accent: linear-gradient(135deg, #9b7cff, #6ba4ff);
+    --border: #26262a;
+    --border-strong: #35353b;
 
-    --ok: #3ddc9a;
-    --ok-soft: #0c3229;
-    --ok-solid: #10c88a;
-    --ok-border: #175c47;
-    --grad-ok: linear-gradient(135deg, #10c88a, #3ddc9a);
+    --fg: #fafafa;
+    --fg-muted: #a1a1aa;
+    --fg-subtle: #71717a;
 
-    --warn: #ffb547;
-    --warn-soft: #38260a;
-    --warn-solid: #ff9f1c;
-    --warn-border: #6b4713;
-    --grad-warn: linear-gradient(135deg, #ff9f1c, #ffb547);
+    --accent: #5b87f5;
+    --accent-hover: #7ba0f8;
+    --accent-fg: #0b1020;
+    --accent-weak: #131c33;
+    --accent-line: #24365e;
+    --ring: rgba(91, 135, 245, 0.45);
 
-    --fail: #ff7a95;
-    --fail-soft: #3a1220;
-    --fail-solid: #ff5c7a;
-    --fail-border: #75213a;
-    --grad-fail: linear-gradient(135deg, #ff5c7a, #ff7a95);
+    --success: #4ade80;
+    --success-weak: #0c1f16;
+    --success-line: #1d4632;
+    --success-solid: #22c55e;
 
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
-    --shadow: 0 2px 6px rgba(0, 0, 0, 0.45), 0 16px 36px -12px rgba(0, 0, 0, 0.6);
-    --shadow-lg: 0 4px 10px rgba(0, 0, 0, 0.5), 0 36px 72px -20px rgba(0, 0, 0, 0.75);
+    --warning: #fbbf24;
+    --warning-weak: #241b08;
+    --warning-line: #4d3a12;
+    --warning-solid: #f59e0b;
+
+    --danger: #f87171;
+    --danger-weak: #251114;
+    --danger-line: #532226;
+    --danger-solid: #ef4444;
+
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.55);
+    --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.7);
   }
 }
 
 @theme inline {
   --color-bg: var(--bg);
-  --color-panel: var(--panel);
-  --color-panel2: var(--panel-2);
-  --color-panel3: var(--panel-3);
+  --color-surface: var(--surface);
+  --color-surface2: var(--surface-2);
+  --color-surface3: var(--surface-3);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
-  --color-text: var(--text);
-  --color-dim: var(--text-dim);
-  --color-faint: var(--text-faint);
+  --color-fg: var(--fg);
+  --color-muted: var(--fg-muted);
+  --color-subtle: var(--fg-subtle);
 
   --color-accent: var(--accent);
-  --color-accent2: var(--accent-2);
   --color-accent-hover: var(--accent-hover);
-  --color-accent-soft: var(--accent-soft);
-  --color-on-accent: var(--on-accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-weak: var(--accent-weak);
+  --color-accent-line: var(--accent-line);
 
-  --color-ok: var(--ok);
-  --color-ok-soft: var(--ok-soft);
-  --color-ok-solid: var(--ok-solid);
-  --color-ok-border: var(--ok-border);
+  --color-success: var(--success);
+  --color-success-weak: var(--success-weak);
+  --color-success-line: var(--success-line);
+  --color-success-solid: var(--success-solid);
 
-  --color-warn: var(--warn);
-  --color-warn-soft: var(--warn-soft);
-  --color-warn-solid: var(--warn-solid);
-  --color-warn-border: var(--warn-border);
+  --color-warning: var(--warning);
+  --color-warning-weak: var(--warning-weak);
+  --color-warning-line: var(--warning-line);
+  --color-warning-solid: var(--warning-solid);
 
-  --color-fail: var(--fail);
-  --color-fail-soft: var(--fail-soft);
-  --color-fail-solid: var(--fail-solid);
-  --color-fail-border: var(--fail-border);
+  --color-danger: var(--danger);
+  --color-danger-weak: var(--danger-weak);
+  --color-danger-line: var(--danger-line);
+  --color-danger-solid: var(--danger-solid);
 
-  --radius-card: 22px;
-  --radius-inner: 14px;
-
-  --shadow-soft: var(--shadow);
-  --shadow-float: var(--shadow-lg);
+  /* One radius scale. 10px is the card; nothing exceeds 12px. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
 }
 
 @layer base {
@@ -155,144 +149,115 @@
 
   body {
     background: var(--bg);
-    color: var(--text);
+    color: var(--fg);
     font-family:
-      ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
-    font-size: 15px;
-    line-height: 1.6;
+      ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
-  /* Figures in a ledger have to line up vertically. */
+  /* Ledger figures must align vertically. */
   .tnum,
-  table td,
-  table th {
+  td,
+  th {
     font-variant-numeric: tabular-nums;
   }
 
+  /* One focus treatment everywhere, keyboard-only. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+  }
+
   ::selection {
-    background: var(--accent-ring);
+    background: var(--accent-weak);
+    color: var(--fg);
   }
 
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--border-strong) transparent;
   }
-}
-
-@layer components {
-  /* ---- status pill -------------------------------------------------------- */
-  .pill {
-    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-extrabold tracking-[0.05em] uppercase;
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
   }
-  .pill[data-status="APPROVED"],
-  .pill[data-status="HUMAN_APPROVED"],
-  .pill[data-status="open"] {
-    background: var(--ok-soft);
-    color: var(--ok);
-  }
-  .pill[data-status="NEEDS_REVIEW"] {
-    background: var(--warn-soft);
-    color: var(--warn);
-  }
-  .pill[data-status="REJECTED"],
-  .pill[data-status="HUMAN_REJECTED"],
-  .pill[data-status="closed"] {
-    background: var(--fail-soft);
-    color: var(--fail);
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 99px;
+    border: 3px solid transparent;
+    background-clip: content-box;
   }
 
-  /* ---- level dot ---------------------------------------------------------- */
-  .dot {
-    @apply inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[12px] font-bold;
-  }
-  .dot[data-level="ok"] {
-    background: var(--ok-soft);
-    color: var(--ok);
-  }
-  .dot[data-level="warn"] {
-    background: var(--warn-soft);
-    color: var(--warn);
-  }
-  .dot[data-level="fail"] {
-    background: var(--fail-soft);
-    color: var(--fail);
-  }
-  .dot[data-level="info"] {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-
-  /* ---- surfaces ----------------------------------------------------------- */
-  .card {
-    @apply rounded-[var(--radius-card)] border border-border bg-panel shadow-[var(--shadow-soft)];
-  }
-
-  /* ---- buttons ------------------------------------------------------------ */
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-[14px] font-bold transition-all duration-150 outline-none;
-  }
-  .btn:focus-visible {
-    box-shadow: 0 0 0 4px var(--accent-ring);
-  }
-  .btn-primary {
-    background: var(--grad-accent);
-    color: #fff;
-    box-shadow: 0 6px 16px -6px var(--accent-ring);
-  }
-  .btn-primary:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 12px 24px -8px var(--accent-ring);
-  }
-  .btn-primary:disabled {
-    opacity: 0.45;
-    box-shadow: none;
-  }
-  .btn-ghost {
-    @apply border border-border bg-panel2 text-dim;
-  }
-  .btn-ghost:hover:not(:disabled) {
-    color: var(--text);
-    border-color: var(--border-strong);
-    background: var(--panel-3);
-  }
-
-  .eyebrow {
-    @apply text-[11px] font-extrabold tracking-[0.08em] text-faint uppercase;
-  }
-
-  /* Text filled with the brand gradient -- used once, on the wordmark. */
-  .grad-text {
-    background: var(--grad-accent);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
+  /* Respect a reduced-motion preference: transitions are polish, not meaning. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }
 
-@keyframes sheen {
-  0% {
-    background-position: -200% 0;
+@layer utilities {
+  /* Small caps label used for table headers and section eyebrows. */
+  .label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--fg-subtle);
   }
+
+  .num {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+}
+
+/* --- skeleton shimmer ------------------------------------------------------
+   Loading placeholders mirror the shape of the content they stand in for, so
+   the layout does not jump when data lands. */
+@keyframes shimmer {
   100% {
-    background-position: 200% 0;
+    transform: translateX(100%);
   }
 }
-.sheen {
-  background-size: 200% 100%;
-  animation: sheen 1.6s linear infinite;
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+.skeleton::after {
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--surface-3) 70%, transparent),
+    transparent
+  );
+  animation: shimmer 1.4s infinite;
+  content: "";
 }
 
-@keyframes pop {
-  0% {
+/* --- entrance --------------------------------------------------------------
+   Used once, on results arriving. Short enough to feel like a response rather
+   than an animation. */
+@keyframes rise {
+  from {
     opacity: 0;
-    transform: scale(0.96) translateY(6px);
-  }
-  100% {
-    opacity: 1;
-    transform: none;
+    transform: translateY(4px);
   }
 }
-.pop {
-  animation: pop 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+.rise {
+  animation: rise 0.18s ease-out both;
 }
