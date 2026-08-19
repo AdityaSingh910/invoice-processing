@@ -43,9 +43,13 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Deployed | ❌ Local only, no git remote, no hosting |
 | Demo video | ❌ Not recorded |
 
-**Git:** local repo only, 8 commits, working tree clean.
+**Git:** local repo only, 11 commits at the time of writing (this update is
+the 12th), working tree clean.
 
 ```
+d7790c3 Fix Gemini client lifetime and model pin; vision route verified working
+5ed4a53 Swap the LLM extraction layer from Anthropic Claude to Google Gemini
+dd9c1bc Update CLAUDE.md: current git log, line counts, unproven LLM routes
 21bc180 Implement pytest suite and enable API vision extraction for sample 05
 bedc0db Add tests/test_samples.py — Phase 0 Step 3, 7/7 passing
 e103369 Add CLAUDE.md — session handoff document
@@ -56,17 +60,27 @@ b2db656 Rewrite README for current state; fix stale requirements.txt
 56102dc Baseline: current state, pipeline broken mid-refactor
 ```
 
-**Last verified 2026-08-18.** Re-checked against the code, all still true: every
-line count in §6, every code reference in §8 (all three bugs), the six API
-endpoints, the seed data, and the manifest order. The app was run — all three tabs
-render with no JS console errors. The test suite was added and is green, and the
-vision route's rasterisation half was proven independently.
+**Last verified 2026-08-19.** Re-checked against the code: every line count in
+§6, every code reference in §8 (all three bugs), the six API endpoints, the seed
+data, and the manifest order. The app was run — all three tabs render with no JS
+console errors.
 
-**Still unproven:** the two LLM routes have never made a real API call. There is
-no `.env` in this environment, so every green test run so far is the `regex` /
-`none` path. Sample 05's `APPROVED` expectation under vision is *reasoned* from
-the rendered page image plus seed PO-1005 — not observed. Running `pytest` with a
-real key is the outstanding check; do it before relying on that verdict in a demo.
+**The LLM routes are no longer a promise.** Both have now made real API calls
+against `gemini-3.7-flash` with a live key. Sample 05 was extracted from a page
+image and came back APPROVED end to end, every expected field matching:
+
+```
+Route Used       llm-vision                (expected llm-vision)
+Vendor Name      Stark Industrial Parts    (expected Stark Industrial Parts)
+Invoice Number   INV-9004                  (expected INV-9004)
+PO Reference     ['PO-1005']               (expected PO-1005)
+Total Amount     15400.0                   (expected 15400.00)
+invoice_date     2026-07-22   currency USD   (bonus, not asserted)
+```
+
+`pytest` is 7/7 with the live routes active (65s, against 16s on regex).
+
+**The remaining caveat is quota, not correctness** — see the 429 gotcha in §4.
 
 ---
 
@@ -218,28 +232,35 @@ Same output schema regardless, so matching and rules never know which ran.
 | `regex` | No key, or LLM call failed | No |
 | `none` | Nothing readable — returns empty fields rather than guessing | — |
 
-⚠️ **The two LLM routes are wired but still never exercised end to end.**
-Every run so far took `regex`, and sample 05 (scanned) lands on `route=none`
-for want of a key.
+✅ **Both LLM routes are verified working** against `gemini-3.7-flash`
+(2026-08-19). `llm (vision)` reads `05_scanned_no_text.pdf` correctly — vendor,
+invoice number, PO reference, total, and date — and the invoice reaches APPROVED
+end to end. `llm (text)` also returns clean fields. Entry points:
+`llm_extract_vision` at `extraction.py:193`, `llm_extract_text` at
+`extraction.py:178`.
 
-What *has* been verified: the rasterisation half of the vision route. Running
-`render_pages_png()` on `05_scanned_no_text.pdf` produces a clean, fully legible
-1224×1584 PNG, so the pypdfium2 plumbing works. The only unproven link is the
-API call itself (`llm_extract_vision`, `extraction.py:193`; `llm_extract_text`
-at `extraction.py:178`). To enable, create `.env` in the project
-root:
+The provider is configured through `.env` in the project root:
 
 ```
 GEMINI_API_KEY=...
 ```
 
-`.env` is gitignored; the key is never sent to the browser. Provider is **Google
-Gemini** via Google AI Studio (`google-genai`); model is `gemini-3.7-flash`
-(`config.EXTRACTION_MODEL`, key name in `config.API_KEY_ENV`). Both routes ask
-for `response_mime_type="application/json"`, though `_parse_llm_json` still runs
-on the reply -- a mime type is a strong constraint, not a guarantee. Rasterisation uses **pypdfium2**
-— a self-contained wheel, deliberately chosen so there is no poppler/tesseract
-system dependency. OCR via pytesseract was removed entirely.
+`.env` is gitignored; the key is never sent to the browser. Get a key free at
+<https://aistudio.google.com/apikey>.
+
+Provider is **Google Gemini** via Google AI Studio (`google-genai`); model is
+`gemini-3.7-flash` (`config.EXTRACTION_MODEL`; the env var name lives in
+`config.API_KEY_ENV`, so swapping providers again touches one constant). Both
+routes ask for `response_mime_type="application/json"`, but `_parse_llm_json`
+still runs on the reply — a mime type is a strong constraint, not a guarantee.
+
+Rasterisation uses **pypdfium2** — a self-contained wheel, deliberately chosen so
+there is no poppler/tesseract system dependency. OCR via pytesseract was removed
+entirely.
+
+**Model pinning is deliberate.** `gemini-flash-latest` is an available alias and
+is *not* used: an alias changes the model under a running system, and an AP
+process must be able to say which model read an invoice approved months ago.
 
 ### Stack
 
@@ -258,6 +279,9 @@ backend/
   extraction.py   421 lines. PDF → text (pdfplumber) → fields. Three routes,
                   SCHEMA_PROMPT for the LLM, regex fallback with tiered
                   patterns, _guess_vendor positional heuristic, PdfUnreadable.
+                  The ONLY module that talks to a model — google-genai is
+                  imported lazily inside _client() so the regex route still
+                  works where the SDK was never installed.
   matching.py      84 lines. PO lookup (explicit refs then inferred),
                   tolerance_for(), empty_match(), split-PO balance maths.
   rules.py        151 lines. validate_required_fields, vendor_check (tri-state),
@@ -267,8 +291,9 @@ backend/
                   EVERY startup. consumed_amount_for_po, find_duplicate,
                   save_run, list_runs.
   schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
-  config.py        65 lines. .env loader, upload/page caps, model name.
-                  Operational settings only — no business rules.
+  config.py        65 lines. .env loader, upload/page caps, API_KEY_ENV
+                  ("GEMINI_API_KEY"), EXTRACTION_MODEL, api_key(),
+                  has_api_key(). Operational settings only — no business rules.
 frontend/
   index.html      Three tabs: Run, Dashboard, Reference.
   style.css       CSS custom properties, dark mode via prefers-color-scheme.
@@ -345,6 +370,13 @@ both resolve against `config.has_api_key()`, so the UI badge can never
 contradict the run beside it. Verified by flipping the flag; the other six
 samples do not move.
 
+**Both halves are now observed, not predicted.** With a live key the vision
+route returns Stark Industrial Parts / INV-9004 / PO-1005 / $15,400.00 and the
+run reaches APPROVED. Without one it is `route=none` → NEEDS_REVIEW. This is the
+*second* same-bytes/opposite-verdict story in the project, and a better one than
+the split-PO case for a non-technical audience: the file did not change, the
+capability did.
+
 ### The demo money-shot
 
 Run `03b` **alone against a fresh DB** → it comes back **APPROVED**. Same bytes,
@@ -379,7 +411,7 @@ produces a wrong number rather than a wrong routing.**
 
 - Extracted fields are **bare values** — no confidence, no provenance. A total
   read off the page is indistinguishable from one the code synthesised as
-  `subtotal + tax` (`extraction.py:315` in `regex_extract`).
+  `subtotal + tax` (`extraction.py:342` in `regex_extract`).
 - **All business rules hardcoded.** Tolerance is two magic numbers in a one-line
   function. `config.py` holds only operational settings.
 - Vendor matching is **bidirectional substring** (`storage.py:112` in `find_vendor`) — `Acme
@@ -389,7 +421,7 @@ produces a wrong number rather than a wrong routing.**
 - No arithmetic consistency check — nothing verifies `subtotal + tax == total`.
 - `config.status()` and `config.extraction_mode()` are **dead code** — nothing
   calls them, so the UI has no way to show which extraction route is live.
-- `_guess_vendor` (`extraction.py:238`) picks the vendor by **line position**.
+- `_guess_vendor` (`extraction.py:265`) picks the vendor by **line position**.
 
 Full detail: [AUDIT.md](AUDIT.md). Fix patterns: [REFACTOR_STRATEGY.md](REFACTOR_STRATEGY.md).
 
@@ -411,26 +443,38 @@ Full detail: [AUDIT.md](AUDIT.md). Fix patterns: [REFACTOR_STRATEGY.md](REFACTOR
   Step 3: `tests/test_samples.py`, 7/7 green, isolated from `data/app.db`.
 - Fixed `requirements.txt` — it was missing `pypdfium2` and would have broken a
   fresh clone.
+- **Provider swapped to Google Gemini** (`google-genai`, Google AI Studio),
+  replacing Anthropic. Contained entirely to the extraction layer — `matching.py`
+  and `rules.py` are byte-for-byte unchanged, which is the whole point of the
+  architecture. `anthropic` removed from `requirements.txt` and the venv.
+- **Both LLM routes verified live** — see §2. This closed the largest standing
+  unknown in the project.
 
 ### Remaining
 
-**Immediate — one cheap check, then the deliverables.** Phase 0 is done. The
-cheap check: drop a real key into `.env` and run `pytest`. It is the only way to
-learn whether the LLM routes actually work, and it costs one command.
+**Immediate — nothing engineering-side is blocking.** Phase 0 is done and the
+LLM routes are proven. The two outstanding items are *case-study deliverables*,
+and they outrank every phase below:
 
-The other two outstanding items are *case-study deliverables*, and they outrank
-every phase below: **record the 5-minute demo video**, and **produce a shareable link**
-(no git remote, no deployment — GitHub repo, ngrok tunnel, or Render/Railway/Fly).
-The work cannot be graded while it only runs on one laptop.
+1. **Record the 5-minute demo video.** Read the 429 gotcha in §4 first — pace the
+   runs, or the live route quietly stops firing mid-demo.
+2. **Produce a shareable link.** No git remote, no deployment — options are a
+   GitHub repo, an ngrok tunnel, or Render/Railway/Fly. Note that a real
+   deployment needs `GEMINI_API_KEY` set as a host env var, not a committed
+   `.env`.
+
+The work cannot be graded while it only runs on one laptop. Neither item needs
+another line of pipeline code.
 
 Notes on the suite, for whoever changes it next:
 
 * It does **not** strip `GEMINI_API_KEY`. With a key present the suite runs the
   real `llm (text)` and `llm (vision)` routes; without one it runs `regex` /
   `none`. The fixture prints which mode ran, because a green suite means a
-  different thing in each. Know the tradeoff: in live mode the suite costs money,
-  needs a network, and is only as reproducible as the model. **Nobody has run it
-  in live mode yet** — there is still no `.env`.
+  different thing in each. **Both modes have now been run green** — 16s on regex,
+  65s live. In live mode the suite needs a network and burns quota, and a 429
+  makes it fall back rather than fail, so a green live run is not by itself proof
+  the model was consulted. Read the printed mode and the routes.
 * Cases share one DB and run in manifest order. An early failure cascades — that
   is inherent, since the later cases are *about* the state the earlier ones left.
 * Verified to actually bite: running `-k overflow` alone turns `03b` **APPROVED**
@@ -476,6 +520,10 @@ GitHub repo, an ngrok tunnel, or a real deploy to Render/Railway/Fly).
 | FX conversion must not widen auto-approval | Auto-approving on a rate fetched at run time makes the verdict depend on a third party and the clock. Default `convert_and_review`. |
 | Pydantic `Field()` rejected for confidence | It is class-level schema metadata; confidence is per-instance data. Use a generic `Tracked[T]` wrapper. |
 | Seed data tracked in git, `app.db` not | Tests assert against seed data; the DB is rebuilt on startup. |
+| **Google Gemini over Anthropic** | User's call, 2026-08-19. Free tier removes the "do I want to pay to demo this" question. The swap touched only `extraction.py` + `config.py` — proof the provider was never load-bearing. |
+| Model **pinned**, not `gemini-flash-latest` | An alias changes the model under a running system. An AP process must be able to say which model read an invoice approved months ago. |
+| `gemini-3.7-flash` over `gemini-3.6-flash` | Both extracted every field correctly from the scan; 3.7 did it in 3.7s vs 11.6s. Speed matters in a live demo. |
+| Test suite honours a live key rather than mocking | A mocked LLM proves nothing about whether extraction works. The cost is non-determinism, accepted knowingly — see §9. |
 
 ### Bugs already found and fixed — don't reintroduce
 
@@ -485,6 +533,15 @@ GitHub repo, an ngrok tunnel, or a real deploy to Render/Railway/Fly).
 4. PO regex emitted both `1002` and `PO-1002` → deduplicated; a bare number could
    collide with an unrelated PO.
 5. `requirements.txt` missing `pypdfium2`, still listing dead `pytesseract`.
+6. **Gemini client garbage-collected mid-call.**
+   `_client().models.generate_content(...)` left the `Client` unreferenced;
+   google-genai closes its HTTP transport when the Client is collected, so every
+   call died with *"Cannot send a request, as the client has been closed."* Hold
+   the client in a local. Note what made this expensive: the regex fallback
+   *masked* it — it surfaced as a tidy `route=none`, not a crash.
+7. **`gemini-2.0-flash` is retired** — the API 404s on it. Ask the API what it
+   can reach (`client.models.list()`) rather than trusting a model name from
+   documentation or memory.
 
 ---
 
