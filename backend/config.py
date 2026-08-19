@@ -98,6 +98,29 @@ GROQ_MODEL_DEFAULT = "openai/gpt-oss-120b"
 # environment, and auth.signing_secret() generates an ephemeral one rather than
 # falling back to a value committed to the repository.
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Environment
+#
+# One switch separates "a case study running on a laptop" from "a deployment
+# handling someone's payables". Everything that is convenient-but-unsafe --
+# demo accounts, an ephemeral signing key -- is allowed in development and
+# refused outright in production, at startup, before the app serves a request.
+#
+# Read at call time rather than bound at import, because load_dotenv() runs
+# after this module is imported and a constant would miss a value set in .env.
+# --------------------------------------------------------------------------
+APP_ENV_VAR = "APP_ENV"
+PRODUCTION_NAMES = ("production", "prod", "live")
+
+
+def app_env() -> str:
+    return os.environ.get(APP_ENV_VAR, "development").strip().lower()
+
+
+def is_production() -> bool:
+    return app_env() in PRODUCTION_NAMES
+
+
 AUTH_SECRET_ENV = "AUTH_SECRET"
 AUTH_ISSUER = os.environ.get("AUTH_ISSUER", "invoice-processing")
 AUTH_TOKEN_TTL_MINUTES = int(os.environ.get("AUTH_TOKEN_TTL_MINUTES", "480") or 480)
@@ -132,6 +155,28 @@ RATE_LIMIT_LOGIN_PER_MINUTE = int(os.environ.get("RATE_LIMIT_LOGIN_PER_MINUTE", 
 # app lets anyone reset their own rate-limit counter by inventing one. Turn it on
 # only when the app genuinely sits behind a proxy that overwrites it.
 TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "").strip() in ("1", "true", "True")
+
+# --------------------------------------------------------------------------
+# Daily extraction quota (circuit breaker)
+#
+# The per-minute rate limit stops a runaway script. It does NOT stop steady,
+# reasonable-looking use from quietly exhausting a provider for the rest of the
+# day -- and Gemini's free tier is 20 requests per DAY, on the only route that
+# can read a scanned invoice. Twenty polite requests an hour apart never trip a
+# per-minute limit and still leave the process unable to read a scan by lunch.
+#
+# So there is a second, slower guard: a daily budget per provider. When it is
+# spent, extraction takes its existing safe fallback WITHOUT calling the
+# provider -- text drops to regex, scans go to route "none" and therefore to a
+# human. No new decision semantics; the same paths a provider outage takes.
+#
+# Defaults leave real headroom: the vision budget matches the free tier exactly
+# so the breaker trips at the same moment the provider would start refusing,
+# and the text budget is generous because Groq is not the scarce one.
+# --------------------------------------------------------------------------
+DAILY_QUOTA_ENABLED = os.environ.get("DAILY_QUOTA_ENABLED", "1").strip() not in ("0", "false", "False", "")
+DAILY_QUOTA_VISION = int(os.environ.get("DAILY_QUOTA_VISION", "20") or 20)
+DAILY_QUOTA_TEXT = int(os.environ.get("DAILY_QUOTA_TEXT", "500") or 500)
 
 
 def load_dotenv():

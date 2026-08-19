@@ -127,6 +127,66 @@ def load_users() -> dict:
     return {r["username"]: r for r in rows if r.get("username")}
 
 
+def demo_usernames() -> List[str]:
+    """Accounts explicitly flagged as demo credentials in the user store.
+
+    The flag lives on the RECORD, not on the file path, so copying
+    data/users.json somewhere else and pointing AUTH_USERS_FILE at it does not
+    launder it into a production-safe account. A real account is one that does
+    not carry the flag.
+    """
+    return sorted(name for name, u in load_users().items() if u.get("demo"))
+
+
+def validate_production_config() -> List[str]:
+    """Configuration problems that must stop a production start. Empty in dev.
+
+    Returns the problems rather than raising so a caller can report all of them
+    at once -- being told about the missing secret, restarting, and only then
+    being told about the demo accounts is a poor way to learn this.
+    """
+    if not config.is_production():
+        return []
+
+    problems = []
+    if not os.environ.get(config.AUTH_SECRET_ENV, "").strip():
+        problems.append(
+            f"{config.AUTH_SECRET_ENV} is not set. Generate one with: "
+            f"python -c \"import secrets;print(secrets.token_urlsafe(48))\"")
+
+    demo = demo_usernames()
+    if demo:
+        problems.append(
+            f"the user store contains demo credentials ({', '.join(demo)}). "
+            f"Their passwords are published in this repository and on the sign-in "
+            f"screen. Point AUTH_USERS_FILE at a real user store, or replace this "
+            f"token issuer with your identity provider.")
+
+    if not load_users():
+        problems.append(
+            "the user store is empty or unreadable, so nobody could sign in. "
+            f"Check AUTH_USERS_FILE or {config.USERS_SEED}.")
+
+    if "*" in config.CORS_ORIGINS:
+        problems.append("CORS_ORIGINS contains '*'. Name the origins explicitly.")
+
+    return problems
+
+
+def enforce_production_config():
+    """Refuse to start a production process with an unsafe configuration.
+
+    Deliberately fatal rather than a warning. Every problem this catches is one
+    where the app would keep working perfectly and be quietly insecure -- which
+    is exactly the class of mistake that survives to production.
+    """
+    problems = validate_production_config()
+    if not problems:
+        return
+    header = f"Refusing to start with {config.APP_ENV_VAR}='{config.app_env()}':"
+    raise RuntimeError("\n".join([header] + [f"  - {p}" for p in problems]))
+
+
 def authenticate_user(username: str, password: str) -> Optional[dict]:
     """The user record, or None. Deliberately makes no distinction between
     "no such user" and "wrong password" to the caller."""
@@ -150,16 +210,28 @@ _RUNTIME_SECRET = None
 def signing_secret() -> str:
     """The HMAC secret for access tokens.
 
-    Taken from AUTH_SECRET. When that is unset a random one is generated for the
-    life of the process: there is deliberately NO hardcoded fallback, because a
-    default secret shipped in a repository is not a secret, and a deployment
-    that forgot to set one would be silently signing forgeable tokens. The cost
-    is that tokens do not survive a restart, which is the correct trade.
+    Taken from AUTH_SECRET. There is deliberately NO hardcoded fallback, because
+    a default secret shipped in a repository is not a secret and a deployment
+    that forgot to set one would be silently signing forgeable tokens.
+
+    In DEVELOPMENT an ephemeral per-process key is generated instead, so the
+    case study runs with no setup; the cost is that tokens die on restart, which
+    is the right trade for a laptop.
+
+    In PRODUCTION that fallback does not exist. An ephemeral key is not merely
+    inconvenient there -- it silently invalidates every session on each restart
+    and differs between workers, so tokens minted by one are rejected by
+    another. Startup refuses first (`validate_production_config`), and this is
+    the second gate in case the process was started some other way.
     """
     global _RUNTIME_SECRET
     env = os.environ.get(config.AUTH_SECRET_ENV, "").strip()
     if env:
         return env
+    if config.is_production():
+        raise RuntimeError(
+            f"{config.AUTH_SECRET_ENV} must be set when {config.APP_ENV_VAR} is "
+            f"'{config.app_env()}'. Refusing to sign tokens with an ephemeral key.")
     if _RUNTIME_SECRET is None:
         _RUNTIME_SECRET = secrets.token_urlsafe(48)
         print(f"[auth] {config.AUTH_SECRET_ENV} is not set — generated an ephemeral "

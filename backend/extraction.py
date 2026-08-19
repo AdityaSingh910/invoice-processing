@@ -646,7 +646,9 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
     separately, and passes the result here rather than re-opening the PDF.
     """
     info = {"page_count": 0, "has_text_layer": False, "route": None,
-            "provider": None, "vision_used": False, "notes": [], "error": None}
+            "provider": None, "vision_used": False, "notes": [], "error": None,
+            # Set to a provider name when the daily budget stopped the call.
+            "quota_exhausted": None}
 
     text, page_count, has_text = pre if pre is not None else extract_text(pdf_bytes)
     info["page_count"] = page_count
@@ -658,8 +660,16 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
     use_groq = config.has_groq_key()     # LLM text route
     use_vision = config.has_api_key()    # Gemini, the only route that reads images
 
+    import quota   # local import: keeps the regex route free of a DB dependency
+
     # Route 1: the document has a usable text layer -> Groq.
     if has_text:
+        # The daily budget is checked BEFORE the call, not after a failure --
+        # the point is to not spend the request at all once it is gone.
+        if use_groq and not quota.try_consume(quota.TEXT):
+            info["notes"].append(quota.exhausted_note(quota.TEXT))
+            info["quota_exhausted"] = quota.TEXT
+            use_groq = False
         if use_groq:
             try:
                 inv = groq_extract_text(text)
@@ -692,6 +702,14 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
 
     # Route 2: no text layer -> Gemini vision. Groq is text-only in this
     # pipeline and is never offered a page image.
+    # Vision is the scarce one, and the only route that can read a picture, so
+    # its budget is the one that really matters. Exhausted means route "none":
+    # empty fields and a human, exactly as when the provider is unreachable.
+    if use_vision and not quota.try_consume(quota.VISION):
+        info["notes"].append(quota.exhausted_note(quota.VISION))
+        info["quota_exhausted"] = quota.VISION
+        use_vision = False
+
     if use_vision:
         try:
             images = render_pages_png(pdf_bytes, config.MAX_PAGES_VISION)
@@ -710,9 +728,17 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
     # Route 3: nothing readable -- return empty rather than guess
     info["route"] = "none"
     info["provider"] = None
-    info["notes"].append(
-        "No embedded text and no vision extraction available. Set GEMINI_API_KEY "
-        "to read scanned invoices." if not use_vision else
-        "No embedded text and vision extraction did not return usable fields.")
+    if info["quota_exhausted"] == quota.VISION:
+        # The budget note above already said what happened. Adding "set
+        # GEMINI_API_KEY" here would send an operator to check a key that is
+        # present and working, which is worse than saying nothing.
+        pass
+    elif not use_vision:
+        info["notes"].append(
+            "No embedded text and no vision extraction available. Set GEMINI_API_KEY "
+            "to read scanned invoices.")
+    else:
+        info["notes"].append(
+            "No embedded text and vision extraction did not return usable fields.")
     inv = ExtractedInvoice(raw_text="", extraction_method="none")
     return inv, info

@@ -73,7 +73,15 @@ async def _unhandled_error(request: Request, exc: Exception):
 @app.on_event("startup")
 def _startup():
     config.load_dotenv()
+    # Refuse to come up with a production-unsafe configuration. Deliberately
+    # after load_dotenv (so .env is honoured) and before init_db, so a
+    # misconfigured deployment fails immediately rather than serving traffic.
+    # A no-op unless APP_ENV says this is production.
+    auth.enforce_production_config()
     storage.init_db()
+    if config.is_production():
+        print(f"[startup] {config.APP_ENV_VAR}={config.app_env()} — production "
+              f"configuration checks passed.", file=sys.stderr)
 
 
 def sse(event_type, payload):
