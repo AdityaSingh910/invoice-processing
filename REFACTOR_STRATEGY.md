@@ -1024,7 +1024,7 @@ Everything today is the inverse, which is why §4 of the audit failed.
     "code": "51e16b9",
     "policy_version": 3,
     "policy_checksum": "a91c4e77b2f0",
-    "extraction_model": "gemini-2.0-flash",
+    "extraction_model": "gemini-3.7-flash",
     "trace_schema": "1.0"
   },
 

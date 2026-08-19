@@ -37,7 +37,7 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Pipeline | ✅ Working, 9 stages, streamed live over SSE |
 | Samples | ✅ **7/7 passing** from a clean DB |
 | UI | ✅ Run view, dashboard, reference tab; light + dark |
-| Extraction route in use | **`regex`** — no `GEMINI_API_KEY` set |
+| Extraction route in use | **live** — `llm (text)` / `llm (vision)` verified against `gemini-3.7-flash` |
 | Automated tests | ✅ **7/7 passing** — `tests/test_samples.py`, manifest-driven, isolated DB |
 | Known defects | **3 live bugs**, all documented, none fixed |
 | Deployed | ❌ Local only, no git remote, no hosting |
@@ -115,6 +115,14 @@ netstat -ano | grep ":8000" | grep LISTENING | awk '{print $5}' \
   | while read pid; do taskkill //F //PID $pid >/dev/null 2>&1; done
 sleep 1.5 && rm -f data/app.db
 ```
+
+**The Gemini free tier rate-limits hard (HTTP 429).** Running all 7 samples
+back to back exhausts quota within a minute, and the pipeline then falls back to
+`regex` -- silently, by design, since a note is attached but the verdict still
+comes out right on these fixtures. Verified: 4 of 7 samples fell back this way on
+a second consecutive full run. **Before demoing "the AI reads it", pause between
+runs or the live route may not actually fire.** A 429 is indistinguishable from
+any other API failure in the run view; both read as "used regex instead".
 
 **`/tmp` is not reliably writable** in this Git Bash environment. Use the
 scratchpad directory for temp files, not `/tmp` and not the project root.
@@ -217,7 +225,7 @@ for want of a key.
 What *has* been verified: the rasterisation half of the vision route. Running
 `render_pages_png()` on `05_scanned_no_text.pdf` produces a clean, fully legible
 1224×1584 PNG, so the pypdfium2 plumbing works. The only unproven link is the
-API call itself (`llm_extract_vision`, `extraction.py:188`; `llm_extract_text`
+API call itself (`llm_extract_vision`, `extraction.py:193`; `llm_extract_text`
 at `extraction.py:178`). To enable, create `.env` in the project
 root:
 
@@ -226,7 +234,7 @@ GEMINI_API_KEY=...
 ```
 
 `.env` is gitignored; the key is never sent to the browser. Provider is **Google
-Gemini** via Google AI Studio (`google-genai`); model is `gemini-2.0-flash`
+Gemini** via Google AI Studio (`google-genai`); model is `gemini-3.7-flash`
 (`config.EXTRACTION_MODEL`, key name in `config.API_KEY_ENV`). Both routes ask
 for `response_mime_type="application/json"`, though `_parse_llm_json` still runs
 on the reply -- a mime type is a strong constraint, not a guarantee. Rasterisation uses **pypdfium2**
@@ -247,7 +255,7 @@ backend/
   main.py         292 lines. FastAPI app, the 9-stage pipeline as an async
                   generator yielding SSE events, _abort_unreadable() path,
                   all endpoints.
-  extraction.py   415 lines. PDF → text (pdfplumber) → fields. Three routes,
+  extraction.py   421 lines. PDF → text (pdfplumber) → fields. Three routes,
                   SCHEMA_PROMPT for the LLM, regex fallback with tiered
                   patterns, _guess_vendor positional heuristic, PdfUnreadable.
   matching.py      84 lines. PO lookup (explicit refs then inferred),
@@ -259,7 +267,7 @@ backend/
                   EVERY startup. consumed_amount_for_po, find_duplicate,
                   save_run, list_runs.
   schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
-  config.py        61 lines. .env loader, upload/page caps, model name.
+  config.py        65 lines. .env loader, upload/page caps, model name.
                   Operational settings only — no business rules.
 frontend/
   index.html      Three tabs: Run, Dashboard, Reference.

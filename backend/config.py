@@ -17,7 +17,11 @@ MAX_PAGES_VISION = 3                  # pages sent to the vision model
 # Google Gemini via Google AI Studio. The extraction layer is the only place
 # a model is used at all -- every decision downstream of it is plain Python.
 API_KEY_ENV = "GEMINI_API_KEY"
-EXTRACTION_MODEL = "gemini-2.0-flash"
+# Pinned to a specific version, not the "gemini-flash-latest" alias: an alias
+# silently changes the model under a running system, and an AP process has to
+# be able to say which model read an invoice that was approved months ago.
+# gemini-2.0-flash was retired -- the API returns 404 for it.
+EXTRACTION_MODEL = "gemini-3.7-flash"
 
 
 def load_dotenv():

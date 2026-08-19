@@ -177,7 +177,12 @@ def _json_config():
 
 def llm_extract_text(text: str, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice:
     """Route 1: read the fields out of an embedded text layer."""
-    resp = _client().models.generate_content(
+    # Hold the client in a local. `_client().models.generate_content(...)` leaves
+    # the Client itself unreferenced, and google-genai closes its HTTP transport
+    # when the Client is collected -- which can happen before the call completes,
+    # surfacing as "Cannot send a request, as the client has been closed."
+    client = _client()
+    resp = client.models.generate_content(
         model=config.EXTRACTION_MODEL,
         contents=[prompt, "Invoice text:\n\n" + text[:60000]],
         config=_json_config(),
@@ -201,7 +206,8 @@ def llm_extract_vision(png_bytes, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoi
         contents.append(types.Part.from_bytes(data=png, mime_type="image/png"))
     contents.append("Extract the invoice fields from these page image(s).")
 
-    resp = _client().models.generate_content(
+    client = _client()   # local reference -- see llm_extract_text
+    resp = client.models.generate_content(
         model=config.EXTRACTION_MODEL,
         contents=contents,
         config=_json_config(),
