@@ -11,6 +11,7 @@ __pycache__/
 # Runtime state. Seed data (data/*.json) IS tracked; the working DB is not,
 # since it is rebuilt from seed on startup and every run mutates it.
 data/app.db
+data/app.db.bak
 
 # Local scratch
 _shots/

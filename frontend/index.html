@@ -104,6 +104,17 @@
               <table id="extractedTable" class="kv-table"></table>
             </div>
           </div>
+
+          <!-- The evidence behind the verdict: what was compared, against which
+               PO record, and which rules passed. Collapsed by default so it
+               does not compete with the verdict, but one click from it. -->
+          <div id="auditCard" class="card hidden">
+            <div class="card-head">
+              <h2>Decision details</h2>
+              <span class="hint-chip">audit trail</span>
+            </div>
+            <div id="auditBody"></div>
+          </div>
         </div>
       </div>
     </section>
