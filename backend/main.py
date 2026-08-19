@@ -38,7 +38,20 @@ if config.CORS_ORIGINS:
         allow_headers=["Authorization", "Content-Type"],
     )
 
-FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
+# Which UI to serve.
+#
+# The Next.js app is a STATIC EXPORT: `npm run build` in frontend-next/ emits
+# plain HTML/JS into out/, with no Node process at runtime. Serving it from here
+# keeps the UI same-origin with the API, so the browser's relative /api/... calls
+# resolve without CORS, a base URL, or a second port to get wrong.
+#
+# The original vanilla frontend stays as the fallback, so a clone that has never
+# run npm still boots a working UI and the test suite is unaffected.
+_NEXT_EXPORT = os.path.join(os.path.dirname(__file__), "..", "frontend-next", "out")
+_VANILLA = os.path.join(os.path.dirname(__file__), "..", "frontend")
+
+FRONTEND_DIR = _NEXT_EXPORT if os.path.isfile(
+    os.path.join(_NEXT_EXPORT, "index.html")) else _VANILLA
 
 
 # --------------------------------------------------------------------------
