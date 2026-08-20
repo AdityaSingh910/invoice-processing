@@ -122,13 +122,32 @@ export interface PoUsage {
   over: boolean;
 }
 
-/** Consumption mirrors the backend rule exactly: only APPROVED runs consume a
- *  PO's budget. Held and rejected invoices deliberately do not. */
+/**
+ * Consumption mirrors the backend rule exactly: only APPROVED runs consume a
+ * PO's budget, and each run consumes through its ALLOCATIONS — how much of it
+ * was charged to which PO — not through its total.
+ *
+ * That distinction matters here as much as it does in SQL. Adding `r.total` to
+ * `r.po_number` charges an invoice covering several POs entirely to the first
+ * one, which is the defect this screen would otherwise reproduce in the browser:
+ * the backend ledger would read one thing and this chart another.
+ *
+ * Runs recorded before allocations existed carry their charge in
+ * (po_number, total), which is exactly the single allocation they always
+ * implied — so the fallback is not a guess.
+ */
 export function poUsage(runs: RunRecord[], pos: PurchaseOrder[]): PoUsage[] {
   const consumed = new Map<string, number>();
   for (const r of runs) {
-    if (r.status !== "APPROVED" || !r.po_number) continue;
-    consumed.set(r.po_number, (consumed.get(r.po_number) || 0) + (r.total || 0));
+    if (r.status !== "APPROVED") continue;
+    const allocations = r.po_match?.allocations?.length
+      ? r.po_match.allocations
+      : r.po_number
+        ? [{ po_number: r.po_number, amount: r.total || 0 }]
+        : [];
+    for (const a of allocations) {
+      consumed.set(a.po_number, (consumed.get(a.po_number) || 0) + (a.amount || 0));
+    }
   }
 
   return pos.map((po) => {

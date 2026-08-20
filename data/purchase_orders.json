@@ -43,5 +43,23 @@
     "issued_date": "2026-07-20",
     "status": "open",
     "description": "Replacement hardware batch"
+  },
+  {
+    "po_number": "PO-1006",
+    "vendor": "Wayne Facilities",
+    "amount": 4000.00,
+    "currency": "USD",
+    "issued_date": "2026-07-02",
+    "status": "open",
+    "description": "Q3 facilities maintenance"
+  },
+  {
+    "po_number": "PO-1007",
+    "vendor": "Wayne Facilities",
+    "amount": 2500.00,
+    "currency": "USD",
+    "issued_date": "2026-07-02",
+    "status": "open",
+    "description": "Q3 groundskeeping"
   }
 ]

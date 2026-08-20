@@ -12,16 +12,16 @@ Built for the Zamp AI Solutions Associate case study, **PS-1 (Finance / AP)**.
 
 ## Where the project stands right now
 
-**The app runs. All 7 sample invoices produce their expected verdicts, and the
+**The app runs. All 8 sample invoices produce their expected verdicts, and the
 suite is green.**
 
 | | |
 |---|---|
 | Pipeline | Working, 9 stages, streamed live to the browser |
-| Sample invoices | 7 / 7 matching the manifest, driven through the real pipeline |
+| Sample invoices | 8 / 8 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light + dark |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **359 passing** deterministically, 15 files, no live API calls |
+| Automated tests | **401 passing** deterministically, 17 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
@@ -93,6 +93,14 @@ who knew the URL and the reviewer's identity was whatever the client typed.
 Now OAuth 2.0 bearer tokens, scopes, per-user rate limits, real input validation
 and a daily extraction budget.
 
+**11. Invoices covering several POs.** The ledger charged a run's whole total to
+one `po_number`, so a consolidated invoice over-consumed the first PO it named by
+the value of the others and never touched them. Fixed in the order the design
+required: a `run_allocations` table first, behaviour-neutral and verified against
+a migrated legacy database, then multi-PO matching on top of it. The split itself
+is calculated rather than read, so such an invoice is always held for a person —
+see [Invoices covering several POs](#invoices-covering-several-pos).
+
 ---
 
 ## Quick start (Windows)
@@ -150,7 +158,7 @@ start refuses to boot while they exist — see [Running in production](#running-
 .\venv\Scripts\python.exe -m pytest tests\ -q
 ```
 
-**359 tests across 15 files.** They mock both providers, so they need no API
+**401 tests across 17 files.** They mock both providers, so they need no API
 key, no network and no quota. With keys present, `tests/test_samples.py` additionally exercises the
 real Groq and Gemini routes end to end — the fixture prints which mode ran,
 because a green suite means a different thing in each.
@@ -172,7 +180,7 @@ Two ways back to a clean slate:
 
 - **In the app** — sign in as `admin` and use **Reset demo data** on Overview.
 - **From a terminal** — `.\reset-demo.ps1`, or `.\reset-demo.ps1 -Replay` to
-  clear and then drive all seven samples through the API in order.
+  clear and then drive all eight samples through the API in order.
 
 Both clear run history only. Purchase orders, vendors and users are seed data in
 `data/*.json` and are reloaded on startup, so nothing is lost that re-running an
@@ -207,6 +215,7 @@ Regenerate anytime with `python sample_invoices/generate_invoices.py`.
 | `04_missing_invoice_number.pdf` | Amounts fine, but no audit key | **NEEDS_REVIEW** |
 | `05_scanned_no_text.pdf` | Image-only PDF, no text layer | **NEEDS_REVIEW** † |
 | `06_duplicate_of_01.pdf` | Resubmission of `INV-2201` | **REJECTED** |
+| `07_multi_po_wayne.pdf` | One invoice covering two POs | **NEEDS_REVIEW** ‡ |
 
 **Order matters.** Several cases are history-dependent by design:
 
@@ -225,6 +234,15 @@ image and it approves. `manifest.json` carries both expectations and the UI
 resolves against key presence. Same bytes, different verdict, because a
 different capability was available — a better story for a non-technical audience
 than the split-PO case.
+
+‡ **Sample 07 is the one that is held even though nothing is wrong with it.**
+It bills $6,500 against `PO-1006` ($4,000) and `PO-1007` ($2,500), which together
+authorise exactly that — every dollar is approved, the vendor is on the list, the
+arithmetic is right. What the document never says is *which PO each line belongs
+to*. The process works out the obvious division, shows it, and still refuses to
+act on it, because a division it calculated is a proposal and not an
+authorisation. Accept it as a reviewer and both POs are charged their own share.
+See [Invoices covering several POs](#invoices-covering-several-pos).
 
 Sample `04` also flags an arithmetic inconsistency: the document states
 `Subtotal $8,200 + Tax $0.00 = Total $8,150`, which does not add up. Both
@@ -316,6 +334,40 @@ doesn't block the queue behind it, and the run history *is* the ledger — no
 counter can drift out of sync. It also makes idempotency and reversal
 structural rather than defended: there is nothing to deduct twice, and moving a
 run out of APPROVED refunds it in the same instant.
+
+### Invoices covering several POs
+
+A consolidated invoice references more than one purchase order. Two things have
+to be right for that to work, and they are separate problems.
+
+**Representing it.** The ledger records how much of each run was charged to
+*which* PO, in a `run_allocations` table, and consumption sums those allocations.
+It used to sum run totals against a single `po_number` column, which meant an
+invoice covering two POs was charged entirely to the first — over-consuming it by
+the value of the second while the second stayed untouched. An ordinary invoice is
+now simply a run with one allocation, so there is no special case.
+
+This is **not** the stored counter that was rejected earlier. An allocation is an
+immutable fact about a run; whether it *counts* is still derived at read time by
+joining to `status='APPROVED'`. Nothing is deducted, so nothing can be deducted
+twice, and reversing a run refunds every PO it touched in the same instant.
+
+**Dividing it.** Nothing on the document says how much belongs to each PO — line
+items carry no PO references — so any division is computed rather than read. The
+process computes one (fill each PO to its remaining balance, in the order the
+invoice named them) and then **refuses to act on it**: a multi-PO invoice is
+always `NEEDS_REVIEW`, even when the combined balance covers it comfortably.
+
+That is the same objection that already holds an *inferred* single-PO match,
+applied to the division instead of the binding. Approving would commit money
+against purchase orders in amounts no document and no person ever specified. The
+proposal is stored and shown, so the reviewer confirms figures rather than
+working them out, and the audit trail records `allocation_basis: calculated` to
+distinguish a computed split from a single-PO charge.
+
+If the invoice exceeds every balance combined, the excess lands on the last PO
+rather than vanishing — the allocations must sum to the invoice total, or the
+ledger is describing money nobody billed — and that PO is flagged as over.
 
 ### Extraction routes
 
@@ -517,8 +569,9 @@ What is still true, by design rather than accident, and queued for later phases:
   a given invoice.
 - Reference data is **re-seeded from JSON on every startup**, so editing
   `purchase_orders.json` silently changes what historical runs refer to.
-- The schema stores **one `po_number` per run**, so a consolidated invoice
-  spanning several POs would over-consume each of them.
+- A multi-PO invoice's **split is proposed, not read**, so it always needs a
+  human. Deriving it from the document would need per-line-item PO references,
+  which is line-item decomposition — Phase 6.
 - `extraction._first()` strips a **leading minus sign** off a captured amount,
   so `Total Due: -500.00` extracts as positive 500. Accounting parentheses are
   unaffected. The amount rule cannot catch a sign the extractor discarded.
@@ -541,21 +594,22 @@ availability, so the badge can briefly contradict the run beside it.
 | **1** | Inferred-PO safety, currency, arithmetic, invalid amounts, vendor matching | ✅ done |
 | **2** | `Tracked[T]` provenance wrapper, per-route confidence, the **confidence gate** | ⬜ |
 | **3** | `rules.yaml` — pull every threshold out of Python, stamp the version on each run | ◨ thresholds centralised; YAML + loader to do |
-| **4** | Transaction boundaries and the `run_allocations` ledger table | ◨ transactions done; allocations to do |
+| **4** | Transaction boundaries and the `run_allocations` ledger table | ✅ done |
 | **5** | `DecisionTrace` + reference snapshot; stop re-seeding on startup | ◨ audit trail done; snapshot to do |
-| **6** | Line-item decomposition, multi-PO consolidation, FX provider | ⬜ |
-| **7** | UI: confidence badges, evidence snippets, allocation view | ⬜ |
+| **6** | Line-item decomposition, multi-PO consolidation, FX provider | ◨ multi-PO done; line items + FX to do |
+| **7** | UI: confidence badges, evidence snippets, allocation view | ◨ allocation view done; confidence to do |
 
 **The most valuable thing left** is Phase 2's confidence gate — it closes the
 low-confidence auto-approve problem as a *class* rather than case by case.
-Nothing in Phases 2–7 changes a verdict on any of the seven samples, though, so
+Nothing in the phases still open changes a verdict on any of the eight samples, so
 none of it is what is blocking the case study.
 
-**One sequencing trap worth knowing:** multi-PO consolidation is a *ledger*
-feature, not a matching feature. The schema stores one `po_number` per run and
-consumption sums run totals, so a consolidated invoice would over-consume every
-PO it touched. It needs the allocations table, which needs transaction
-boundaries first. Phase 4 before Phase 6, always.
+**The sequencing trap this already hit:** multi-PO consolidation was a *ledger*
+feature, not a matching feature. Teaching the matcher to bind several POs while
+the schema still stored one `po_number` per run would have over-consumed every PO
+an invoice touched. The allocations table landed first, on its own and
+behaviour-neutral, and multi-PO matching second. Phase 4 before Phase 6, as
+planned.
 
 **For the case study itself:** deploy it somewhere shareable and record the
 5-minute demo video. Neither needs another line of pipeline code.
@@ -590,9 +644,9 @@ frontend-next/    The UI. Next.js 15 + React 19 + Tailwind v4, TypeScript
   lib/            API client, auth context, metrics, formatting, types
 frontend/         The original vanilla UI, kept as a no-build fallback
 data/             Seed POs + vendors + demo users (tracked); app.db (not tracked)
-sample_invoices/  7 PDFs, the generator, and manifest.json of scenarios
+sample_invoices/  8 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            15 files, 359 tests, both providers mocked
+tests/            17 files, 401 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

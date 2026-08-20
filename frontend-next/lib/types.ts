@@ -33,10 +33,35 @@ export interface Stage {
 /** Reasons arrive either as plain strings (legacy) or as levelled objects. */
 export type Reason = string | { level?: Level; text: string };
 
+/**
+ * How much of an invoice was charged to one purchase order.
+ *
+ * An ordinary invoice has exactly one of these, for its full total. An invoice
+ * spanning several POs has one per PO, and they always sum to the invoice total
+ * — that invariant is what the ledger consumes against.
+ */
+export interface Allocation {
+  po_number: string;
+  amount: number;
+  po_amount?: number | null;
+  po_vendor?: string | null;
+  po_status?: string | null;
+  consumed_before?: number | null;
+  remaining_before?: number | null;
+  remaining_after?: number | null;
+  /** True when this PO was charged beyond its remaining balance. */
+  over?: boolean;
+  source_file?: string | null;
+  source_row?: number | null;
+}
+
 export interface PoMatch {
+  /** The FIRST PO referenced. Kept for display; the money is in `allocations`. */
   po_number: string | null;
   po_vendor?: string | null;
+  /** Combined across every bound PO when the invoice spans more than one. */
   po_amount?: number | null;
+  po_status?: string | null;
   matched_via?: string | null;
   invoice_total?: number | null;
   consumed_before?: number | null;
@@ -46,6 +71,10 @@ export interface PoMatch {
   is_partial?: boolean;
   diff?: number | null;
   tolerance?: number | null;
+  po_numbers?: string[];
+  allocations?: Allocation[];
+  is_multi?: boolean;
+  closed_pos?: string[];
 }
 
 export interface AuditRule {
@@ -65,7 +94,17 @@ export interface Audit {
     po_currency?: string | null;
     source_file?: string | null;
     source_row?: number | null;
+    po_numbers?: string[];
+    is_multi?: boolean;
   };
+  allocations?: Allocation[];
+  /**
+   * Where the division of the invoice across POs came from.
+   * `single_po` — the whole total on one PO, which is a fact.
+   * `calculated` — the document stated no split and the process proposed one,
+   *   which is why such a run is always held for a human.
+   */
+  allocation_basis?: "single_po" | "calculated" | null;
   comparison?: {
     invoice_total?: number | null;
     po_amount?: number | null;
@@ -103,6 +142,8 @@ export interface RunRecord {
   created_at: string;
   reasons: Reason[];
   stages: Stage[];
+  /** Present on every stored run; carries the allocations the ledger consumed. */
+  po_match?: PoMatch;
   audit?: Audit;
   automated_decision?: Verdict;
   human_decision?: string | null;

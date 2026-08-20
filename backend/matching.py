@@ -55,6 +55,13 @@ def empty_match(invoice_total):
         "within_tolerance": False,
         "is_partial": False,
         "over_within_tolerance": False,
+        # Every PO this invoice referenced, and how much of the total is charged
+        # to each. One entry for an ordinary invoice; several for one that spans
+        # purchase orders. The ledger consumes THESE, not the invoice total.
+        "po_numbers": [],
+        "allocations": [],
+        "is_multi": False,
+        "closed_pos": [],
         # Why inference declined to bind a PO, when it was attempted:
         # None | "ambiguous" | "no_close_candidate".
         "inference": None,
@@ -64,19 +71,84 @@ def empty_match(invoice_total):
     }
 
 
+def split_across(positions, total):
+    """Divide an invoice total across the POs it references, in document order.
+
+    Each PO is filled up to its remaining balance before the next is touched,
+    and the LAST one absorbs anything still unallocated. That last rule is what
+    keeps the ledger honest: the allocations must sum to the invoice total, or
+    the ledger is describing money nobody billed. When the invoice exceeds every
+    balance combined, the excess has to land somewhere visible rather than
+    vanishing, and it shows up as the final PO being over-consumed -- which the
+    combined tolerance check then reports.
+
+    Order-and-fill rather than pro-rata because it produces numbers an AP clerk
+    can check against the document ("PO-1001 was settled in full, the balance
+    went to PO-1002") instead of percentages that appear on no invoice.
+
+    THIS IS A PROPOSAL, NOT A READING. Nothing on the document says how to
+    divide the money -- line items do not carry PO references -- so this split is
+    computed. That is exactly why a multi-PO invoice is never auto-approved; see
+    decide().
+
+    Reduces to "the whole total" for a single PO, so an ordinary invoice is not
+    a separate code path.
+    """
+    amounts = []
+    left = round(float(total or 0), 2)
+    last = len(positions) - 1
+    for i, pos in enumerate(positions):
+        if i == last:
+            amount = round(left, 2)
+        else:
+            cap = max(0.0, pos["remaining_before"])
+            amount = round(min(left, cap), 2)
+        amounts.append(amount)
+        left = round(left - amount, 2)
+    return amounts
+
+
+def _position(po_row, exclude_run_id=None):
+    """A PO's balance as it stands before this invoice."""
+    consumed = storage.consumed_amount_for_po(po_row["po_number"],
+                                              exclude_run_id=exclude_run_id)
+    return {
+        "po_number": po_row["po_number"],
+        "po_vendor": po_row["vendor"],
+        "po_amount": po_row["amount"],
+        "po_status": po_row["status"],
+        "po_currency": _norm_currency(po_row.get("currency")),
+        "source_file": _row_get(po_row, "source_file"),
+        "source_row": _row_get(po_row, "source_row"),
+        "consumed_before": round(consumed, 2),
+        "remaining_before": round(po_row["amount"] - consumed, 2),
+    }
+
+
 def match_po(extracted: dict, exclude_run_id=None):
     """Returns a po_match dict describing what PO (if any) this invoice lines up
-    against, and the remaining balance on that PO before/after this invoice."""
+    against, and the remaining balance on that PO before/after this invoice.
+
+    An invoice may reference SEVERAL purchase orders. Every one that resolves is
+    bound, and the total is split across them by split_across(); the top-level
+    figures then describe the combined position, so the tolerance arithmetic
+    compares the invoice against everything it was actually charged to.
+
+    This used to bind the FIRST resolvable reference and ignore the rest, which
+    charged the whole invoice to one PO -- over-consuming it by the value of the
+    others while those stayed untouched.
+    """
     candidates = extracted.get("po_references") or []
-    po_row = None
+    po_rows = []
+    seen = set()
     matched_via = "none"
 
     for ref in candidates:
         row = storage.get_po(ref)
-        if row:
-            po_row = row
+        if row and row["po_number"] not in seen:
+            seen.add(row["po_number"])
+            po_rows.append(row)
             matched_via = "explicit"
-            break
 
     # No explicit reference: fall back to inferring one from vendor + amount.
     #
@@ -95,7 +167,7 @@ def match_po(extracted: dict, exclude_run_id=None):
     # reasoning trail can say "amount matched no PO" rather than the much less
     # useful "no PO found".
     inference = None
-    if po_row is None:
+    if not po_rows:
         vendor = storage.find_vendor(extracted.get("vendor_name") or "")
         total = extracted.get("total")
         if vendor and total:
@@ -103,21 +175,40 @@ def match_po(extracted: dict, exclude_run_id=None):
                    if p["vendor"] == vendor["vendor_name"]]
             near = [p for p in pos if abs(p["amount"] - total) <= tolerance_for(p["amount"])]
             if len(near) == 1:
-                po_row = near[0]
+                po_rows = [near[0]]
                 matched_via = "inferred"
             elif len(near) > 1:
                 inference = "ambiguous"
             elif pos:
                 inference = "no_close_candidate"
 
-    if po_row is None:
+    if not po_rows:
         return dict(empty_match(extracted.get("total")), inference=inference)
 
-    consumed = storage.consumed_amount_for_po(po_row["po_number"], exclude_run_id=exclude_run_id)
-    remaining_before = round(po_row["amount"] - consumed, 2)
+    positions = [_position(r, exclude_run_id) for r in po_rows]
+    primary = positions[0]
+    is_multi = len(positions) > 1
+
+    # The combined position. For a single PO these all reduce to that PO's own
+    # figures, so an ordinary invoice takes exactly the path it always did.
+    po_amount = round(sum(p["po_amount"] for p in positions), 2)
+    consumed = round(sum(p["consumed_before"] for p in positions), 2)
+    remaining_before = round(sum(p["remaining_before"] for p in positions), 2)
     total = extracted.get("total") or 0
-    tol = tolerance_for(remaining_before if remaining_before > 0 else po_row["amount"])
+    tol = tolerance_for(remaining_before if remaining_before > 0 else po_amount)
     diff = round(total - remaining_before, 2)
+
+    # How the total is charged. For a multi-PO invoice this is a computed
+    # proposal, which is why decide() holds it for a human rather than acting
+    # on it; for a single PO it is simply the whole total.
+    amounts = split_across(positions, total)
+    allocations = [
+        dict(p, amount=amt,
+             remaining_after=round(p["remaining_before"] - amt, 2),
+             over=amt > p["remaining_before"] + tolerance_for(
+                 p["remaining_before"] if p["remaining_before"] > 0 else p["po_amount"]))
+        for p, amt in zip(positions, amounts)
+    ]
     # Tolerance only bounds the OVER side: an invoice asking for more than the
     # remaining PO balance (beyond a small tolerance) is a real problem -- the
     # vendor is billing for money that isn't authorized. An invoice for LESS than
@@ -142,23 +233,34 @@ def match_po(extracted: dict, exclude_run_id=None):
     # USD-marked one. That is an extraction question, not a matching one; the
     # comparison here errs toward review whenever the two disagree.
     invoice_currency = _norm_currency(extracted.get("currency"))
-    po_currency = _norm_currency(po_row.get("currency"))
-    currency_mismatch = bool(invoice_currency and po_currency
-                             and invoice_currency != po_currency)
+    # Any referenced PO in a different currency makes the combined comparison
+    # meaningless, not just the one that differs -- the balances above were
+    # summed as bare numbers.
+    po_currencies = [p["po_currency"] for p in positions if p["po_currency"]]
+    currency_mismatch = bool(invoice_currency and po_currencies
+                             and any(c != invoice_currency for c in po_currencies))
+
+    # Closed POs. Reported at the top level as "any of them", with the specific
+    # ones named in `closed_pos` so the trail can say which rather than implying
+    # it was the primary.
+    closed = [p["po_number"] for p in positions if p["po_status"] == "closed"]
 
     return {
-        "po_number": po_row["po_number"],
-        "po_vendor": po_row["vendor"],
-        "po_amount": po_row["amount"],
-        "po_status": po_row["status"],
+        # The PRIMARY po, kept so `runs.po_number`, the dashboard and every
+        # existing consumer stay meaningful. For a multi-PO invoice the full set
+        # is in `po_numbers` and the money is in `allocations`.
+        "po_number": primary["po_number"],
+        "po_vendor": primary["po_vendor"],
+        "po_amount": po_amount,
+        "po_status": "closed" if closed else primary["po_status"],
         # Where the PO record itself came from, carried through so the audit
         # trail can cite the source of the balance it compared against rather
         # than presenting a number with no origin. Read off the stored row --
         # never derived here, so an unknown source stays unknown.
-        "po_source_file": _row_get(po_row, "source_file"),
-        "po_source_row": _row_get(po_row, "source_row"),
+        "po_source_file": primary["source_file"],
+        "po_source_row": primary["source_row"],
         "matched_via": matched_via,
-        "consumed_before": round(consumed, 2),
+        "consumed_before": consumed,
         "invoice_total": round(total, 2),
         "remaining_before": remaining_before,
         "remaining_after": round(remaining_before - total, 2) if within else remaining_before,
@@ -169,6 +271,10 @@ def match_po(extracted: dict, exclude_run_id=None):
         "over_within_tolerance": over_within_tolerance,
         "inference": inference,
         "invoice_currency": invoice_currency,
-        "po_currency": po_currency,
+        "po_currency": primary["po_currency"],
         "currency_mismatch": currency_mismatch,
+        "po_numbers": [p["po_number"] for p in positions],
+        "allocations": allocations,
+        "is_multi": is_multi,
+        "closed_pos": closed,
     }

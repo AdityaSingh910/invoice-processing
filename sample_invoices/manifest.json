@@ -41,5 +41,11 @@
     "note": "Resubmission of INV-2201. Run the happy path first",
     "expect": "REJECTED",
     "order": 7
+  },
+  "07_multi_po_wayne.pdf": {
+    "label": "Covers two POs",
+    "note": "$6,500 against PO-1006 + PO-1007, which together authorise exactly that. Every dollar is approved, but the invoice never says which PO each line belongs to, so the split is calculated and held for a person to confirm.",
+    "expect": "NEEDS_REVIEW",
+    "order": 8
   }
 }

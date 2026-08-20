@@ -168,6 +168,14 @@ def reevaluate_po_queue(po_number: str, triggered_by: int = None):
         if blockers:
             continue
 
+        # A multi-PO invoice is never released by this path. It is not held
+        # because a balance was short -- it is held because the document never
+        # said how to divide the money, and freeing budget says nothing about
+        # that. Approving it here would let a reversal elsewhere commit a split
+        # no person ever confirmed.
+        if len(storage.allocations_for_run(run["id"])) > 1:
+            continue
+
         total = run.get("total")
         if total is None:
             continue
@@ -482,11 +490,52 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
                f"No purchase order bound (inference: {po_match.get('inference') or 'not attempted'})",
                reason="No matching purchase order could be identified.")
     else:
+        allocations = po_match.get("allocations") or []
+        is_multi = bool(po_match.get("is_multi"))
+        po_list = ", ".join(po_match.get("po_numbers") or [po_match["po_number"]])
+
         _check("PO matched", True,
-               f"{po_match['po_number']} ({po_match['matched_via']} match)")
+               f"{po_list} ({po_match['matched_via']} match)" if is_multi
+               else f"{po_match['po_number']} ({po_match['matched_via']} match)")
+
+        # An invoice covering several POs is represented correctly -- each PO is
+        # bound and the total is split across them -- but it is never approved
+        # automatically, and the reason is not caution for its own sake.
+        #
+        # Nothing on the document states the split. Line items do not carry PO
+        # references, so the division is computed by split_across(): fill each PO
+        # to its remaining balance in the order the invoice named them. That is a
+        # reasonable proposal and it is not evidence. Approving it would commit
+        # money against purchase orders in amounts no human and no document ever
+        # specified -- the same objection that already holds an INFERRED single-PO
+        # match for review, applied to the division rather than to the binding.
+        #
+        # The proposal is still computed, stored and shown, so the reviewer
+        # confirms figures rather than working them out.
+        if is_multi:
+            review = True
+            add(
+                f"This invoice covers {len(allocations)} purchase orders ({po_list}). "
+                f"The document does not state how much belongs to each, so the split below "
+                f"was calculated — each PO filled to its remaining balance in the order the "
+                f"invoice referenced them — and is a proposal for a person to confirm, not "
+                f"grounds for automatic approval. "
+                + "; ".join(f"{a['po_number']} ${a['amount']:.2f} of ${a['remaining_before']:.2f} remaining"
+                            for a in allocations),
+                "fail",
+            )
+        _check("Invoice-to-PO split stated", not is_multi,
+               f"Invoice spans {len(allocations)} POs and the document states no split"
+               if is_multi else "Invoice charges a single purchase order",
+               reason="Invoice covers multiple purchase orders and the split between them "
+                      "was calculated rather than stated on the document.")
+
         if po_match["po_status"] == "closed":
             review = True
-            add(f"Matched PO {po_match['po_number']} but it is already closed.", "fail")
+            closed = po_match.get("closed_pos") or [po_match["po_number"]]
+            add(f"Matched PO {', '.join(closed)} but it is already closed."
+                if len(closed) == 1 else
+                f"Matched POs {', '.join(closed)} but they are already closed.", "fail")
 
         # Currency is checked before any of the amount reasoning below, because
         # when the units differ none of that reasoning means anything: "within
@@ -523,16 +572,32 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
                 f"for automatic approval.",
                 "warn",
             )
+        elif is_multi:
+            add(f"Matched explicit PO references {po_list}.", "ok")
         else:
             add(f"Matched explicit PO reference {po_match['po_number']}.", "ok")
 
         if po_match["remaining_before"] is not None and po_match["remaining_before"] < po_match["po_amount"]:
-            add(
-                f"PO {po_match['po_number']} had ${po_match['po_amount']:.2f} total, "
-                f"${po_match['po_amount'] - po_match['remaining_before']:.2f} already consumed by prior "
-                f"approved invoices, ${po_match['remaining_before']:.2f} remaining before this invoice.",
-                "info",
-            )
+            # For a multi-PO invoice these are sums across every bound PO, so
+            # the sentence has to say so -- naming the primary beside a combined
+            # figure would attribute the other POs' budget to it.
+            if is_multi:
+                add(
+                    f"POs {po_list} authorise ${po_match['po_amount']:.2f} between them, "
+                    f"${po_match['po_amount'] - po_match['remaining_before']:.2f} already consumed by "
+                    f"prior approved invoices, ${po_match['remaining_before']:.2f} remaining before "
+                    f"this invoice. Per PO: "
+                    + "; ".join(f"{a['po_number']} ${a['remaining_before']:.2f}" for a in allocations)
+                    + ".",
+                    "info",
+                )
+            else:
+                add(
+                    f"PO {po_match['po_number']} had ${po_match['po_amount']:.2f} total, "
+                    f"${po_match['po_amount'] - po_match['remaining_before']:.2f} already consumed by prior "
+                    f"approved invoices, ${po_match['remaining_before']:.2f} remaining before this invoice.",
+                    "info",
+                )
 
         _check(
             "PO remaining check", po_match["within_tolerance"],
@@ -545,9 +610,13 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
         if not po_match["within_tolerance"]:
             review = True
             add(
-                f"Invoice total is ${po_match['diff']:.2f} over the remaining PO balance of "
-                f"${po_match['remaining_before']:.2f} — outside the ${po_match['tolerance']:.2f} tolerance. "
-                f"The vendor is billing for more than is currently authorized on this PO.",
+                f"Invoice total is ${po_match['diff']:.2f} over the "
+                + (f"combined remaining balance of {po_list}" if is_multi
+                   else "remaining PO balance")
+                + f" of ${po_match['remaining_before']:.2f} — outside the "
+                  f"${po_match['tolerance']:.2f} tolerance. The vendor is billing for more than is "
+                + ("currently authorized on these POs." if is_multi
+                   else "currently authorized on this PO."),
                 "fail",
             )
         elif po_match.get("over_within_tolerance"):
@@ -574,8 +643,11 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
             )
         else:
             add(
-                f"Invoice total matches remaining PO balance within tolerance "
-                f"(diff ${po_match['diff']:.2f}, tolerance ${po_match['tolerance']:.2f}).",
+                f"Invoice total matches "
+                + (f"the combined remaining balance of {po_list}" if is_multi
+                   else "remaining PO balance")
+                + f" within tolerance (diff ${po_match['diff']:.2f}, "
+                  f"tolerance ${po_match['tolerance']:.2f}).",
                 "ok",
             )
 
@@ -638,7 +710,37 @@ def build_audit(status, checks, reasons, extract_info, po_match, extracted=None)
             # not know -- never filled in with a plausible guess.
             "source_file": po_match.get("po_source_file"),
             "source_row": po_match.get("po_source_row"),
+            # Every PO this invoice was charged against. A single-PO invoice
+            # lists one, so an auditor reads the same field either way.
+            "po_numbers": list(po_match.get("po_numbers") or []),
+            "is_multi": bool(po_match.get("is_multi")),
         },
+        # How the invoice total was divided, and against which balances. This is
+        # what the ledger actually consumed, so it is the figure an auditor needs
+        # -- `comparison` below describes the COMBINED position, which for a
+        # multi-PO invoice is a sum and not a single PO's balance.
+        #
+        # `basis` says where the division came from. "single_po" is the whole
+        # total on one PO and is a fact; "calculated" means the document stated
+        # no split and the process proposed one, which is why such a run is
+        # always held for a human.
+        "allocations": [
+            {
+                "po_number": a.get("po_number"),
+                "amount": a.get("amount"),
+                "po_amount": a.get("po_amount"),
+                "po_status": a.get("po_status"),
+                "consumed_before": a.get("consumed_before"),
+                "remaining_before": a.get("remaining_before"),
+                "remaining_after": a.get("remaining_after"),
+                "over": bool(a.get("over")),
+                "source_file": a.get("source_file"),
+                "source_row": a.get("source_row"),
+            }
+            for a in (po_match.get("allocations") or [])
+        ],
+        "allocation_basis": ("calculated" if po_match.get("is_multi")
+                             else ("single_po" if po_match.get("po_number") else None)),
         "comparison": {
             "invoice_total": po_match.get("invoice_total"),
             "po_amount": po_match.get("po_amount"),

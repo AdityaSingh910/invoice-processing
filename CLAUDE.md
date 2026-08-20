@@ -23,7 +23,7 @@ dashboard of every run.
 
 Grading: does it actually run, is the judgment behind the design sound, and can
 it be explained to a **non-technical buyer**. Edge cases were self-defined
-(2–4 required; there are 4).
+(2–4 required; there are 5).
 
 **Working directory:** `c:\Users\adity\OneDrive\Desktop\Invoice processing`
 Windows 11. PowerShell is primary; a Bash tool is also available.
@@ -35,16 +35,17 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | | |
 |---|---|
 | Pipeline | ✅ Working, 9 stages, streamed live over SSE |
-| Samples | ✅ 7/7 match the manifest, driven through the real pipeline |
+| Samples | ✅ 8/8 match the manifest, driven through the real pipeline |
 | UI | ✅ **Next.js 15 + React 19 + Tailwind v4**, 4 sections, light + dark |
 | Extraction | ✅ **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | ✅ **359 passing** deterministically, 15 files, both providers mocked |
+| Automated tests | ✅ **401 passing** deterministically, 17 files, both providers mocked |
 | Audit trail | ✅ Structured, deterministic, emitted by the rule engine itself |
 | Human review | ✅ Accept/reject, recorded beside the automated decision |
 | API security | ✅ OAuth2 bearer tokens, scopes, rate limits, input validation |
 | Production safety | ✅ `APP_ENV=production` refuses demo creds / missing secret |
 | Daily AI budget | ✅ Per-provider circuit breaker, SQLite-backed |
 | Non-invoice detection | ✅ Rejects documents containing no invoice, saying so |
+| Multi-PO invoices | ✅ `run_allocations` ledger; split calculated, always held |
 | Demo reset | ✅ Admin button in the UI, plus `.\reset-demo.ps1` |
 | Original audit defects | ✅ **All 3 fixed** |
 | Gemini vision route | ⚠️ Intermittent **503** from Google — see §9 |
@@ -85,11 +86,16 @@ README.
 
 ## 3. ⚠️ Standing instruction — do not skip
 
-**Phases 2–7 (§8) are NOT started and must not be started unprompted.**
+**The remaining phases (§8) must not be started unprompted.** Phase 4 and the
+multi-PO part of Phases 6/7 are done — but only because the user explicitly asked
+for the multi-PO limitation to be fixed. Phases 2, 3, 5 and the rest of 6/7 are
+untouched and stay that way until asked.
 
 The user works **one discrete step at a time, with a commit after each** — not
 batched work. Every step so far was inspected, tested, verified and committed
-before the next was requested. Keep doing that.
+before the next was requested. Keep doing that. The multi-PO work was two
+commits for this reason: the ledger first, behaviour-neutral and separately
+verified, then the matching on top of it.
 
 Open issues in §9 should be **documented and raised, not fixed** without being
 asked.
@@ -115,7 +121,7 @@ Then <http://127.0.0.1:8000> and sign in.
 # Reset run history so the samples tell their intended story again.
 # Also available in the UI: sign in as admin -> Overview -> "Reset demo data".
 .\reset-demo.ps1              # clear only
-.\reset-demo.ps1 -Replay      # clear, then drive all 7 through the API in order
+.\reset-demo.ps1 -Replay      # clear, then drive all 8 through the API in order
 
 # Tests -- no server needed, no API key needed, no network
 .\venv\Scripts\python.exe -m pytest tests/ -v
@@ -237,17 +243,52 @@ normal partial invoice. Tolerance is `max(1% of remaining, $50)`
 Originally written with `abs()` and it was wrong — it flagged every legitimate
 split-PO invoice. The tests caught it.
 
-### Split-PO tracking
+### Split-PO tracking and the allocation ledger
 
 No `consumed` column. Balance is derived per run:
 
 ```
-remaining_before = PO_amount − Σ(totals of prior APPROVED runs on that PO)
+remaining_before = PO_amount − Σ(allocations to that PO from prior APPROVED runs)
 ```
 
 Only **APPROVED** runs consume budget. Idempotency and reversal are therefore
 *structural*: nothing is deducted, so nothing can be deducted twice, and moving a
 run out of APPROVED refunds it in the same instant.
+
+**`run_allocations` records how much of each run went to which PO.** This used to
+be `SUM(runs.total) WHERE po_number=?`, which assumed one PO per invoice — so an
+invoice covering two POs was charged entirely to the first (measured: PO-1001 at
+−$5,000 while PO-1002 stayed untouched at $5,000).
+
+It is **not** the stored counter that was rejected twice. A counter would be
+authoritative and would need an explicit refund on reversal. An allocation is an
+*immutable fact* about a run — this invoice billed $X to PO-Y — and whether it
+**counts** is still derived at read time by joining to `runs.status='APPROVED'`.
+Every property the derived design was chosen for survives intact.
+
+A single-PO run is simply a run with one allocation, so the ledger has no special
+case. Legacy runs are backfilled from `(po_number, total)`, which is the one
+allocation they always implied; the migration is idempotent and moves no balance.
+
+### Invoices covering several POs
+
+`match_po` binds **every** referenced PO and `split_across()` divides the total:
+fill each to its remaining balance, in the order the invoice named them, with the
+last absorbing any excess so the allocations always sum to the invoice total.
+Top-level `po_match` figures describe the **combined** position; `po_numbers`,
+`allocations` and `is_multi` carry the detail.
+
+**A multi-PO invoice is always NEEDS_REVIEW**, even when the combined balance
+covers it comfortably. Nothing on the document states the split — line items
+carry no PO references — so the division is *computed*. Approving it would commit
+money against POs in amounts no document and no person specified. Same objection
+as an inferred single-PO match, applied to the division rather than the binding.
+The proposal is stored and shown so the reviewer confirms figures instead of
+working them out; the audit trail records `allocation_basis: calculated`.
+
+The cascade (`reevaluate_po_queue`) deliberately **skips** multi-PO runs: they
+are held on the unstated split, not a short balance, so freeing budget elsewhere
+must not release them.
 
 ### Extraction routes
 
@@ -416,14 +457,15 @@ backend/
   rules.py        655 lines. Validation, vendor tri-state, duplicates,
                   is_not_an_invoice(), decide() and build_audit().
                   The only place a verdict is produced.
-  storage.py      641 lines. SQLite, ledger, write_txn(), save_run_checked(),
-                  record_human_review(), clear_run_history(),
-                  migrations via _ensure_columns().
+  storage.py      SQLite, ledger, write_txn(), save_run_checked(),
+                  record_human_review(), clear_run_history(), run_allocations
+                  + its backfill, migrations via _ensure_columns().
   auth.py         324 lines. OAuth2 bearer tokens, scopes, user store,
                   production config enforcement.
   config.py       244 lines. .env loader, APP_ENV, provider settings, tolerances,
                   rate limits, daily quotas. Operational settings + policy numbers.
-  matching.py     174 lines. PO lookup, tolerance_for(), split-PO maths, currency.
+  matching.py     PO lookup, tolerance_for(), split-PO maths, currency,
+                  multi-PO binding and split_across().
   quota.py        142 lines. Daily per-provider budget, SQLite-backed.
   ratelimit.py    130 lines. Sliding-window per user/IP.
   schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
@@ -448,15 +490,15 @@ frontend/         The ORIGINAL vanilla UI. Kept deliberately: main.py serves it
 data/
   purchase_orders.json / approved_vendors.json / users.json   (TRACKED)
   app.db                                                      (NOT tracked)
-sample_invoices/  7 PDFs, generate_invoices.py, manifest.json
+sample_invoices/  8 PDFs, generate_invoices.py, manifest.json
 scripts/          replay_samples.py — drives the 7 samples in manifest order
                   and checks each verdict. Used by reset-demo.ps1 -Replay.
 reset-demo.ps1    Clears run history (and optionally replays the samples).
-tests/            15 files, 359 tests. conftest.py provides auth_headers()
+tests/            17 files, 401 tests. conftest.py provides auth_headers()
                   as a plain function, NOT a fixture -- import it.
 ```
 
-### Test suite — 359 tests, 15 files
+### Test suite — 401 tests, 17 files
 
 | File | n | Covers |
 |---|---|---|
@@ -474,7 +516,9 @@ tests/            15 files, 359 tests. conftest.py provides auth_headers()
 | `test_currency.py` | 16 | mismatch → review, no conversion |
 | `test_inferred_po.py` | 13 | distance cap, ambiguity guard |
 | `test_po_edge_cases.py` | 12 | split-PO, idempotency, reversal, concurrency |
-| `test_samples.py` | 7 | the 7 samples end to end, in manifest order |
+| `test_samples.py` | 8 | the 8 samples end to end, in manifest order |
+| `test_multi_po.py` | 28 | multi-PO binding, the split, the ledger, the hold |
+| `test_allocations.py` | 13 | the allocation ledger, its migration and idempotence |
 
 Notes for whoever changes them:
 
@@ -513,8 +557,13 @@ GET  /api/sample-invoices/{name} [invoice:read]
 | PO-1003 | Initech Consulting | $8,200.00 | open |
 | PO-1004 | Umbrella Cleaning Co | $600.00 | **closed** |
 | PO-1005 | Stark Industrial Parts | $15,400.00 | open |
+| PO-1006 | Wayne Facilities | $4,000.00 | open |
+| PO-1007 | Wayne Facilities | $2,500.00 | open |
 
-All five vendors approved (V-001 … V-005).
+All six vendors approved (V-001 … V-006). **Wayne Facilities is the only vendor
+with two POs**, and it exists for exactly that reason — sample 07 needs one
+vendor billing across two purchase orders. Nothing else references it, so the
+other samples are unaffected by it.
 
 ---
 
@@ -529,6 +578,7 @@ All five vendors approved (V-001 … V-005).
 | 5 | `04_missing_invoice_number.pdf` | Amounts fine, no audit key | NEEDS_REVIEW |
 | 6 | `05_scanned_no_text.pdf` | Image-only PDF | NEEDS_REVIEW † |
 | 7 | `06_duplicate_of_01.pdf` | Resubmission of INV-2201 | REJECTED |
+| 8 | `07_multi_po_wayne.pdf` | $6,500 across PO-1006 + PO-1007 | NEEDS_REVIEW ‡ |
 
 **Run 2 → 3 → 4 in order** or the split-PO story doesn't work. **Run 1 before 7**
 or the duplicate has nothing to collide with.
@@ -537,6 +587,13 @@ or the duplicate has nothing to collide with.
 guess → NEEDS_REVIEW; with the vision route → reads INV-9004 / PO-1005 /
 $15,400.00 → APPROVED. `manifest.json` carries both, resolved against
 `config.has_api_key()`.
+
+‡ **Sample 07 is order-independent and is the cleanest thing to demo.** Nothing
+is wrong with it: PO-1006 ($4,000) + PO-1007 ($2,500) authorise exactly the
+$6,500 billed, the vendor is approved, the arithmetic is right. It is held purely
+because the document never says which PO each line belongs to. The process shows
+the split it worked out and refuses to act on it alone. Accept it as `reviewer`
+and watch both POs go to $0.00 — one invoice, two ledgers moved correctly.
 
 **Sample 04 legitimately fails two rules.** Its PDF states Subtotal $8,200 + Tax
 $0.00 = Total $8,150, which does not add up. Both routes read it identically, so
@@ -559,15 +616,15 @@ invoice. The decision depends on the PO's history, not the file alone. Watch
 | 1 | Inferred-PO safety, currency, arithmetic, invalid amounts, vendor matching | ✅ done |
 | 2 | `Tracked[T]` provenance, per-route confidence, **confidence gate** | ⬜ |
 | 3 | `rules.yaml` versioned policy + typed loader | ◨ thresholds in `config.py`; YAML to do |
-| 4 | Transactions; `run_allocations` table | ◨ transactions done; allocations to do |
+| 4 | Transactions; `run_allocations` table | ✅ done |
 | 5 | `DecisionTrace` + reference snapshot; stop re-seeding | ◨ audit trail done; snapshot to do |
-| 6 | Line-item decomposition, multi-PO consolidation, FX provider | ⬜ |
-| 7 | UI: confidence badges, evidence snippets, allocation view | ⬜ |
+| 6 | Line-item decomposition, multi-PO consolidation, FX provider | ◨ multi-PO done; line items + FX to do |
+| 7 | UI: confidence badges, evidence snippets, allocation view | ◨ allocation view done; confidence to do |
 
-**Sequencing trap:** multi-PO consolidation is a **ledger** feature, not a
-matching feature. The schema stores one `po_number` per run and consumption sums
-run totals, so a consolidated invoice would over-consume every PO it touched.
-Phase 4 must land before Phase 6.
+**Sequencing trap (already navigated):** multi-PO consolidation is a **ledger**
+feature, not a matching feature. Phase 4's `run_allocations` table landed first,
+on its own and behaviour-neutral; multi-PO matching went on top of it. Doing it
+the other way round would have over-consumed every PO an invoice touched.
 
 **Most valuable thing left:** Phase 2's confidence gate — it closes the
 low-confidence auto-approve problem as a *class*. But nothing in Phases 2–7
@@ -625,7 +682,9 @@ unaffected. The amount rule cannot catch a sign the extractor discarded.
 - Business rules are **constants in `config.py`**, not versioned policy. Phase 3.
 - Reference data **re-seeded from JSON on every startup**, so editing
   `purchase_orders.json` silently changes what historical runs mean. Phase 5.
-- Schema stores **one `po_number` per run** — no multi-PO. Phase 4b/6.
+- A multi-PO invoice's **split is proposed, not read**, so it always needs a
+  human. Deriving it would need per-line-item PO references — line-item
+  decomposition, Phase 6.
 - Rate-limit counters are **per process** — several workers multiply the limit.
 - `_guess_vendor` picks the vendor by **line position**.
 - **Sorting, filtering and paging are client-side** in the invoice register.
@@ -650,8 +709,8 @@ unaffected. The amount rule cannot catch a sign the extractor discarded.
 
 1. Read this file, then [README.md](README.md) (current and verified).
 2. `git log --oneline -10` and `git status` — confirm nothing moved.
-3. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **359 passed**.
-   No key or network needed. If it is not 359, find out what changed before
+3. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **401 passed**.
+   No key or network needed. If it is not 401, find out what changed before
    building anything. Two known non-regressions: `test_samples` 05 depends on
    Gemini being reachable (503 and 429 both happen), and
    `test_extraction_routing` fails 4 cases when the local vision quota is spent
@@ -675,7 +734,11 @@ demo first (§4), and settle the sample-05 badge question (§9 issue 2).
 | Rules deterministic, LLM extraction-only | Auditability. The headline claim; it survived the audit. |
 | Three verdicts, not two | Binary forces guessing on ambiguous invoices; the middle state is where automation hands back to a human. |
 | Tolerance one-sided | Over-billing is a problem; under-billing is a normal partial. |
-| Balance derived from run history, not a stored counter | No counter can drift from what was actually approved, and it makes idempotency and reversal structural. Reaffirmed when a `remaining_amount` column was proposed. |
+| Balance derived from run history, not a stored counter | No counter can drift from what was actually approved, and it makes idempotency and reversal structural. Reaffirmed when a `remaining_amount` column was proposed, and again when `run_allocations` landed — an allocation is an immutable fact about a run, not a balance; the status join still decides whether it counts. |
+| Multi-PO invoices always held, never auto-approved | The document states no split, so the division is computed. Approving would commit money in amounts no document and no person specified — the inferred-PO objection applied to the division rather than the binding. |
+| The proposed split is still computed, stored and shown | Refusing to divide at all would hand the reviewer arithmetic instead of a decision. They confirm figures; they do not work them out. |
+| Excess beyond every balance lands on the last PO | The allocations must sum to the invoice total or the ledger describes money nobody billed. The overage stays visible as that PO being over-consumed, and the combined tolerance check reports it. |
+| Cascade skips multi-PO runs | They are held on the unstated split, not a short balance. Freeing budget elsewhere says nothing about it, and releasing them would commit a split nobody confirmed. |
 | Only APPROVED runs consume budget | A flagged invoice mustn't block the queue behind it. |
 | Refuse to guess when unreadable | Empty fields → review, rather than fabricating. `vendor_check` is tri-state: not-on-list (reject) ≠ couldn't-read-a-name (review). |
 | pypdfium2 over pytesseract | Self-contained wheel; no system binaries for a reviewer to install. |

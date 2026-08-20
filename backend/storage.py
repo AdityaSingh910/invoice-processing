@@ -459,33 +459,45 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
     po_number = po_match.get("po_number")
     total = extracted.get("total")
     extra = None
+    allocations = allocations_from_match(po_match, total)
 
     with write_txn() as conn:
-        if status == "APPROVED" and po_number and total is not None:
-            row = conn.execute(
-                "SELECT amount FROM purchase_orders WHERE UPPER(po_number)=UPPER(?)",
-                (po_number,)).fetchone()
-            if row is not None:
-                remaining = round(row["amount"] - _consumed(conn, po_number), 2)
+        # Re-check EVERY PO this invoice charges, not just the primary one. A
+        # multi-PO invoice can be raced on any of them, and one that no longer
+        # fits is enough to hold the whole invoice -- the allocations are a
+        # package, and committing part of a split would charge a PO for an
+        # invoice that was not approved.
+        if status == "APPROVED" and total is not None:
+            for alloc in allocations:
+                row = conn.execute(
+                    "SELECT amount FROM purchase_orders WHERE UPPER(po_number)=UPPER(?)",
+                    (alloc["po_number"],)).fetchone()
+                if row is None:
+                    continue
+                remaining = round(row["amount"] - _consumed(conn, alloc["po_number"]), 2)
                 tol = tolerance_for(remaining if remaining > 0 else row["amount"]) \
                     if tolerance_for else 0.0
-                if round(total - remaining, 2) > tol:
-                    status = "NEEDS_REVIEW"
-                    extra = {
-                        "text": (
-                            f"Balance changed while this invoice was being processed: "
-                            f"${remaining:.2f} remained on {po_number} at commit time, against a "
-                            f"${total:.2f} invoice. Another invoice consumed the PO first, so this "
-                            f"one was held rather than approved past the authorised amount."
-                        ),
-                        "level": "fail",
-                    }
-                    reasons = list(reasons) + [extra]
-                    # Keep the stored snapshot honest about what was committed.
-                    po_match = dict(po_match, remaining_before=remaining,
-                                    remaining_after=remaining,
-                                    diff=round(total - remaining, 2),
-                                    within_tolerance=False)
+                if round(alloc["amount"] - remaining, 2) <= tol:
+                    continue
+
+                status = "NEEDS_REVIEW"
+                extra = {
+                    "text": (
+                        f"Balance changed while this invoice was being processed: "
+                        f"${remaining:.2f} remained on {alloc['po_number']} at commit time, "
+                        f"against ${alloc['amount']:.2f} charged to it by this invoice. "
+                        f"Another invoice consumed the PO first, so this one was held rather "
+                        f"than approved past the authorised amount."
+                    ),
+                    "level": "fail",
+                }
+                reasons = list(reasons) + [extra]
+                # Keep the stored snapshot honest about what was committed.
+                po_match = dict(po_match, remaining_before=remaining,
+                                remaining_after=remaining,
+                                diff=round(alloc["amount"] - remaining, 2),
+                                within_tolerance=False)
+                break
 
         # Keep the trail consistent with what was actually committed. If the
         # balance re-check above downgraded this run, the audit must say so --
@@ -678,8 +690,12 @@ def runs_pending_on_po(po_number: str):
     """
     conn = get_conn()
     try:
+        # Found through allocations, not `runs.po_number`: an invoice can be
+        # charged to a PO that is not its primary one, and freeing budget there
+        # is just as relevant to it.
         rows = conn.execute(
-            "SELECT * FROM runs WHERE po_number=? AND status='NEEDS_REVIEW' ORDER BY id ASC",
+            """SELECT DISTINCT r.* FROM runs r JOIN run_allocations a ON a.run_id = r.id
+               WHERE a.po_number=? AND r.status='NEEDS_REVIEW' ORDER BY r.id ASC""",
             (po_number,)).fetchall()
         return [_hydrate(dict(r)) for r in rows]
     finally:

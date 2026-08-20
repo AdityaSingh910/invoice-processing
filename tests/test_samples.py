@@ -242,6 +242,35 @@ def _check_duplicate(result):
         "the rejection should cite the earlier run it collided with"
 
 
+def _check_multi_po(result):
+    """One invoice, two purchase orders.
+
+    The interesting part is that NOTHING is over budget: PO-1006 ($4,000) and
+    PO-1007 ($2,500) authorise exactly the $6,500 billed. It is held anyway,
+    because the document never says which PO each line belongs to -- the split
+    is calculated, and a calculated split is a proposal rather than an
+    authorisation.
+    """
+    pm = result["po_match"]
+    assert pm["is_multi"] is True
+    assert pm["po_numbers"] == ["PO-1006", "PO-1007"]
+    # Every dollar is authorised; this is not an over-budget hold.
+    assert pm["within_tolerance"] is True
+    assert pm["remaining_before"] == 6500.00
+
+    allocations = pm["allocations"]
+    assert [(a["po_number"], a["amount"]) for a in allocations] == [
+        ("PO-1006", 4000.00), ("PO-1007", 2500.00)]
+    # The invariant the ledger depends on.
+    assert round(sum(a["amount"] for a in allocations), 2) == pm["invoice_total"]
+
+    assert result["audit"]["allocation_basis"] == "calculated"
+    assert "Invoice-to-PO split stated" in result["audit"]["rules_failed"]
+    assert any("does not state how much belongs to each" in r["text"]
+               for r in result["reasons"]), \
+        "the hold should say the split was calculated, not that money is missing"
+
+
 EXTRA_CHECKS = {
     "01_happy_path_acme.pdf": _check_happy_path,
     "02_split_po_globex_a.pdf": _check_split_a,
@@ -250,6 +279,7 @@ EXTRA_CHECKS = {
     "04_missing_invoice_number.pdf": _check_missing_number,
     "05_scanned_no_text.pdf": _check_scanned,
     "06_duplicate_of_01.pdf": _check_duplicate,
+    "07_multi_po_wayne.pdf": _check_multi_po,
 }
 
 

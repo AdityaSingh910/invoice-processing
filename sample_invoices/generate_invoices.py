@@ -33,8 +33,14 @@ def draw_invoice_text(c, vendor, invoice_number, invoice_date, po_number, line_i
         y -= 16
     c.drawString(50, y, "Invoice Date: " + invoice_date)
     y -= 16
+    # `po_number` may be a list: a consolidated invoice references several
+    # purchase orders. They are printed on one line, exactly as a vendor would,
+    # and deliberately WITHOUT stating how much belongs to each -- that omission
+    # is the scenario, not an oversight in the fixture.
     if po_number:
-        c.drawString(50, y, "PO Number: " + po_number)
+        refs = po_number if isinstance(po_number, (list, tuple)) else [po_number]
+        label = "PO Numbers: " if len(refs) > 1 else "PO Number: "
+        c.drawString(50, y, label + ", ".join(refs))
         y -= 16
     y -= 10
 
@@ -186,6 +192,27 @@ if __name__ == "__main__":
         line_items=[("Migration consulting -- June", 160, 51.25, 8200.00)],
         subtotal=8200.00, tax_pct=0, tax=0.00, total=8150.00,
         note="Vendor omitted an invoice number on this document.",
+    )
+
+    # 7. One invoice covering TWO purchase orders.
+    #
+    # PO-1006 ($4,000) + PO-1007 ($2,500) = $6,500, and the invoice is for
+    # exactly $6,500 -- so the money is entirely authorised and nothing is over
+    # budget. The document simply never says which PO each line belongs to,
+    # which is how consolidated invoices normally arrive.
+    #
+    # That is the whole point of the case: the process can work out a sensible
+    # split (fill PO-1006, then PO-1007), and still must not act on it alone,
+    # because "sensible" is not "stated". It holds for a human, showing the
+    # proposal.
+    make_text_pdf(
+        os.path.join(OUT_DIR, "07_multi_po_wayne.pdf"),
+        vendor="Wayne Facilities", invoice_number="INV-7701", invoice_date="2026-07-30",
+        po_number=["PO-1006", "PO-1007"],
+        line_items=[("Facilities maintenance -- July", 1, 4000.00, 4000.00),
+                    ("Groundskeeping -- July", 1, 2500.00, 2500.00)],
+        subtotal=6500.00, tax_pct=0, tax=0.00, total=6500.00,
+        note="Consolidated invoice against two purchase orders.",
     )
 
     # 5. Scanned invoice -- no text layer, exercises the OCR-fallback / honesty path.

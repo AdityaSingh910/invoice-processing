@@ -251,6 +251,15 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     if po_match["po_number"] is None:
         pm_detail = "No matching purchase order found."
         pm_status = "fail"
+    elif po_match.get("is_multi"):
+        # Name every PO and the balance each brings, so the live view shows the
+        # invoice spanning them rather than appearing to bind just the first.
+        pm_detail = (
+            f"Matched {len(po_match['po_numbers'])} POs "
+            f"({', '.join(po_match['po_numbers'])}); combined remaining balance before "
+            f"this invoice: ${po_match['remaining_before']:.2f}."
+        )
+        pm_status = "warn"
     else:
         pm_detail = (
             f"Matched {po_match['po_number']} ({po_match['matched_via']}); "
@@ -269,14 +278,27 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
 
     # 8. TOLERANCE_CHECK
     if po_match["po_number"] is not None:
-        if po_match["within_tolerance"] and po_match["is_partial"]:
+        if po_match.get("is_multi"):
+            # The comparison is against the COMBINED balance, so say so and show
+            # the proposed split -- "within tolerance" against a sum of POs would
+            # otherwise read as though one PO had covered the invoice.
+            tol_detail = (
+                "Split across "
+                + ", ".join(f"{a['po_number']} ${a['amount']:.2f}"
+                            for a in po_match["allocations"])
+                + f" against ${po_match['remaining_before']:.2f} combined remaining. "
+                  f"Calculated, not stated on the invoice — held for confirmation."
+            )
+            tol_status = "warn"
+        elif po_match["within_tolerance"] and po_match["is_partial"]:
             tol_detail = f"Diff ${po_match['diff']:.2f} — partial invoice, within remaining PO balance."
+            tol_status = "ok"
         else:
             tol_detail = (
                 f"Diff ${po_match['diff']:.2f} vs tolerance ${po_match['tolerance']:.2f} "
                 f"({'within' if po_match['within_tolerance'] else 'OUTSIDE'} tolerance)."
             )
-        tol_status = "ok" if po_match["within_tolerance"] else "fail"
+            tol_status = "ok" if po_match["within_tolerance"] else "fail"
     else:
         tol_detail = "Skipped — no PO to compare against."
         tol_status = "warn"

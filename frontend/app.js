@@ -413,9 +413,16 @@ function auditHTML(a, run) {
       <div>
         <div class="audit-section">Matched purchase order</div>
         <table class="kv-table">
-          ${row("PO", esc(po.po_number || "none"))}
+          ${row(po.is_multi ? "POs" : "PO",
+                esc((po.po_numbers && po.po_numbers.length ? po.po_numbers.join(", ")
+                                                           : po.po_number) || "none"))}
           ${row("Matched via", esc(po.matched_via || "—"))}
           ${row("PO status", esc(po.po_status || "—"))}
+          ${po.is_multi ? row("Charged", esc((a.allocations || [])
+              .map((x) => x.po_number + " " + money(x.amount)).join(" · "))) : ""}
+          ${po.is_multi ? row("Split basis", esc(a.allocation_basis === "calculated"
+              ? "calculated by the process — not stated on the invoice"
+              : (a.allocation_basis || "—"))) : ""}
           ${row("Source", source)}
         </table>
       </div>
@@ -504,6 +511,11 @@ document.addEventListener("click", async (e) => {
    earlier approved invoices already consumed, what this invoice claims, and
    whether that claim fits inside what's left on the PO. */
 function balanceHTML(pm, status) {
+  // An invoice spanning several POs gets a bar each. One combined bar would add
+  // balances from different purchase orders together and show the invoice
+  // sitting inside the sum, which reads as "it fits" while saying nothing about
+  // whether any individual PO can carry its share.
+  if (pm.is_multi) return multiBalanceHTML(pm);
   const total = pm.po_amount || 0;
   const consumed = pm.consumed_before || 0;
   const claim = pm.invoice_total || 0;
@@ -535,6 +547,48 @@ function balanceHTML(pm, status) {
       <div class="bl"><span class="bl-dot remaining"></span><span class="bl-txt">Remaining after <b>${money(fits ? pm.remaining_after : pm.remaining_before)}</b></span></div>
     </div>
     ${calloutHTML(pm, fits)}`;
+}
+
+/* One invoice, several purchase orders. The caveat is the point of the panel:
+   the division shown was computed by the process, not read off the document,
+   which is why the invoice is waiting for a person. */
+function multiBalanceHTML(pm) {
+  const bars = (pm.allocations || []).map((a) => {
+    const total = a.po_amount || 0;
+    const consumed = a.consumed_before || 0;
+    const claim = a.amount || 0;
+    const remaining = a.remaining_before || 0;
+    const scale = Math.max(total, consumed + claim) || 1;
+    const pct = (v) => (v / scale) * 100;
+    const shown = a.over ? Math.max(0, remaining) : claim;
+    const over = a.over ? claim - Math.max(0, remaining) : 0;
+    const leftover = Math.max(0, total - consumed - shown);
+    const seg = (cls, w, label) =>
+      w <= 0.4 ? "" : `<div class="bal-seg ${cls}" style="width:${w}%">${w > 9 ? label : ""}</div>`;
+
+    return `
+      <div class="po-head">
+        <span class="po-num">${esc(a.po_number)}</span>
+        <span class="po-total">${money(total)} authorised · ${money(claim)} of ${money(remaining)} remaining</span>
+      </div>
+      <div class="bal-bar">
+        ${seg("consumed", pct(consumed), money(consumed))}
+        ${seg(a.over ? "current-bad" : "current-ok", pct(shown), money(shown))}
+        ${seg("overflow", pct(over), "+" + money(over))}
+        ${seg("remaining", pct(leftover), money(leftover))}
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="po-head">
+      <span class="po-num">${esc((pm.po_numbers || []).join(" + "))}</span>
+      <span class="po-total">${money(pm.invoice_total)} across ${(pm.allocations || []).length} purchase orders</span>
+    </div>
+    <div class="po-callout bad">The split below was calculated, not read off the invoice. The document does
+      not say how much belongs to each purchase order, so each was filled to its remaining balance in the
+      order the invoice referenced them. Confirm these amounts before approving — nothing is charged to any
+      PO until you do.</div>
+    ${bars}`;
 }
 
 function calloutHTML(pm, fits) {
@@ -619,9 +673,21 @@ function renderRuns() {
 }
 
 function renderConsumption() {
+  // Consume through each run's ALLOCATIONS -- how much of it was charged to
+  // which PO -- not through its total. An invoice covering several POs would
+  // otherwise be charged entirely to the first one, so this chart would
+  // contradict the ledger the backend actually keeps. Runs recorded before
+  // allocations existed carry their charge in (po_number, total), which is the
+  // single allocation they always implied.
   const used = {};
-  state.runs.filter((r) => r.status === "APPROVED" && r.po_number)
-    .forEach((r) => { used[r.po_number] = (used[r.po_number] || 0) + (r.total || 0); });
+  state.runs.filter((r) => r.status === "APPROVED").forEach((r) => {
+    const allocations = (r.po_match && r.po_match.allocations && r.po_match.allocations.length)
+      ? r.po_match.allocations
+      : (r.po_number ? [{ po_number: r.po_number, amount: r.total || 0 }] : []);
+    allocations.forEach((a) => {
+      used[a.po_number] = (used[a.po_number] || 0) + (a.amount || 0);
+    });
+  });
 
   $("poConsumption").innerHTML = state.pos.map((po) => {
     const u = used[po.po_number] || 0;
