@@ -209,7 +209,7 @@ def test_both_providers_produce_the_same_invoice_structure(providers):
 
     assert a == b
     assert set(a) == {"vendor_name", "invoice_number", "invoice_date", "po_references",
-                      "line_items", "subtotal", "tax", "total", "currency"}
+                      "line_items", "subtotal", "tax", "total", "currency", "provenance"}
 
 
 def test_both_providers_return_the_shared_dataclass(providers):

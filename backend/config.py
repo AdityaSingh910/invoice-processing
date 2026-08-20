@@ -49,6 +49,37 @@ PO_TOLERANCE_DOLLARS = 50.0   # ...or this, whichever is larger
 ARITHMETIC_TOLERANCE_DOLLARS = 0.05
 
 # --------------------------------------------------------------------------
+# Extraction confidence gate
+#
+# Every extracted field carries provenance: a confidence score, where it came
+# from, and a quoted snippet backing it (see ExtractedInvoice.provenance).
+# LLM routes get the score from the MODEL ITSELF, asked to self-report per
+# field alongside the value. Regex gets a deterministic heuristic instead (an
+# explicit labelled match scores high; a positionally-guessed vendor name or a
+# computed-not-printed total scores lower) -- see extraction.py.
+#
+# Honest limitation, stated here rather than presented as measured accuracy:
+# model self-reported confidence is known to skew high and is not independently
+# calibrated. It is still a genuine signal -- a model unsure about a field it
+# read is meaningfully different from one that read it cleanly -- just not a
+# guarantee.
+#
+# Only fields in CONFIDENCE_GATED_FIELDS can hold up a decision: the ones
+# REQUIRED_FIELDS already treats as central. Gating on every field (line
+# items, dates) would send almost any invoice to review regardless of whether
+# anything is actually wrong with it. A field the extractor never found at all
+# is validate_required_fields()'s business, not this gate's -- this only fires
+# when a value IS present but the extractor itself is not confident in it,
+# which is a different failure class (a reading-quality problem, not a missing-
+# data problem) and is reported as its own finding.
+#
+# Like every other extraction-uncertainty signal in this pipeline (unreadable
+# scan, injection guard), this only ever HOLDS for review. It never rejects --
+# low confidence about a reading is not evidence the invoice itself is wrong.
+CONFIDENCE_THRESHOLD = 0.65
+CONFIDENCE_GATED_FIELDS = ["vendor_name", "invoice_number", "total"]
+
+# --------------------------------------------------------------------------
 # Foreign-exchange rates (USD per 1 unit of the currency)
 #
 # PINNED, not fetched live -- the same argument as pinning the extraction

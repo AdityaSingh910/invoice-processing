@@ -24,6 +24,14 @@ class ExtractedInvoice:
     currency: str = "USD"
     raw_text: str = ""
     extraction_method: str = "regex"
+    # Per-field provenance: {field_name: {"confidence": float|None,
+    # "source": str|None, "evidence": str|None, "evidence_verified": bool|None}}.
+    # Plain dicts rather than a nested dataclass -- keeps asdict() trivial and
+    # avoids any doubt about whether it recurses into dataclasses stored inside
+    # a dict field. Populated only for fields the extractor actually attempted;
+    # a field with no entry here carries no confidence claim at all, which is
+    # different from carrying a low one.
+    provenance: dict = field(default_factory=dict)
 
     def to_dict(self):
         d = asdict(self)

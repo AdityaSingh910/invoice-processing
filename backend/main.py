@@ -205,6 +205,7 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     missing = rules.validate_required_fields(extracted)
     arithmetic = rules.validate_arithmetic(extracted)
     amount = rules.validate_amount(extracted)
+    low_confidence = rules.validate_confidence(extracted)
     security_flags = extract_info.get("security_flags") or []
     if security_flags:
         val_status = "fail"
@@ -232,6 +233,11 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
             f"${arithmetic['tax']:.2f} = ${arithmetic['expected']:.2f}, but the invoice "
             f"states ${arithmetic['total']:.2f} (off by ${arithmetic['diff']:.2f})."
         )
+    elif low_confidence:
+        val_status = "warn"
+        val_detail = "Low extraction confidence: " + ", ".join(
+            f"{f['field']} ({f['confidence'] * 100:.0f}%)" for f in low_confidence
+        ) + ". Held for review rather than trusted outright."
     else:
         val_status = "ok"
         val_detail = "All required fields present; arithmetic consistent; no injection patterns detected."
@@ -315,6 +321,7 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
     status, reasons = rules.decide(
         extract_info, missing, vendor_ok, vendor_detail, dup_row, dup_detail, po_match,
         arithmetic=arithmetic, amount=amount, audit=audit, extracted=extracted,
+        low_confidence=low_confidence,
     )
     yield sse("stage", {"stage": stage("DECISION", "ok", f"Final status: {status}.")})
     await asyncio.sleep(0.15)

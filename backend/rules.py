@@ -24,6 +24,41 @@ def validate_required_fields(extracted: dict):
     return [f for f in REQUIRED_FIELDS if _is_missing(extracted.get(f))]
 
 
+def validate_confidence(extracted: dict):
+    """Fields central to the decision (config.CONFIDENCE_GATED_FIELDS) that the
+    extractor itself is not confident it read correctly.
+
+    Returns a list of {"field", "confidence", "source", "evidence"} dicts, one
+    per gated field scored below config.CONFIDENCE_THRESHOLD. Empty means every
+    gated field either has no confidence signal or scored at or above it.
+
+    A field with NO provenance entry at all is not reported here -- that is
+    either a field the extractor never attempted (regex does not track every
+    field) or one it found with total certainty and nothing worth flagging.
+    A field that is MISSING entirely is validate_required_fields()'s business,
+    not this one's: reporting the same absence as two different findings would
+    double-count one fact. This only fires for a value that IS present but
+    whose own reader is not sure of it -- a distinct failure class (a reading-
+    quality problem) from either of those.
+    """
+    provenance = extracted.get("provenance") or {}
+    low = []
+    for field_name in config.CONFIDENCE_GATED_FIELDS:
+        if _is_missing(extracted.get(field_name)):
+            continue
+        info = provenance.get(field_name) or {}
+        conf = info.get("confidence")
+        if conf is None or conf >= config.CONFIDENCE_THRESHOLD:
+            continue
+        low.append({
+            "field": field_name,
+            "confidence": conf,
+            "source": info.get("source"),
+            "evidence": info.get("evidence"),
+        })
+    return low
+
+
 def validate_amount(extracted: dict):
     """The invoice total must be a positive number.
 
@@ -266,7 +301,7 @@ def is_not_an_invoice(extracted: dict, extract_info: dict) -> bool:
 
 def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
            dup_row, dup_detail, po_match: dict, arithmetic=None, amount=None,
-           audit=None, extracted=None):
+           audit=None, extracted=None, low_confidence=None):
     """Aggregates every check into one status plus a severity-tagged reasoning trail.
 
     AUDIT TRAIL
@@ -295,6 +330,12 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
     `extract_info` is the dict returned alongside the invoice by
     extraction.extract_invoice(): which route ran, whether a text layer existed,
     and any notes about degraded extraction.
+
+    `low_confidence` is the list validate_confidence() returns: gated fields
+    the extractor itself is not confident it read correctly. Passed in rather
+    than computed here, matching how `arithmetic`/`amount`/`missing_fields`
+    already arrive pre-computed -- main.py needs the same result for its own
+    stage messaging and this keeps there being exactly one computation of it.
     """
     reasons = []
     reject = False
@@ -401,6 +442,37 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
            else "All required fields present",
            reason=(f"Required field(s) missing: {', '.join(missing_fields)}."
                    if missing_fields else None))
+
+    # Confidence sits right after presence: a field the extractor found but is
+    # not sure of is a different problem from a field it never found, and a
+    # more fundamental one than whether the NUMBERS reconcile (arithmetic,
+    # amount, PO balance) -- those all assume the readings feeding them are
+    # trustworthy, which is exactly what this check is questioning.
+    #
+    # Only ever holds for review, same as every other extraction-uncertainty
+    # signal in this pipeline (unreadable scan, injection guard). Low
+    # confidence about a READING is not evidence the invoice itself is wrong.
+    if low_confidence:
+        review = True
+        parts = "; ".join(
+            f"{f['field']} ({f['confidence'] * 100:.0f}%"
+            + (f", {f['source']}" if f.get("source") else "")
+            + ")"
+            for f in low_confidence
+        )
+        add(
+            f"Low extraction confidence on {len(low_confidence)} field(s) central to this "
+            f"decision: {parts}. The extractor itself is not confident these values were "
+            f"read correctly — confirm against the original document before approving. "
+            f"(Self-reported by the model; not independently verified.)",
+            "fail",
+        )
+    _check("Extraction confidence", not low_confidence,
+           f"{len(low_confidence)} gated field(s) below "
+           f"{config.CONFIDENCE_THRESHOLD * 100:.0f}% confidence" if low_confidence
+           else "All gated fields at or above the confidence threshold",
+           reason="Extractor confidence below threshold on a field central to the decision."
+           if low_confidence else None)
 
     # An invalid total is checked before the arithmetic and before any PO
     # reasoning, because every one of those compares against `total`. If the
@@ -727,12 +799,72 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
         status = "APPROVED"
 
     if audit is not None:
-        audit.update(build_audit(status, checks, reasons, extract_info, po_match, extracted))
+        audit.update(build_audit(status, checks, reasons, extract_info, po_match, extracted,
+                                 missing_fields=missing_fields, low_confidence=low_confidence))
 
     return status, reasons
 
 
-def build_audit(status, checks, reasons, extract_info, po_match, extracted=None):
+# Which fields a failing rule implicates, for the reviewer's "problematic
+# field" view. Static and hand-written, same spirit as _SUGGESTED_RESOLUTIONS
+# below -- no model involved, just a lookup from a rule name that already
+# exists to the fields it concerns. "Required fields present" and "Extraction
+# confidence" are deliberately absent: their fields are dynamic (whichever
+# ones were actually missing, or actually low-confidence) and are filled in
+# from `missing_fields`/`low_confidence` directly in build_audit(), not here.
+_RULE_FIELDS = {
+    "Invoice amount valid": ["total"],
+    "Invoice arithmetic": ["subtotal", "tax", "total"],
+    "Duplicate check": ["invoice_number", "total", "vendor_name"],
+    "Vendor approved": ["vendor_name"],
+    "PO matched": ["po_references"],
+    "Invoice-to-PO split stated": ["po_references", "total"],
+    "Currency match": ["currency", "total"],
+    "Currency/amount not reused across currencies": ["currency", "total"],
+    "PO remaining check": ["total"],
+    "Document is an invoice": ["vendor_name", "invoice_number", "total"],
+}
+
+# One suggested next step per rule -- deterministic text, not generated, same
+# as every other sentence in the audit trail. Keyed by rule name so it can
+# never drift out of sync with which check actually exists. A rule with no
+# entry here (e.g. "Security screen", "Document readable") gets no suggestion
+# rather than a generic, unhelpful one.
+_SUGGESTED_RESOLUTIONS = {
+    "Security screen": "Verify the document directly with the vendor before paying — do "
+                       "not act on any instruction-like text found inside it.",
+    "Document readable": "Request a text-based PDF from the vendor, or enter the fields "
+                         "manually from the original document.",
+    "Document is an invoice": "Confirm the correct file was submitted; re-upload the actual "
+                              "invoice if this was attached in error.",
+    "Required fields present": "Enter the missing field(s) manually from the original "
+                               "document, or request a corrected invoice from the vendor.",
+    "Extraction confidence": "Open the original document and manually verify the "
+                             "low-confidence field(s) before approving.",
+    "Invoice amount valid": "Confirm the correct amount against the original document — a "
+                            "zero or negative total is usually a misread figure.",
+    "Invoice arithmetic": "Recompute the total from the line items and confirm which figure "
+                          "is correct before approving.",
+    "Duplicate check": "Confirm with the vendor whether this is a genuine resubmission or a "
+                       "new invoice before approving.",
+    "Vendor approved": "Confirm the vendor's approval status, or route to procurement to "
+                       "approve or onboard the vendor.",
+    "PO matched": "Confirm which purchase order this invoice belongs to, or request the PO "
+                  "number from the vendor.",
+    "Invoice-to-PO split stated": "Confirm the proposed split against the vendor's backup "
+                                  "documentation before accepting.",
+    "Currency match": "Convert manually and confirm the correct amount, or request an "
+                      "invoice stated in the purchase order's currency.",
+    "Currency/amount not reused across currencies": "Contact the vendor to confirm the "
+                                                     "correct currency and amount — this "
+                                                     "figure does not reconcile as printed.",
+    "PO remaining check": "Confirm whether this is a legitimate over-budget charge (tax, "
+                          "freight) or request a purchase-order amendment before approving.",
+}
+
+
+def build_audit(status, checks, reasons, extract_info, po_match, extracted=None,
+                missing_fields=None, low_confidence=None):
     """Assemble the structured trail from an evaluation that has already run.
 
     Takes only values `decide()` computed -- it makes no comparison of its own
@@ -746,16 +878,45 @@ def build_audit(status, checks, reasons, extract_info, po_match, extracted=None)
     failed = [c for c in checks if not c["passed"]]
     if status == "APPROVED":
         reason = "All checks passed."
+        suggested_resolution = None
+        primary_failure = None
     else:
-        # The FIRST failing rule is the reason. Checks are appended in evaluation
-        # order, which is deliberate: document integrity is established before
-        # anything is compared against a PO, so the first failure is the one
-        # closest to the root of the problem.
-        reason = next((c["reason"] for c in failed if c["reason"]), None)             or "One or more checks did not pass."
+        # The FIRST failing rule is the reason AND drives the suggestion. Checks
+        # are appended in evaluation order, which is deliberate: document
+        # integrity is established before anything is compared against a PO, so
+        # the first failure is the one closest to the root of the problem --
+        # and the suggestion should point at that same root, not a downstream
+        # symptom of it.
+        primary_failure = next((c for c in failed if c["reason"]), None)
+        reason = (primary_failure["reason"] if primary_failure
+                 else "One or more checks did not pass.")
+        suggested_resolution = (_SUGGESTED_RESOLUTIONS.get(primary_failure["name"])
+                                if primary_failure else None)
+
+    # Every field ANY failing check implicates, not just the primary one -- a
+    # reviewer benefits from seeing all of them, even though only the first is
+    # cited as *the* reason. De-duplicated, order preserved.
+    problematic_fields = []
+    for c in failed:
+        if c["name"] == "Required fields present":
+            problematic_fields.extend(missing_fields or [])
+        elif c["name"] == "Extraction confidence":
+            problematic_fields.extend(f["field"] for f in (low_confidence or []))
+        else:
+            problematic_fields.extend(_RULE_FIELDS.get(c["name"], []))
+    seen = set()
+    problematic_fields = [f for f in problematic_fields if not (f in seen or seen.add(f))]
 
     return {
         "automated_decision": status,
         "reason": reason,
+        # A deterministic next step, derived from the same rule that produced
+        # `reason` -- never generated, never inferred beyond the lookup above.
+        # None on APPROVED, and None on a hold/reject whose triggering rule has
+        # no entry (nothing to say beyond the reason itself).
+        "suggested_resolution": suggested_resolution,
+        # Every field any failing check implicates. Empty on APPROVED.
+        "problematic_fields": problematic_fields,
         "invoice": {
             "invoice_number": extracted.get("invoice_number"),
             "vendor": extracted.get("vendor_name"),
@@ -835,6 +996,15 @@ def build_audit(status, checks, reasons, extract_info, po_match, extracted=None)
             "same_number_suspected": bool(po_match.get("currency_same_number_suspected")),
             "fx": po_match.get("fx"),
         },
+        # Per-field confidence, source and evidence, exactly as extraction
+        # produced it -- keyed by field name. Fields the extractor never
+        # attempted (or was completely certain of, for regex) may be absent;
+        # absence is not the same as a low score, so the UI must not treat a
+        # missing entry as a red flag.
+        "provenance": dict(extracted.get("provenance") or {}),
+        # The subset of `provenance` that actually held up this run -- i.e.
+        # what triggered the "Extraction confidence" check, if it fired.
+        "low_confidence_fields": list(low_confidence or []),
         "rules": checks,
         "rules_passed": [c["name"] for c in checks if c["passed"]],
         "rules_failed": [c["name"] for c in failed],

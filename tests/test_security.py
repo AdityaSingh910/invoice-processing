@@ -133,6 +133,7 @@ def test_response_schema_is_closed():
     assert set(extraction.RESPONSE_SCHEMA["properties"]) == {
         "vendor_name", "invoice_number", "invoice_date", "po_references",
         "line_items", "subtotal", "tax", "total", "currency",
+        "confidence", "evidence",
     }
 
 

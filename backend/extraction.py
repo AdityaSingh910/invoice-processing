@@ -40,6 +40,14 @@ MONEY = r"([\-\(]?\s*(?:[\$€£₹]|[A-Z]{3}\s)?\s*[\d][\d,\s]*(?:\.\d{1,2})?\)
 CURRENCY_SIGNS = {"$": "USD", "€": "EUR", "£": "GBP", "₹": "INR"}
 CURRENCY_CODES = ["USD", "EUR", "GBP", "INR", "AUD", "CAD", "SGD", "JPY", "CHF", "SEK", "AED"]
 
+# The fields provenance is tracked for -- deliberately not every field. These
+# are the ones REQUIRED_FIELDS and the confidence gate (config.py) care about,
+# plus subtotal/tax/currency since they feed the arithmetic and FX checks.
+# Line items and po_references are excluded: a per-line-item confidence score
+# would balloon the schema for a signal nothing downstream currently reads.
+PROVENANCE_FIELDS = ["vendor_name", "invoice_number", "invoice_date",
+                     "total", "subtotal", "tax", "currency"]
+
 
 class PdfUnreadable(Exception):
     """Raised when the file cannot be opened as a PDF at all."""
@@ -136,7 +144,13 @@ these keys and no others:
 {{"vendor_name": string|null, "invoice_number": string|null, "invoice_date": string|null,
  "po_references": [string], "line_items": [{{"description": string, "quantity": number|null,
  "unit_price": number|null, "amount": number|null}}], "subtotal": number|null,
- "tax": number|null, "total": number|null, "currency": string}}
+ "tax": number|null, "total": number|null, "currency": string,
+ "confidence": {{"vendor_name": number|null, "invoice_number": number|null,
+   "invoice_date": number|null, "total": number|null, "subtotal": number|null,
+   "tax": number|null, "currency": number|null}},
+ "evidence": {{"vendor_name": string|null, "invoice_number": string|null,
+   "invoice_date": string|null, "total": string|null, "subtotal": string|null,
+   "tax": string|null, "currency": string|null}}}}
 
 Rules:
 - vendor_name is the company ISSUING the invoice (the payee), not the customer being billed.
@@ -147,6 +161,20 @@ Rules:
 - currency: 3-letter ISO code, inferred from symbols or text. Default "USD" only if there is no signal.
 - Numbers must be plain JSON numbers: no currency symbols, no thousands separators.
 - Use null for anything genuinely not present. NEVER invent or infer a missing value.
+
+CONFIDENCE AND EVIDENCE -- for each field named in "confidence"/"evidence" above:
+- confidence: your own honest estimate, 0.0 to 1.0, of how sure you are that the
+  value you transcribed is correct and appears on the document as stated. 1.0
+  only for text you read directly and unambiguously. Lower it when the value is
+  handwritten, smudged, in a low-contrast scan, ambiguous between two readings,
+  or you had to choose between conflicting figures. null when the field itself
+  is null (nothing to be confident about).
+- evidence: a short VERBATIM quote (under 80 characters) copied exactly from the
+  document, showing where you read the value. null when the field is null. Do
+  not paraphrase, summarise, or translate -- copy the actual characters.
+- This is self-assessment, not a separate verification pass. You are not being
+  asked to double-check your own work against some other source -- only to
+  report how confident you already are.
 """.format(tag=DOC_TAG)
 
 
@@ -170,7 +198,45 @@ def _parse_llm_json(raw: str) -> dict:
     return json.loads(raw)
 
 
-def _invoice_from_payload(data: dict, raw_text: str, method: str) -> ExtractedInvoice:
+def _clamp01(v) -> Optional[float]:
+    """A confidence score, clamped to [0, 1]. A model that returns 1.4 or -0.2
+    is still saying something (very sure / very unsure) -- clamp rather than
+    discard, so a malformed-but-meaningful score is not silently lost."""
+    if not isinstance(v, (int, float)):
+        return None
+    return max(0.0, min(1.0, float(v)))
+
+
+def _build_provenance(data: dict, raw_text: str, page_label: str) -> dict:
+    """Per-field provenance from the model's self-reported confidence/evidence.
+
+    `evidence_verified` is a cheap, honest check: does the quoted snippet
+    actually appear in what was extracted? A model can hallucinate a quote as
+    easily as a value, and presenting an unverified quote as "evidence" without
+    saying so would be worse than not showing one -- this is the difference
+    between "the model claims to have read this here" and "the model read
+    this here", and the UI must be able to tell them apart.
+    """
+    conf = data.get("confidence") or {}
+    evid = data.get("evidence") or {}
+    haystack = (raw_text or "").lower()
+    out = {}
+    for field_name in PROVENANCE_FIELDS:
+        c = _clamp01(conf.get(field_name)) if isinstance(conf, dict) else None
+        e = evid.get(field_name) if isinstance(evid, dict) else None
+        e = str(e).strip() if isinstance(e, str) and e.strip() else None
+        if c is None and e is None:
+            continue
+        out[field_name] = {
+            "confidence": c,
+            "source": page_label,
+            "evidence": e,
+            "evidence_verified": (e.lower() in haystack) if (e and haystack) else None,
+        }
+    return out
+
+
+def _invoice_from_payload(data: dict, raw_text: str, method: str, page_label: str = None) -> ExtractedInvoice:
     def num(v):
         if isinstance(v, (int, float)):
             return float(v)
@@ -204,6 +270,7 @@ def _invoice_from_payload(data: dict, raw_text: str, method: str) -> ExtractedIn
         currency=cur,
         raw_text=raw_text,
         extraction_method=method,
+        provenance=_build_provenance(data, raw_text, page_label or "page 1"),
     )
 
 
@@ -283,6 +350,14 @@ RESPONSE_SCHEMA = {
         "tax": {"type": "NUMBER", "nullable": True},
         "total": {"type": "NUMBER", "nullable": True},
         "currency": {"type": "STRING", "nullable": True},
+        "confidence": {
+            "type": "OBJECT",
+            "properties": {f: {"type": "NUMBER", "nullable": True} for f in PROVENANCE_FIELDS},
+        },
+        "evidence": {
+            "type": "OBJECT",
+            "properties": {f: {"type": "STRING", "nullable": True} for f in PROVENANCE_FIELDS},
+        },
     },
 }
 
@@ -302,7 +377,21 @@ def _json_config():
     )
 
 
-def llm_extract_text(text: str, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice:
+def _page_label(page_count: int) -> str:
+    """A source location honest about what is actually knowable.
+
+    The text route hands the model ONE flattened string spanning every page --
+    there is no per-page boundary preserved for it to attribute a field to, so
+    claiming "page 2" for a multi-page document would be fabricating precision
+    that does not exist. Single-page documents (every current sample) are the
+    one case where "page 1" is simply, unambiguously true.
+    """
+    if page_count <= 1:
+        return "page 1"
+    return f"page not tracked ({page_count}-page document)"
+
+
+def llm_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 1) -> ExtractedInvoice:
     """Route 1: read the fields out of an embedded text layer."""
     # Hold the client in a local. `_client().models.generate_content(...)` leaves
     # the Client itself unreferenced, and google-genai closes its HTTP transport
@@ -314,7 +403,8 @@ def llm_extract_text(text: str, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice
         contents=[prompt, wrap_untrusted(text[:60000])],
         config=_json_config(),
     )
-    return _invoice_from_payload(_parse_llm_json(resp.text), text, "gemini (text)")
+    return _invoice_from_payload(_parse_llm_json(resp.text), text, "gemini (text)",
+                                 page_label=_page_label(page_count))
 
 
 def llm_extract_vision(png_bytes, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice:
@@ -343,7 +433,11 @@ def llm_extract_vision(png_bytes, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoi
         contents=contents,
         config=_json_config(),
     )
-    inv = _invoice_from_payload(_parse_llm_json(resp.text), "", "gemini (vision)")
+    # Vision genuinely knows which image(s) it read -- a single page image is
+    # honestly "page 1", the same way the text route is when there is only one
+    # page to be flattened into.
+    inv = _invoice_from_payload(_parse_llm_json(resp.text), "", "gemini (vision)",
+                                page_label=_page_label(len(pages)))
     inv.raw_text = "[no embedded text layer - fields read from page images]"
     return inv
 
@@ -367,7 +461,7 @@ def _groq_client():
     return Groq(api_key=config.groq_api_key())
 
 
-def groq_extract_text(text: str, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice:
+def groq_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 1) -> ExtractedInvoice:
     """Route 1: read the fields out of an embedded text layer, using Groq.
 
     Note the difference from the Gemini path, because it matters for the
@@ -391,7 +485,7 @@ def groq_extract_text(text: str, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoic
         temperature=0,
     )
     payload = _parse_llm_json(resp.choices[0].message.content or "")
-    return _invoice_from_payload(payload, text, "groq (text)")
+    return _invoice_from_payload(payload, text, "groq (text)", page_label=_page_label(page_count))
 
 
 # --------------------------------------------------------------------------
@@ -429,14 +523,48 @@ def _first(text: str, patterns, group=1) -> Optional[str]:
     return None
 
 
-def _detect_currency(text: str) -> str:
+def _detect_currency(text: str) -> Tuple[str, Optional[str]]:
+    """Returns (code, evidence) -- evidence is the sign/code actually found in
+    the text, or None when nothing was found and "USD" is a default rather
+    than a reading. That distinction is what regex_extract() scores on."""
     for code in CURRENCY_CODES:
         if re.search(r"\b%s\b" % code, text):
-            return code
+            return code, code
     for sign, code in CURRENCY_SIGNS.items():
         if sign in text:
-            return code
-    return "USD"
+            return code, sign
+    return "USD", None
+
+
+def _line_of(text: str, value) -> Optional[int]:
+    """1-indexed line number of the first occurrence of `value` in `text`, or
+    None if it cannot be found there. Used to give a regex-matched field a
+    real source location rather than just naming the mechanism."""
+    if value is None:
+        return None
+    idx = text.find(str(value))
+    return text.count("\n", 0, idx) + 1 if idx != -1 else None
+
+
+def _regex_prov(text: str, value, confidence: float, kind: str) -> Optional[dict]:
+    """One provenance entry for a regex-extracted field.
+
+    Regex has no self-assessment the way a model does, so confidence here is a
+    fixed score per KIND of source, reflecting how much the mechanism itself
+    can be trusted -- an explicitly labelled match ("Invoice #: X") is far more
+    reliable than a positional guess (`_guess_vendor`), which is more reliable
+    than a value synthesised because nothing was printed at all.
+    """
+    if value is None:
+        return None
+    line = _line_of(text, value)
+    return {
+        "confidence": confidence,
+        "source": f"{kind}, line {line}" if line else kind,
+        # A synthesised value has nothing in the document to quote.
+        "evidence": str(value) if kind != "computed" else None,
+        "evidence_verified": True if (kind != "computed" and line) else None,
+    }
 
 
 def _guess_vendor(text: str) -> Optional[str]:
@@ -464,6 +592,7 @@ def _guess_vendor(text: str) -> Optional[str]:
 
 def regex_extract(text: str) -> ExtractedInvoice:
     inv = ExtractedInvoice(raw_text=text, extraction_method="regex")
+    prov = {}
 
     inv.invoice_number = _first(text, [
         r"^[ \t]*(?:tax[ \t]*)?invoice[ \t]*(?:#|no\.?|nu?mb?e?r|id)[ \t]*[:\-#]?[ \t]*([A-Za-z0-9][\w\-\/]*)",
@@ -471,6 +600,9 @@ def regex_extract(text: str) -> ExtractedInvoice:
         r"\b(INV[-–—_/]?\d[\w\-\/]*)\b",
         r"^[ \t]*invoice[ \t]*[:\-][ \t]*([A-Za-z0-9][\w\-\/]*)",
     ])
+    p = _regex_prov(text, inv.invoice_number, 0.9, "explicit match")
+    if p:
+        prov["invoice_number"] = p
 
     inv.invoice_date = _first(text, [
         r"^[ \t]*(?:invoice|bill|document)?[ \t]*date(?:[ \t]*of[ \t]*issue)?[ \t]*[:\-]?[ \t]*"
@@ -481,6 +613,9 @@ def regex_extract(text: str) -> ExtractedInvoice:
         r"([A-Za-z]{3,9}[ \t]+\d{1,2},?[ \t]+\d{2,4})",
         r"^[ \t]*date[ \t]*[:\-][ \t]*(.+?)[ \t]*$",
     ])
+    p = _regex_prov(text, inv.invoice_date, 0.85, "explicit match")
+    if p:
+        prov["invoice_date"] = p
 
     refs = re.findall(
         r"(?:P\.?O\.?|purchase[ \t]*order)[ \t#:\-]*((?:PO[-–—_]?)?\d[\w\-\/]*)", text, re.I)
@@ -500,25 +635,58 @@ def regex_extract(text: str) -> ExtractedInvoice:
     ]
 
     inv.vendor_name = _guess_vendor(text)
+    if inv.vendor_name:
+        # Lower than an explicit label match, on purpose: this is a positional
+        # guess ("first plausible letterhead line"), not a reading anchored to
+        # a label like "Invoice #:". Still above the confidence threshold for
+        # the clean, one-page samples this pipeline demonstrates against --
+        # genuinely ambiguous letterheads should and do score lower once a
+        # model self-reports on them instead.
+        prov["vendor_name"] = _regex_prov(text, inv.vendor_name, 0.72, "heuristic (letterhead position)")
 
-    inv.subtotal = _to_float(_first(text, [
+    subtotal_raw = _first(text, [
         r"^[ \t]*sub[ \t]*-?[ \t]*total[ \t]*[:\-]?[ \t]*" + MONEY,
         r"^[ \t]*net[ \t]*(?:amount|total)[ \t]*[:\-]?[ \t]*" + MONEY,
-    ]))
-    inv.tax = _to_float(_first(text, [
+    ])
+    inv.subtotal = _to_float(subtotal_raw)
+    p = _regex_prov(text, subtotal_raw, 0.9, "explicit match")
+    if p:
+        prov["subtotal"] = p
+
+    tax_raw = _first(text, [
         r"^[ \t]*(?:sales[ \t]*)?tax(?:[ \t]*\([^)]*\))?[ \t]*[:\-]?[ \t]*" + MONEY,
         r"^[ \t]*(?:VAT|GST|IGST|CGST)(?:[ \t]*\([^)]*\))?[ \t]*[:\-]?[ \t]*" + MONEY,
-    ]))
-    inv.total = _to_float(_first(text, [
+    ])
+    inv.tax = _to_float(tax_raw)
+    p = _regex_prov(text, tax_raw, 0.9, "explicit match")
+    if p:
+        prov["tax"] = p
+
+    total_raw = _first(text, [
         r"^[ \t]*(?:total[ \t]*(?:amount[ \t]*)?due|amount[ \t]*due|balance[ \t]*due|"
         r"grand[ \t]*total|total[ \t]*payable|invoice[ \t]*total)[ \t]*[:\-]?[ \t]*" + MONEY,
         r"^[ \t]*total[ \t]*[:\-]?[ \t]*" + MONEY,
-    ]))
+    ])
+    inv.total = _to_float(total_raw)
+    if inv.total is not None:
+        prov["total"] = _regex_prov(text, total_raw, 0.9, "explicit match")
     # A "total" that merely repeated the subtotal is not a usable total.
-    if inv.total is None and inv.subtotal is not None and inv.tax is not None:
+    elif inv.subtotal is not None and inv.tax is not None:
         inv.total = round(inv.subtotal + inv.tax, 2)
+        # Genuinely lower confidence, deliberately: nothing on the document
+        # states this figure, it was computed from two others. Below
+        # config.CONFIDENCE_THRESHOLD by design -- a total the document never
+        # printed is exactly the case the confidence gate exists to catch.
+        prov["total"] = _regex_prov(text, inv.total, 0.55, "computed")
 
-    inv.currency = _detect_currency(text)
+    cur, cur_evidence = _detect_currency(text)
+    inv.currency = cur
+    prov["currency"] = (
+        _regex_prov(text, cur_evidence, 0.85, "detected in document text") if cur_evidence
+        # Defaulted, not read: nothing in the document signalled a currency.
+        else {"confidence": 0.4, "source": "no currency marker found — defaulted to USD",
+              "evidence": None, "evidence_verified": None}
+    )
 
     items = []
     for line in text.splitlines():
@@ -532,6 +700,7 @@ def regex_extract(text: str) -> ExtractedInvoice:
                 amount=_to_float(m.group(4)),
             ).__dict__)
     inv.line_items = items
+    inv.provenance = prov
     return inv
 
 
@@ -676,7 +845,7 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
             use_groq = False
         if use_groq:
             try:
-                inv = groq_extract_text(text)
+                inv = groq_extract_text(text, page_count=page_count)
                 info["route"] = "groq-text"
                 info["provider"] = "groq"
                 return inv, info
@@ -692,7 +861,7 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
             # No Groq configured, but Gemini is: keep the pre-Groq behaviour
             # rather than silently downgrading an existing install to regex.
             try:
-                inv = llm_extract_text(text)
+                inv = llm_extract_text(text, page_count=page_count)
                 info["route"] = "gemini-text"
                 info["provider"] = "gemini"
                 return inv, info
