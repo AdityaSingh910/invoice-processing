@@ -13,7 +13,7 @@ import AuditTrail from "./AuditTrail";
 import ReviewBar from "./ReviewBar";
 import StageList from "./StageList";
 import { MatchTable, PoBudget } from "./PoMatchPanel";
-import { ExtractedFields, ExtractionSummary, ReasonList } from "./Panels";
+import { ExtractedFields, ExtractionSummary, ReasonList, ReviewerBrief } from "./Panels";
 
 export interface RunLike {
   id: number;
@@ -75,7 +75,7 @@ export default function RunDetail({
             <div className="mt-3.5 flex flex-col gap-3.5">
               <ExtractionSummary e={run.extracted} />
               <div className="border-t border-line pt-1">
-                <ExtractedFields e={run.extracted} />
+                <ExtractedFields e={run.extracted} audit={run.audit} />
               </div>
             </div>
           </Panel>
@@ -90,6 +90,18 @@ export default function RunDetail({
           />
           <div className="mt-3.5">
             <StageList stages={run.stages} running={false} />
+          </div>
+        </Panel>
+      )}
+
+      {run.audit && run.audit.automated_decision !== "APPROVED" && (
+        <Panel>
+          <PanelHeader
+            title="Reviewer brief"
+            description="What to check, and where to look, before you decide."
+          />
+          <div className="mt-3.5">
+            <ReviewerBrief audit={run.audit} extracted={run.extracted} />
           </div>
         </Panel>
       )}

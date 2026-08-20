@@ -10,6 +10,24 @@ export interface LineItem {
   amount: number | null;
 }
 
+/**
+ * One field's provenance: how confident the extractor is, where the value
+ * came from, and a quoted snippet backing it. LLM routes self-report the
+ * confidence/evidence; regex assigns a deterministic heuristic instead. A
+ * field absent from `provenance` was never attempted, or read with total
+ * certainty (regex) -- that is different from carrying a low score, and
+ * must not be rendered as though it were one.
+ */
+export interface FieldProvenance {
+  confidence: number | null;
+  source: string | null;
+  evidence: string | null;
+  /** Whether `evidence` was actually found in the extracted text. false means
+   *  the model's quote does not appear there -- a real possibility, not a
+   *  bug, and must be shown as such rather than silently trusted. */
+  evidence_verified: boolean | null;
+}
+
 export interface Extracted {
   vendor_name: string | null;
   invoice_number: string | null;
@@ -21,6 +39,7 @@ export interface Extracted {
   total: number | null;
   currency: string;
   extraction_method: string;
+  provenance?: Record<string, FieldProvenance>;
 }
 
 export interface Stage {
@@ -146,6 +165,25 @@ export interface Audit {
   };
   extraction?: { method?: string; route?: string };
   rules?: AuditRule[];
+  /** One deterministic next step, derived from the same rule that produced
+   *  `reason` -- static text keyed by rule name, never generated. None on
+   *  APPROVED, or when the triggering rule has no suggestion of its own. */
+  suggested_resolution?: string | null;
+  /** Every field any failing check implicates, de-duplicated. Empty on
+   *  APPROVED. */
+  problematic_fields?: string[];
+  /** Per-field confidence/source/evidence, exactly as extraction produced it.
+   *  A field absent here was never attempted or was read with total
+   *  certainty -- not the same as a low score. */
+  provenance?: Record<string, FieldProvenance>;
+  /** The subset of `provenance` that actually triggered the "Extraction
+   *  confidence" check, if it fired. */
+  low_confidence_fields?: {
+    field: string;
+    confidence: number | null;
+    source?: string | null;
+    evidence?: string | null;
+  }[];
 }
 
 /** The live result streamed by POST /api/runs/stream. */

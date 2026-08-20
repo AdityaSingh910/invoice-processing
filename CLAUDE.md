@@ -40,7 +40,7 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Samples | ✅ 10/10 match the manifest, driven through the real pipeline |
 | UI | ✅ **Next.js 15 + React 19 + Tailwind v4**, 4 sections, light + dark |
 | Extraction | ✅ **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | ✅ **416 passing** deterministically, 17 files, both providers mocked |
+| Automated tests | ✅ **446 passing** deterministically, 18 files, both providers mocked |
 | Audit trail | ✅ Structured, deterministic, emitted by the rule engine itself |
 | Human review | ✅ Accept/reject, recorded beside the automated decision |
 | API security | ✅ OAuth2 bearer tokens, scopes, rate limits, input validation |
@@ -49,6 +49,8 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Non-invoice detection | ✅ Rejects documents containing no invoice, saying so |
 | Multi-PO invoices | ✅ `run_allocations` ledger; split calculated, always held |
 | Currency mismatch + FX | ✅ Pinned-rate conversion; same-number collision rejects |
+| Confidence gate + provenance | ✅ Phase 2 — self-reported/heuristic, gates the decision |
+| Reviewer brief | ✅ Why flagged, field, evidence, suggested resolution — before Accept/Reject |
 | Demo reset | ✅ Admin button in the UI, plus `.\reset-demo.ps1` |
 | Original audit defects | ✅ **All 3 fixed** |
 | Gemini vision route | ⚠️ Intermittent **503** from Google — see §9 |
@@ -89,14 +91,16 @@ README.
 
 ## 3. ⚠️ Standing instruction — do not skip
 
-**The remaining phases (§8) must not be started unprompted.** Phase 4 and the
-multi-PO part of Phases 6/7 are done, and the FX/currency decision has been
-reversed — all three only because the user explicitly asked. Phases 2, 3, 5 and
-the rest of 6/7 are untouched and stay that way until asked. The FX reversal in
-particular is recorded in §10 as *why* it changed, not as a silent overwrite —
-read that entry before assuming a prior "don't relitigate" decision is still in
-force; this project has now shown one can be reopened when the user asks for it
-by name.
+**The remaining phases (§8) must not be started unprompted.** Phase 4, the
+multi-PO part of Phases 6/7, the FX/currency reversal, and now Phase 2
+(confidence + provenance + the confidence gate) are all done — every one of
+them only because the user explicitly asked. Phase 3, Phase 5, and the rest of
+6/7 (line-item decomposition, a broader/live FX provider, evidence snippets
+beyond what Phase 2 already added) are untouched and stay that way until asked.
+The FX reversal in particular is recorded in §10 as *why* it changed, not as a
+silent overwrite — read that entry before assuming a prior "don't relitigate"
+decision is still in force; this project has now shown one can be reopened when
+the user asks for it by name.
 
 The user works **one discrete step at a time, with a commit after each** — not
 batched work. Every step so far was inspected, tested, verified and committed
@@ -337,6 +341,82 @@ before an amount (`"EUR 2,000.00"`), not just a symbol — needed for sample 08/
 to extract under the regex fallback. `_to_float()` already stripped non-numeric
 characters, so this needed no downstream change.
 
+### Confidence, provenance and the confidence gate (Phase 2)
+
+**Built at explicit request** — Phase 2 was "the most valuable thing left" and
+explicitly not-yet-started until asked for directly. Two scoping questions were
+asked and answered before writing code: should low confidence actually change
+the verdict (yes — wired in, not just displayed), and where does the score come
+from (the model self-reports it; regex gets a heuristic).
+
+`ExtractedInvoice.provenance: dict` — `{field_name: {confidence, source,
+evidence, evidence_verified}}` — additive only. Every existing consumer reading
+`extracted["total"]` etc. as a bare value is unaffected; the dict field just
+rides along in `extracted_json`, no DB migration needed (same reason
+`run_allocations` did the opposite and needed one: allocations are structural
+to the ledger, provenance is descriptive metadata).
+
+**Where confidence comes from:**
+- LLM routes (Groq/Gemini) — the SAME prompt/JSON call now also asks for
+  `confidence` (0-1) and a verbatim `evidence` quote per field
+  (`extraction.PROVENANCE_FIELDS`). No second pass, no extra request.
+  `evidence_verified` is computed in `_build_provenance()`: is the quoted
+  snippet actually a substring of the extracted text? A model can hallucinate
+  a quote as easily as a value; showing it as "evidence" without checking
+  would be worse than not showing one.
+- Regex has no self-assessment, so `regex_extract()` assigns a fixed score per
+  KIND of match: explicit labelled match ("Invoice #:") = 0.9, `_guess_vendor`
+  (a known weak positional heuristic) = 0.72, a value computed rather than
+  printed (total = subtotal + tax with no printed total) = 0.55 — deliberately
+  below the gate threshold.
+- Source location is honest about what is knowable. Regex reports a real line
+  number. The LLM text route gets ONE flattened string spanning every page with
+  no boundary preserved, so it says "page 1" for a single-page document (every
+  current sample) and "page not tracked (N-page document)" otherwise — never
+  fabricated per-page precision.
+
+**Stated, not glossed over:** model self-reported confidence skews high and is
+not independently calibrated. Still a genuine signal, not a guarantee — the
+gate's own reason text says so.
+
+**The gate** — `config.CONFIDENCE_GATED_FIELDS = [vendor_name, invoice_number,
+total]` (same fields `REQUIRED_FIELDS` already treats as central),
+`config.CONFIDENCE_THRESHOLD = 0.65`. `rules.validate_confidence()` returns the
+gated fields that ARE present but scored below threshold — a field that is
+missing entirely stays `validate_required_fields()`'s business, so absence is
+never double-counted as also "low confidence". New "Extraction confidence"
+check in `decide()`, placed right after "Required fields present" (a reading-
+quality problem is more fundamental than whether the numbers reconcile).
+**Only ever holds, never rejects** — same as every other extraction-uncertainty
+signal (unreadable scan, injection guard).
+
+**Suggested resolution + problematic fields** — `build_audit()` now also
+returns `suggested_resolution` (one deterministic sentence, static text keyed
+by rule name in `rules._SUGGESTED_RESOLUTIONS`, looked up from the SAME
+first-failing-check that already produces `reason` — never generated) and
+`problematic_fields` (every field any failing check implicates,
+`rules._RULE_FIELDS`, de-duplicated; `missing_fields`/`low_confidence` fill in
+the two checks whose fields vary per run). Both None/empty on APPROVED.
+
+**UI: "Reviewer brief".** A new panel (`Panels.tsx` → `ReviewerBrief`; vanilla
+→ `reviewerBriefHTML()`) sits right before the Accept/Reject buttons on any
+non-APPROVED run: why it was flagged (`audit.reason`), which field(s)
+(`problematic_fields`, each with its confidence badge + quoted evidence +
+"unverified" flag when applicable), and the suggested next step. Confidence
+badges also appear inline on every field in "Extracted data"
+(`ExtractedFields`/the vanilla fields table) — coloured by whether the RULE
+ENGINE actually flagged that field (`audit.low_confidence_fields`), not by
+re-deriving the threshold in the browser, so the UI's read of "low" can never
+drift from what `decide()` used. PO information, and who-reviewed-when, were
+already shown elsewhere (`PoMatchPanel`, `HumanRuling`) — not duplicated here.
+
+**Found and fixed while building this:** the vanilla UI's confidence badge had
+its CSS class names backwards — `provBadge()` emitted `prov-ok`/`prov-warn`/
+`prov-bad` but the CSS selectors were `.prov-badge.ok` etc. (bare tone names).
+Caught by extracting the function and running it against real data outside the
+browser, not by eyeballing the diff — the badges would have silently rendered
+with no colour at all.
+
 ### Extraction routes
 
 Chosen by what the document **is** — whether `extract_text()` finds a usable text
@@ -541,11 +621,11 @@ sample_invoices/  10 PDFs, generate_invoices.py, manifest.json
 scripts/          replay_samples.py — drives the 7 samples in manifest order
                   and checks each verdict. Used by reset-demo.ps1 -Replay.
 reset-demo.ps1    Clears run history (and optionally replays the samples).
-tests/            17 files, 416 tests. conftest.py provides auth_headers()
+tests/            18 files, 446 tests. conftest.py provides auth_headers()
                   as a plain function, NOT a fixture -- import it.
 ```
 
-### Test suite — 416 tests, 17 files
+### Test suite — 446 tests, 18 files
 
 | File | n | Covers |
 |---|---|---|
@@ -561,6 +641,7 @@ tests/            17 files, 416 tests. conftest.py provides auth_headers()
 | `test_arithmetic.py` | 22 | subtotal + tax == total |
 | `test_invalid_amount.py` | 21 | zero / negative totals |
 | `test_currency.py` | 29 | pinned-rate FX approve, same-number reject, held-else |
+| `test_confidence.py` | 31 | provenance (regex heuristic + LLM self-report), the gate, suggested resolution/problematic fields, one end-to-end mocked-LLM run |
 | `test_inferred_po.py` | 13 | distance cap, ambiguity guard |
 | `test_po_edge_cases.py` | 12 | split-PO, idempotency, reversal, concurrency |
 | `test_samples.py` | 10 | the 10 samples end to end, in manifest order |
@@ -679,22 +760,22 @@ invoice. The decision depends on the PO's history, not the file alone. Watch
 |---|---|---|
 | 0 | Green build, pytest suite | ✅ done |
 | 1 | Inferred-PO safety, currency, arithmetic, invalid amounts, vendor matching | ✅ done |
-| 2 | `Tracked[T]` provenance, per-route confidence, **confidence gate** | ⬜ |
+| 2 | `Tracked[T]` provenance, per-route confidence, **confidence gate** | ✅ done |
 | 3 | `rules.yaml` versioned policy + typed loader | ◨ thresholds in `config.py`; YAML to do |
 | 4 | Transactions; `run_allocations` table | ✅ done |
 | 5 | `DecisionTrace` + reference snapshot; stop re-seeding | ◨ audit trail done; snapshot to do |
 | 6 | Line-item decomposition, multi-PO consolidation, FX provider | ◨ multi-PO done; currency mismatch resolves against a pinned rate table (config.FX_RATES); line items + a broader/live FX provider to do |
-| 7 | UI: confidence badges, evidence snippets, allocation view | ◨ allocation view done; confidence to do |
+| 7 | UI: confidence badges, evidence snippets, allocation view | ◨ allocation view + confidence badges + reviewer brief done; nothing queued |
 
 **Sequencing trap (already navigated):** multi-PO consolidation is a **ledger**
 feature, not a matching feature. Phase 4's `run_allocations` table landed first,
 on its own and behaviour-neutral; multi-PO matching went on top of it. Doing it
 the other way round would have over-consumed every PO an invoice touched.
 
-**Most valuable thing left:** Phase 2's confidence gate — it closes the
-low-confidence auto-approve problem as a *class*. But nothing in the phases
-still open changes a verdict on any of the ten samples, so none of it blocks
-the case study.
+**Most valuable thing left:** was Phase 2's confidence gate — done, at the
+user's request; see § Confidence, provenance and the confidence gate. Nothing
+in the phases still open (3, 5, the rest of 6/7) changes a verdict on any of
+the ten samples, so none of it blocks the case study.
 
 ---
 
@@ -743,7 +824,6 @@ unaffected. The amount rule cannot catch a sign the extractor discarded.
 
 ### Design gaps (deliberate, queued)
 
-- Extracted fields are **bare values** — no confidence, no provenance. Phase 2.
 - Business rules are **constants in `config.py`**, not versioned policy. Phase 3.
 - Reference data **re-seeded from JSON on every startup**, so editing
   `purchase_orders.json` silently changes what historical runs mean. Phase 5.
@@ -774,8 +854,8 @@ unaffected. The amount rule cannot catch a sign the extractor discarded.
 
 1. Read this file, then [README.md](README.md) (current and verified).
 2. `git log --oneline -10` and `git status` — confirm nothing moved.
-3. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **416 passed**.
-   No key or network needed. If it is not 416, find out what changed before
+3. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **446 passed**.
+   No key or network needed. If it is not 446, find out what changed before
    building anything. Two known non-regressions: `test_samples` 05 depends on
    Gemini being reachable (503 and 429 both happen), and
    `test_extraction_routing` fails 4 cases when the local vision quota is spent
@@ -810,7 +890,7 @@ demo first (§4), and settle the sample-05 badge question (§9 issue 2).
 | No rule engine (JSON-logic etc.) | One-sided tolerance and ledger-derived balances express badly in a DSL; a sign error in exactly that comparison has been a bug twice. YAML for policy, Python for predicates. |
 | ~~FX conversion must not widen auto-approval~~ **REVERSED, at the user's explicit request** | Was: a verdict depending on a rate fetched at run time is not reproducible by an auditor. Now: conversion is allowed against a **pinned, versioned** rate table (`config.FX_RATES`) — the objection was about *when* the rate is fetched, not conversion itself, and a pinned table is exactly as reproducible as a pinned model. See § Currency mismatch and FX conversion. |
 | Same raw number, different currency → REJECTED, not held | No correct conversion produces identical digits in a different currency, so it isn't an ordinary discrepancy for a human to reconcile — it reads as a currency-code error, and paying face value would silently mis-pay by the full FX difference. The one place a currency finding rejects rather than holds. |
-| Pydantic `Field()` rejected for confidence | Class-level schema metadata; confidence is per-instance data. Use `Tracked[T]`. |
+| Pydantic `Field()` rejected for confidence | Class-level schema metadata; confidence is per-instance data. Built as `ExtractedInvoice.provenance: dict`, not a literal `Tracked[T]` generic wrapper — same principle (provenance travels beside the value, not baked into the type used for arithmetic), lighter-weight implementation. |
 | **Groq for text, Gemini for vision** | Gemini's free tier is 20/day and is the only route that can read a picture. Economics, not architecture — the swap touched only `extraction.py` + `config.py`. |
 | Groq failure → regex, NOT → Gemini | Falling through would spend the scarce vision budget on a route that already has a local fallback. |
 | Models **pinned**, not aliased | An alias changes the model under a running system. |
@@ -831,7 +911,7 @@ demo first (§4), and settle the sample-05 badge question (§9 issue 2).
 | Non-invoice detection uses **extraction output, not keywords** | Searching for the word "invoice" misses other languages and fires on any document that merely discusses invoicing — including this project's own brief. A model that reads a page and finds no field is the classifier. |
 | Not-an-invoice **rejects**, unreadable **holds** | A hold means "a human must decide whether to pay this"; there is nothing to decide about a CV. But an empty result from a failed extractor is evidence about the extractor, so degraded routes never hard-reject. |
 | Demo reset is an endpoint, not just a script | It was reported twice as a bug. Recovery should not require deleting a file on the server. Admin-scoped, deletes runs only. |
-| No per-field confidence shown | The pipeline does not produce one (Phase 2). Rendering an invented percentage beside a dollar figure on an audit screen would be fabricating evidence. |
+| ~~No per-field confidence shown~~ **REVERSED, at the user's explicit request** | Was: the pipeline did not produce one, and rendering an invented percentage would be fabricating evidence. Now: it is a genuine per-instance signal (model self-report, or a regex heuristic) computed by extraction and stored — see § Confidence, provenance and the confidence gate. |
 
 ### Bugs already found and fixed — don't reintroduce
 
@@ -878,6 +958,12 @@ demo first (§4), and settle the sample-05 badge question (§9 issue 2).
     the invoice's currency, not the PO's** — both are computed against
     `remaining_before`, which is always PO-currency. Invisible until FX
     conversion made a clean APPROVED run on a non-USD invoice possible.
+20. **The vanilla UI's confidence badge had its CSS class names backwards** —
+    `provBadge()` emitted `prov-ok`/`prov-warn`/`prov-bad` but the CSS
+    selectors were `.prov-badge.ok` etc. (bare tone names, not `prov-`
+    prefixed). Caught by extracting the function and running it against real
+    data outside the browser, not by eyeballing the diff — the badges would
+    have silently rendered with no colour at all.
 
 ---
 

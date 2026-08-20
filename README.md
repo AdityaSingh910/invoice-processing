@@ -21,7 +21,7 @@ suite is green.**
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light + dark |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **416 passing** deterministically, 17 files, no live API calls |
+| Automated tests | **446 passing** deterministically, 18 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
@@ -112,6 +112,17 @@ currency — no correct conversion produces that, so it isn't an ordinary
 discrepancy for a human to puzzle over. See
 [Currency mismatch and FX conversion](#currency-mismatch-and-fx-conversion).
 
+**13. Confidence, provenance and the confidence gate.** The most valuable
+thing left in the phase table — explicitly not started until asked for
+directly. Every extracted field now carries a confidence score, a source
+location and a quoted piece of evidence (self-reported by the model, or a
+deterministic heuristic for regex), and three fields central to the decision
+can hold a run for review if the extractor itself is unsure of them — never
+reject, only ever hold. The human-review screen gained a **reviewer brief**:
+why a run was flagged, which field(s), the evidence behind each, and one
+deterministic suggested next step, ahead of Accept/Reject. See
+[Confidence, provenance and the confidence gate](#confidence-provenance-and-the-confidence-gate).
+
 ---
 
 ## Quick start (Windows)
@@ -169,7 +180,7 @@ start refuses to boot while they exist — see [Running in production](#running-
 .\venv\Scripts\python.exe -m pytest tests\ -q
 ```
 
-**416 tests across 17 files.** They mock both providers, so they need no API
+**446 tests across 18 files.** They mock both providers, so they need no API
 key, no network and no quota. With keys present, `tests/test_samples.py` additionally exercises the
 real Groq and Gemini routes end to end — the fixture prints which mode ran,
 because a green suite means a different thing in each.
@@ -327,11 +338,12 @@ scanned invoice is still held for a person.
 - **REJECTED** — things the process must not override: duplicates, vendors on
   file but not approved, documents that are not invoices, and an invoice that
   states the PO's own number under a different currency.
-- **NEEDS_REVIEW** — recoverable: missing fields, unreadable scan, amount over
-  tolerance, no PO match, a currency mismatch with no pinned rate (or one that
-  still doesn't fit after conversion), bad arithmetic, an invalid total, an
-  inferred PO, an invoice covering several POs with no stated split, or text
-  that reads as an instruction to the extractor.
+- **NEEDS_REVIEW** — recoverable: missing fields, low extraction confidence on
+  a field central to the decision, unreadable scan, amount over tolerance, no
+  PO match, a currency mismatch with no pinned rate (or one that still doesn't
+  fit after conversion), bad arithmetic, an invalid total, an inferred PO, an
+  invoice covering several POs with no stated split, or text that reads as an
+  instruction to the extractor.
 - **APPROVED** — everything passed. Includes a currency mismatch that a
   pinned, versioned exchange rate resolves within tolerance.
 
@@ -467,6 +479,70 @@ Models are **pinned**, not aliased (`openai/gpt-oss-120b`, `gemini-3.7-flash`),
 both overridable by environment variable. An alias changes the model under a
 running system, and an AP process must be able to say which model read an
 invoice approved months ago.
+
+### Confidence, provenance and the confidence gate
+
+Every extracted field can carry provenance — a confidence score, where it came
+from, and a quoted snippet of the document backing it:
+
+```
+Invoice total: $50,000
+Confidence:    96%
+Source:        page 1
+Evidence:      "Total Due: $50,000.00"
+Read by:       Groq · text layer
+```
+
+**Where the score comes from.** The LLM routes (Groq/Gemini) self-report a
+confidence (0–1) and a short verbatim quote for each field, in the same JSON
+call that reads the value — no second pass. Regex has no self-assessment, so it
+gets a deterministic heuristic instead: an explicitly labelled match
+(`"Invoice #:"`) scores high, a positional guess (`_guess_vendor`, a known weak
+heuristic) scores lower, and a value computed rather than printed (a total
+synthesised as `subtotal + tax` because none was stated) scores lower still —
+deliberately below the gate threshold.
+
+Stated honestly rather than glossed over: **model self-reported confidence
+skews high and is not independently calibrated.** It is still a genuine
+signal — a model unsure about a field it read is meaningfully different from
+one that read it cleanly — just not a guarantee, and the gate's own wording
+says so.
+
+**Evidence is checked, not trusted blindly.** A model can hallucinate a quote
+as easily as a value, so every quoted snippet is verified against the actual
+extracted text; an unverified quote is shown labelled as such rather than
+presented as confirmed.
+
+**The gate.** Three fields — vendor name, invoice number, total, the same ones
+already required for approval — can hold a run for review if the extractor
+itself scored them below 65% confidence. Deliberately narrow: it only fires
+when a field **is present but uncertain**, a different failure class from a
+field that's simply missing, and it only ever **holds, never rejects** — the
+same rule every other extraction-uncertainty signal in this pipeline follows
+(an unreadable scan, the injection guard). Low confidence about a *reading* is
+not evidence the invoice itself is wrong.
+
+### Human review, briefed
+
+When a run is held or rejected, a **reviewer brief** sits above the Accept /
+Reject buttons — everything needed to decide, assembled from data the rule
+engine already computed, nothing generated for the occasion:
+
+- **Why it was flagged** — the same deterministic reason in the audit trail.
+- **Which field(s)** are implicated — every failing check maps to the field(s)
+  it concerns (a static lookup by rule name, e.g. an arithmetic mismatch names
+  `subtotal`, `tax` and `total`), de-duplicated across every failing check, not
+  just the first.
+- **The evidence** behind each one — confidence, source, and the quoted
+  snippet, straight from provenance.
+- **A suggested next step** — one deterministic sentence, looked up from the
+  same rule that produced the reason ("confirm the vendor's approval status",
+  "request a corrected invoice", "convert manually and confirm the correct
+  amount") — never generated, never a guess.
+
+Purchase-order context (the three-way match, the balance bar) and who-ruled-
+when were already surfaced elsewhere in the run view and are not duplicated
+here.
 
 ### The audit trail
 
@@ -622,10 +698,6 @@ held, $0.00 remaining).
 
 What is still true, by design rather than accident, and queued for later phases:
 
-- Extracted fields are **bare values** — no confidence, no pointer to where in
-  the document they came from. A total read off the page is indistinguishable
-  from one the code synthesised as `subtotal + tax`. This is Phase 2 and the
-  most valuable thing left to build.
 - **Business rules are constants in `config.py`, not versioned policy.** There
   is no `rules.yaml`, no policy version, and no way to say which policy approved
   a given invoice.
@@ -654,15 +726,16 @@ availability, so the badge can briefly contradict the run beside it.
 |---|---|---|
 | **0** | Green build, pytest suite | ✅ done |
 | **1** | Inferred-PO safety, currency, arithmetic, invalid amounts, vendor matching | ✅ done |
-| **2** | `Tracked[T]` provenance wrapper, per-route confidence, the **confidence gate** | ⬜ |
+| **2** | `Tracked[T]` provenance wrapper, per-route confidence, the **confidence gate** | ✅ done |
 | **3** | `rules.yaml` — pull every threshold out of Python, stamp the version on each run | ◨ thresholds centralised; YAML + loader to do |
 | **4** | Transaction boundaries and the `run_allocations` ledger table | ✅ done |
 | **5** | `DecisionTrace` + reference snapshot; stop re-seeding on startup | ◨ audit trail done; snapshot to do |
 | **6** | Line-item decomposition, multi-PO consolidation, FX provider | ◨ multi-PO done; currency mismatch resolves against a pinned rate table; line items + a broader/live FX provider to do |
-| **7** | UI: confidence badges, evidence snippets, allocation view | ◨ allocation view done; confidence to do |
+| **7** | UI: confidence badges, evidence snippets, allocation view | ◨ allocation view + confidence badges + reviewer brief done; nothing queued |
 
-**The most valuable thing left** is Phase 2's confidence gate — it closes the
-low-confidence auto-approve problem as a *class* rather than case by case.
+**The most valuable thing left** was Phase 2's confidence gate — done, closing
+the low-confidence auto-approve problem as a *class* rather than case by case.
+See [Confidence, provenance and the confidence gate](#confidence-provenance-and-the-confidence-gate).
 Nothing in the phases still open changes a verdict on any of the ten samples, so
 none of it is what is blocking the case study.
 
@@ -708,7 +781,7 @@ frontend/         The original vanilla UI, kept as a no-build fallback
 data/             Seed POs + vendors + demo users (tracked); app.db (not tracked)
 sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            17 files, 416 tests, both providers mocked
+tests/            18 files, 446 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

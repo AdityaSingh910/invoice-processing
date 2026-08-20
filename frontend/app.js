@@ -313,17 +313,18 @@ function showResult(r) {
 
   // extracted fields
   const e = r.extracted;
+  const low = r.audit && r.audit.low_confidence_fields;
   const req = (v) => (v ? esc(v) : '<span class="kv-missing">missing</span>');
   $("extractedTable").innerHTML = `
-    ${row("Vendor", req(e.vendor_name))}
-    ${row("Invoice #", req(e.invoice_number))}
-    ${row("Date", e.invoice_date ? esc(e.invoice_date) : "—")}
+    ${row("Vendor", req(e.vendor_name) + provBadge("vendor_name", e, low))}
+    ${row("Invoice #", req(e.invoice_number) + provBadge("invoice_number", e, low))}
+    ${row("Date", (e.invoice_date ? esc(e.invoice_date) : "—") + provBadge("invoice_date", e, low))}
     ${row("PO refs", (e.po_references || []).join(", ") || "—")}
-    ${row("Subtotal", amt(e.subtotal, e.currency))}
-    ${row("Tax", amt(e.tax, e.currency))}
-    ${row("Total", e.total !== null && e.total !== undefined ? `<b>${amt(e.total, e.currency)}</b>` : req(null))}
+    ${row("Subtotal", amt(e.subtotal, e.currency) + provBadge("subtotal", e, low))}
+    ${row("Tax", amt(e.tax, e.currency) + provBadge("tax", e, low))}
+    ${row("Total", (e.total !== null && e.total !== undefined ? `<b>${amt(e.total, e.currency)}</b>` : req(null)) + provBadge("total", e, low))}
     ${row("Line items", (e.line_items || []).length || "—")}
-    ${row("Currency", esc(e.currency || "—"))}
+    ${row("Currency", esc(e.currency || "—") + provBadge("currency", e, low))}
     ${row("Extraction route", esc(e.extraction_method))}`;
   $("fieldsCard").classList.remove("hidden");
 
@@ -331,11 +332,31 @@ function showResult(r) {
   // the review bar is offered whenever the rules held it.
   const justRun = { id: r.run_id, status: r.status, automated_decision: r.status,
                     human_decision: null };
-  $("auditBody").innerHTML = auditHTML(r.audit, justRun) + reviewBarHTML(justRun);
+  $("auditBody").innerHTML = reviewerBriefHTML(r.audit, e) + auditHTML(r.audit, justRun) + reviewBarHTML(justRun);
   $("auditCard").classList.remove("hidden");
 }
 
 const row = (k, v) => `<tr><td>${k}</td><td>${v}</td></tr>`;
+
+/* A confidence badge for one extracted field, with its source and evidence in
+   a title tooltip. Coloured "bad" only when the RULE ENGINE actually flagged
+   this field (audit.low_confidence_fields) -- not by re-deriving the
+   threshold here, which could drift from what decide() used. A field absent
+   from provenance carries no confidence claim and draws nothing. */
+function provBadge(field, extracted, lowConfidenceFields) {
+  const p = extracted && extracted.provenance && extracted.provenance[field];
+  if (!p || p.confidence === null || p.confidence === undefined) return "";
+  const flagged = (lowConfidenceFields || []).some((f) => f.field === field);
+  const cls = flagged ? "bad" : p.confidence >= 0.85 ? "ok" : "warn";
+  const pct = Math.round(p.confidence * 100);
+  const tipParts = [];
+  if (p.source) tipParts.push("Source: " + p.source);
+  if (p.evidence) {
+    tipParts.push("Evidence: \"" + p.evidence + "\""
+      + (p.evidence_verified === false ? " (not found in document -- unverified)" : ""));
+  }
+  return ` <span class="prov-badge ${cls}" title="${esc(tipParts.join("  |  "))}">${pct}%</span>`;
+}
 
 /* ---------------- audit trail ----------------
 
@@ -353,6 +374,47 @@ function amt(v, currency) {
   const sym = CUR[String(currency || "").toUpperCase()] || "";
   const n = Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return sym ? sym + n : `${n} ${esc(currency || "")}`.trim();
+}
+
+/* What a reviewer needs before deciding: why the run was held or rejected,
+   which field(s) are implicated, the evidence/source behind each, and one
+   deterministic suggested next step. Every value here was computed by
+   rules.py or extraction.py -- nothing is composed in this function, it only
+   lays out fields that already exist on the audit trail. Empty string on an
+   APPROVED run, or when there is no audit trail at all. */
+function reviewerBriefHTML(a, extracted) {
+  if (!a || a.automated_decision === "APPROVED") return "";
+  const fields = a.problematic_fields || [];
+  const prov = (extracted && extracted.provenance) || a.provenance || {};
+
+  const fieldsHTML = fields.map((f) => {
+    const p = prov[f];
+    const badge = p && p.confidence !== null && p.confidence !== undefined
+      ? `<span class="prov-badge ${p.confidence >= 0.65 ? "warn" : "bad"}">${Math.round(p.confidence * 100)}% confidence</span>`
+      : "";
+    const evidence = p && p.evidence
+      ? `<div class="reviewer-brief-evidence">&ldquo;${esc(p.evidence)}&rdquo;${p.source ? " — " + esc(p.source) : ""}${
+          p.evidence_verified === false ? ' <span class="kv-missing">(not found in document — unverified)</span>' : ""
+        }</div>`
+      : `<div class="reviewer-brief-evidence">No extracted evidence on record for this field.</div>`;
+    return `<div class="reviewer-brief-field">
+      <div class="reviewer-brief-field-head">
+        <span class="reviewer-brief-field-name">${esc(f.replace(/_/g, " "))}</span>
+        ${badge}
+      </div>
+      ${evidence}
+    </div>`;
+  }).join("");
+
+  return `<div class="modal-section">Reviewer brief</div>
+    <div class="reviewer-brief">
+      ${a.reason ? `<div><h4>Why it was flagged</h4><p>${esc(a.reason)}</p></div>` : ""}
+      ${fields.length ? `<div><h4>Field${fields.length === 1 ? "" : "s"} to check</h4>${fieldsHTML}</div>` : ""}
+      ${a.suggested_resolution ? `<div class="reviewer-brief-suggestion">
+          <div class="reviewer-brief-suggestion-title">Suggested next step</div>
+          ${esc(a.suggested_resolution)}
+        </div>` : ""}
+    </div>`;
 }
 
 function auditHTML(a, run) {
@@ -739,6 +801,7 @@ function openModal(r) {
     }).join("")}</ul>
 
     <div class="modal-section">Decision details</div>
+    ${reviewerBriefHTML(r.audit, r.extracted)}
     ${auditHTML(r.audit, r)}
     ${reviewBarHTML(r)}
 
