@@ -63,13 +63,80 @@ def _consumed(conn, po_number, exclude_run_id=None):
     Deliberately derived from run history rather than read off a stored counter.
     Nothing to deduct means nothing to deduct twice, so re-evaluating a run can
     never double-count it, and reversing one refunds the balance by definition.
+
+    WHY THIS SUMS ALLOCATIONS RATHER THAN RUN TOTALS
+
+    This used to read `SUM(total) FROM runs WHERE po_number=?`, which silently
+    assumed one PO per invoice: the run's WHOLE total was charged to whichever
+    PO happened to be bound. An invoice covering two POs therefore over-consumed
+    the first by the value of the second and never touched the second at all --
+    measured, before this change, as PO-1001 dropping to -$5,000 remaining while
+    PO-1002 stayed untouched at $5,000.
+
+    `run_allocations` records how much of a run went to WHICH PO, so the sum is
+    per-PO rather than per-run. The derived-ledger property is unchanged and is
+    the reason this stays safe: the join is on `runs.status='APPROVED'`, so
+    allocation rows count only while their run is approved. Nothing is deducted,
+    so nothing can be deducted twice, and moving a run out of APPROVED still
+    refunds every PO it touched in the same instant.
     """
-    q = "SELECT COALESCE(SUM(total), 0) AS c FROM runs WHERE po_number=? AND status='APPROVED'"
+    q = """SELECT COALESCE(SUM(a.amount), 0) AS c
+           FROM run_allocations a JOIN runs r ON r.id = a.run_id
+           WHERE a.po_number = ? AND r.status = 'APPROVED'"""
     params = [po_number]
     if exclude_run_id is not None:
-        q += " AND id != ?"
+        q += " AND r.id != ?"
         params.append(exclude_run_id)
     return conn.execute(q, params).fetchone()["c"] or 0.0
+
+
+def _write_allocations(conn, run_id, allocations):
+    """Record which POs a run's total was charged against, and how much to each.
+
+    Replaces any existing rows for the run so a re-write cannot double-charge.
+
+    The invariant that matters is enforced by the caller, not here: the
+    allocations for a run must sum to that run's total. If they ever do not, the
+    ledger is describing money that was never billed (or failing to describe
+    money that was).
+    """
+    conn.execute("DELETE FROM run_allocations WHERE run_id=?", (run_id,))
+    for seq, alloc in enumerate(allocations or []):
+        conn.execute(
+            "INSERT INTO run_allocations (run_id, po_number, amount, seq) VALUES (?,?,?,?)",
+            (run_id, alloc["po_number"], round(float(alloc["amount"]), 2), seq),
+        )
+
+
+def allocations_from_match(po_match: dict, total):
+    """The allocation rows implied by a PO match.
+
+    One place, so the single-PO case is not a separate code path from the
+    multi-PO one -- a run bound to one PO is simply a run with one allocation.
+
+    Returns [] when nothing was bound, which is correct: an invoice with no PO
+    consumes no budget anywhere.
+    """
+    po_match = po_match or {}
+    explicit = po_match.get("allocations")
+    if explicit:
+        return [{"po_number": a["po_number"], "amount": a["amount"]} for a in explicit]
+    po_number = po_match.get("po_number")
+    if not po_number or total is None:
+        return []
+    return [{"po_number": po_number, "amount": total}]
+
+
+def allocations_for_run(run_id: int):
+    """What this run charged, to which POs, in the order the invoice referenced them."""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT po_number, amount, seq FROM run_allocations WHERE run_id=? ORDER BY seq",
+            (run_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def init_db(reset_runs: bool = False):
@@ -147,7 +214,55 @@ def init_db(reset_runs: bool = False):
                     WHERE automated_decision IS NULL""")
     conn.execute("""UPDATE runs SET final_decision = status
                     WHERE final_decision IS NULL""")
+
+    # HOW MUCH OF EACH RUN WAS CHARGED TO WHICH PO.
+    #
+    # `runs.po_number` holds one PO, which cannot describe an invoice covering
+    # several. This table can. It is NOT a stored balance -- the distinction is
+    # the whole reason the design survives:
+    #
+    #   * A COUNTER would be authoritative, would need an explicit refund on
+    #     reversal, and would be one missed code path away from a PO that can
+    #     never be spent again. That was rejected, twice.
+    #   * An ALLOCATION is an immutable fact about a run: this invoice billed
+    #     $X against PO-Y. Whether it COUNTS is still derived, by joining to
+    #     `runs.status='APPROVED'` at read time. Reversal and idempotency stay
+    #     structural exactly as before.
+    #
+    # `runs.po_number` is kept as the primary PO for display and for existing
+    # queries; the ledger no longer reads it.
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS run_allocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            po_number TEXT NOT NULL,
+            amount REAL NOT NULL,
+            seq INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (run_id) REFERENCES runs(id)
+        )"""
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_alloc_po ON run_allocations(po_number)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_alloc_run ON run_allocations(run_id)")
+
+    # Runs committed before this table existed carry their charge in
+    # (po_number, total). Synthesise the one allocation row each of them always
+    # implied, so every historical balance reads exactly as it did before -- the
+    # migration must not move a single number.
+    #
+    # Idempotent by construction: it only touches runs that have no allocation
+    # rows at all, and every run written from now on gets its rows at insert
+    # time. A genuine multi-PO run can therefore never be "topped up" by a later
+    # startup.
+    conn.execute(
+        """INSERT INTO run_allocations (run_id, po_number, amount, seq)
+           SELECT r.id, r.po_number, COALESCE(r.total, 0), 0
+           FROM runs r
+           WHERE r.po_number IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM run_allocations a WHERE a.run_id = r.id)"""
+    )
+
     if reset_runs:
+        cur.execute("DELETE FROM run_allocations")
         cur.execute("DELETE FROM runs")
 
     # (re)load seed reference data every start so edits to the JSON files take effect
@@ -409,7 +524,12 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
              # never rewritten. `status` may later move; this must not.
              status, status),
         )
-        return cur.lastrowid, status, extra
+        run_id = cur.lastrowid
+        # Inside the same transaction as the run row. A run that exists without
+        # its allocations would be an invoice charged to nothing, and the PO it
+        # consumed would silently read as still available.
+        _write_allocations(conn, run_id, allocations_from_match(po_match, total))
+        return run_id, status, extra
 
 
 def set_run_status(run_id: int, new_status: str, note: str = None):
@@ -588,6 +708,7 @@ def save_run(filename, status, extracted: dict, po_match: dict, stages: list, re
         ),
     )
     run_id = cur.lastrowid
+    _write_allocations(conn, run_id, allocations_from_match(po_match, extracted.get("total")))
     conn.commit()
     conn.close()
     return run_id
@@ -637,5 +758,8 @@ def clear_run_history():
     half-applied beside an in-flight approval.
     """
     with write_txn() as conn:
+        # Allocations first: they are rows ABOUT runs, and leaving them behind
+        # would charge every PO against invoices that no longer exist.
+        conn.execute("DELETE FROM run_allocations")
         deleted = conn.execute("DELETE FROM runs").rowcount
     return deleted
