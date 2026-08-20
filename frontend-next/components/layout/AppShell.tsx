@@ -10,13 +10,16 @@
  */
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
+import { useTheme } from "@/lib/theme";
 import { Button, Tooltip } from "@/components/ui";
 import {
   IconInvoice,
   IconLedger,
   IconMenu,
+  IconMoon,
   IconOverview,
   IconSignOut,
+  IconSun,
   IconUpload,
   IconX,
 } from "@/components/ui/icons";
@@ -64,6 +67,7 @@ export default function AppShell({
   children: React.ReactNode;
 }) {
   const { user, signOut, can } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const [drawer, setDrawer] = useState(false);
 
   useEffect(() => setDrawer(false), [section]);
@@ -180,6 +184,15 @@ export default function AppShell({
         <div className="truncate text-[12px] font-medium text-rail-fg">{user.username}</div>
         <div className="truncate text-[10.5px] text-rail-faint">{roleOf()}</div>
       </div>
+      <Tooltip label={theme === "dark" ? "Switch to light" : "Switch to dark"}>
+        <button
+          onClick={toggleTheme}
+          aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          className="grid h-6 w-6 shrink-0 place-items-center rounded-[var(--radius-sm)] text-rail-faint transition-colors hover:bg-rail-hover hover:text-rail-fg"
+        >
+          {theme === "dark" ? <IconSun size={13} /> : <IconMoon size={13} />}
+        </button>
+      </Tooltip>
       <Tooltip label="Sign out">
         <button
           onClick={() => signOut()}

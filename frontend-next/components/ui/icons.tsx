@@ -165,6 +165,19 @@ export const IconShield = (p: IconProps) => (
   </Svg>
 );
 
+export const IconSun = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="3" />
+    <path d="M8 1.5v1.5M8 13v1.5M2.6 2.6l1.1 1.1M12.3 12.3l1.1 1.1M1.5 8h1.5M13 8h1.5M2.6 13.4l1.1-1.1M12.3 3.7l1.1-1.1" />
+  </Svg>
+);
+
+export const IconMoon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M13.5 9.8A5.8 5.8 0 1 1 6.2 2.5a4.6 4.6 0 0 0 7.3 7.3z" />
+  </Svg>
+);
+
 export const IconEmpty = (p: IconProps) => (
   <Svg {...p}>
     <rect x="2" y="3.5" width="12" height="9" rx="1.5" strokeDasharray="2.5 2" />

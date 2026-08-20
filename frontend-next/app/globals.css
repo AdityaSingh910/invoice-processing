@@ -77,6 +77,69 @@
   --shadow-lg: 0 24px 56px -16px rgba(24, 24, 27, 0.16), 0 6px 16px rgba(24, 24, 27, 0.06);
 }
 
+/* ===========================================================================
+   DARK THEME — explicit opt-in only, via the sidebar toggle.
+
+   Every token below is the same variable the light theme sets, so nothing
+   downstream needs a `dark:` variant: nav, panels, tables, badges and charts
+   all read through these custom properties already. This does NOT follow
+   `prefers-color-scheme` (see `color-scheme: light` above) — a finance
+   product should look the same in a demo as it did in design review; dark
+   mode here is a preference the user reaches for, not a default the OS picks
+   on their behalf. Kept restrained for the same reason the light palette is:
+   one accent, three semantic colours, no glow.
+   =========================================================================== */
+:root[data-theme="dark"] {
+  --canvas: #131311;
+  --surface: #1b1b18;
+  --raised: #202019;
+  --sunken: #0f0f0d;
+  --hover: #262620;
+
+  --line: #2c2c26;
+  --line-strong: #3a3a32;
+
+  --fg: #f2f1ec;
+  --fg-secondary: #b8b6ad;
+  --fg-muted: #8f8d84;
+  --fg-faint: #64635b;
+
+  --accent: #5b93ff;
+  --accent-hover: #7ba7ff;
+  --accent-fg: #0c1220;
+  --accent-quiet: #182642;
+  --accent-line: #2d4a80;
+  --ring: rgba(91, 147, 255, 0.4);
+
+  --rail-bg: #18180f;
+  --rail-hover: #232319;
+  --rail-active: #1e2c4a;
+  --rail-line: #2c2c26;
+  --rail-fg: #f2f1ec;
+  --rail-muted: #8f8d84;
+  --rail-faint: #5c5b52;
+  --rail-accent: #7ba7ff;
+  --rail-accent-fg: #0c1220;
+
+  --ok: #3ddc9a;
+  --ok-quiet: #10281f;
+  --ok-line: #1e4a37;
+  --ok-vivid: #10b981;
+
+  --warn: #fbbf4d;
+  --warn-quiet: #33260c;
+  --warn-line: #5c4318;
+
+  --bad: #f88a8a;
+  --bad-quiet: #3a1618;
+  --bad-line: #602328;
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 8px 24px -8px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 24px 56px -16px rgba(0, 0, 0, 0.6), 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
 @theme inline {
   --color-canvas: var(--canvas);
   --color-surface: var(--surface);
@@ -138,6 +201,10 @@
        OS theme regardless of what this stylesheet renders, which is how a
        light-first product ends up looking like it never changed. */
     color-scheme: light;
+  }
+
+  html[data-theme="dark"] {
+    color-scheme: dark;
   }
 
   body {
