@@ -19,7 +19,7 @@ suite is green.**
 |---|---|
 | Pipeline | Working, 9 stages, streamed live to the browser |
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
-| UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light + dark |
+| UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light-first enterprise design with an explicit dark-mode toggle |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
 | Automated tests | **446 passing** deterministically, 18 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
@@ -122,6 +122,18 @@ reject, only ever hold. The human-review screen gained a **reviewer brief**:
 why a run was flagged, which field(s), the evidence behind each, and one
 deterministic suggested next step, ahead of Accept/Reject. See
 [Confidence, provenance and the confidence gate](#confidence-provenance-and-the-confidence-gate).
+
+**14. Frontend redesign, and a dark-mode toggle.** The UI was rebuilt as a
+light-first enterprise finance interface — warm-neutral surfaces, one accent,
+three semantic colours, radii capped at 10px, IBM Plex Sans/Mono with tabular
+numerals on every ledger figure. A later request added an explicit dark-mode
+toggle on top, deliberately not tied to the OS's `prefers-color-scheme` — see
+[Visual design and dark mode](#visual-design-and-dark-mode). Getting there
+included a debugging detour worth recording: a set of "the UI looks like a
+dark hacker tool, redesign everything" screenshots turned out to be a browser
+extension force-darkening the page client-side, not the app's own CSS — caught
+by fetching the served stylesheet directly and by rendering the app with a
+clean, extension-free headless browser.
 
 ---
 
@@ -616,6 +628,28 @@ security boundary — a script ignores it entirely.
 - **Errors** — proper status codes (401/403/404/409/413/415/429/500) with no
   stack traces, provider messages or configuration names in the response.
 
+### Visual design and dark mode
+
+The UI is a **light-first enterprise finance interface**: warm-neutral
+white/off-white surfaces distinguished by elevation rather than borders, a
+single interactive accent, and exactly three semantic colours — approved,
+held, rejected — that mean something and never decorate. Radii are capped at
+10px; larger corners read as consumer software, not a finance tool. Every
+figure that must be scanned and compared (money, invoice/PO numbers, dates,
+run IDs) is set in IBM Plex Mono with tabular numerals, so a dense screen of
+numbers reads as a ledger rather than prose that happens to contain digits.
+
+**Dark mode is an explicit toggle in the sidebar, not `prefers-color-scheme`.**
+A finance product should look the same in a demo as it did in design review —
+letting the OS decide the theme means a screen-share or a recording can look
+different from what was designed, and a form this dense reads as a "hacker"
+tool the instant it goes dark unasked. The whole app already reads every
+colour through CSS custom properties, so the dark palette is a second set of
+values for the same tokens (`:root[data-theme="dark"]`) — nothing downstream
+needed a component-level dark variant. The choice is persisted, and applied
+before the page paints so a returning dark-mode user never sees a flash of
+the light theme.
+
 ### Stack
 
 - **Backend** — FastAPI. `POST /api/runs/stream` streams stages over SSE as they
@@ -776,7 +810,8 @@ frontend-next/    The UI. Next.js 15 + React 19 + Tailwind v4, TypeScript
     pages/        Overview, Process invoice, Invoices, Purchase orders
     invoice/      Run detail: stages, three-way match, audit trail, review
     ui/           Primitives — button, badge, panel, modal, toast, icons
-  lib/            API client, auth context, metrics, formatting, types
+  lib/            API client, auth context, theme (dark-mode toggle), metrics,
+                  formatting, types
 frontend/         The original vanilla UI, kept as a no-build fallback
 data/             Seed POs + vendors + demo users (tracked); app.db (not tracked)
 sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios

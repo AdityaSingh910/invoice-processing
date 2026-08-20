@@ -38,7 +38,7 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 |---|---|
 | Pipeline | ✅ Working, 9 stages, streamed live over SSE |
 | Samples | ✅ 10/10 match the manifest, driven through the real pipeline |
-| UI | ✅ **Next.js 15 + React 19 + Tailwind v4**, 4 sections, light + dark |
+| UI | ✅ **Next.js 15 + React 19 + Tailwind v4**, 4 sections, redesigned as a light-first enterprise finance interface with an explicit (not OS-linked) dark-mode toggle |
 | Extraction | ✅ **Groq** for text PDFs, **Gemini Vision** for scans |
 | Automated tests | ✅ **446 passing** deterministically, 18 files, both providers mocked |
 | Audit trail | ✅ Structured, deterministic, emitted by the rule engine itself |
@@ -59,7 +59,7 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Deployed (hosted) | ❌ Runs locally only |
 | Demo video | ❌ Not recorded |
 
-**Git:** 39 commits on `main`, pushed to
+**Git:** 47 commits on `main`, pushed to
 <https://github.com/AdityaSingh910/invoice-processing> (public). Working tree
 clean, local and remote identical. Verified at push time that `.env`,
 `data/app.db` and `data/app.db.bak` are absent from the published tree, that
@@ -67,20 +67,20 @@ clean, local and remote identical. Verified at push time that `.env`,
 material appears in any commit. Recent:
 
 ```
+2a8f5c7 Add an explicit dark-mode toggle to the sidebar
+859dca9 Redesign the frontend as a light-first enterprise finance interface
+2a1d56c Let "Open review queue" actually open a filtered queue
+0e75cb0 Show confidence/provenance in the UI and add a reviewer brief
+0c519a7 Add per-field confidence/provenance and wire it into the decision (Phase 2)
+9c0efd0 Resolve currency mismatch against a pinned FX rate, reject a disguised one
+81a086d Charge each purchase order its own share of a multi-PO invoice
+dea9163 Record which PO each run charged, so one invoice can span several
+fbe479f Bring README and CLAUDE.md up to date with the current build
 824d45b Recognise documents that are not invoices, and reject them saying so
 8da60b7 Let an admin clear run history from the UI, and explain duplicate rejections
 634bdc7 Add a one-command reset so the samples keep telling their intended story
 e71d34c Redesign the UI as a premium AP product: surfaces, hierarchy, density
 bdf12a0 Rebuild the UI as a production-grade AP application
-738e2a5 Redesign again: colourful, friendly, and in plain language
-f3a1058 Never cache the HTML shell, so the browser cannot pin an old build
-5c6c69a Redesign the UI: new visual system, same screens and information
-4844e4e Rebuild the frontend as a Next.js + Tailwind app on the same backend
-c9fc298 Record the GitHub publish in CLAUDE.md and add a fresh-session checklist
-e836bd9 Update CLAUDE.md to the current state of the project
-c0e00e9 Rewrite README for the current state of the project
-f78be67 Separate demo config from production, and cap daily AI spend
-9cffa9d Require authenticated, scoped, rate-limited access to the API
 ```
 
 **[README.md](README.md) is current and accurate** — every figure re-verified
@@ -569,6 +569,54 @@ that at `/`. Consequences worth knowing:
   stay cacheable. Without this the browser pins itself to a build that no longer
   exists on disk — it happened twice, and looked like the app was broken.
 
+### Visual design system and dark mode
+
+**The frontend was redesigned as a light-first enterprise finance interface**
+— warm-neutral white/off-white surfaces distinguished by elevation rather than
+borders, a single interactive accent, exactly three semantic colours
+(approved/held/rejected) that mean something and never decorate, radii capped
+at 10px (larger corners read as consumer software, not a finance tool), IBM
+Plex Sans for UI text and IBM Plex Mono with tabular numerals for every ledger
+figure. Every colour in the app flows through CSS custom properties in
+`globals.css`; there are exactly two literal Tailwind colour classes anywhere
+in `frontend-next` (`bg-black`, both modal/drawer backdrop scrims) — verified
+by grep, not assumed.
+
+**This landed in two separate commits deliberately.** The redesign itself
+(`globals.css`, `layout.tsx`'s font setup, `AppShell.tsx`'s nav restructure)
+was already sitting uncommitted in the working tree from an earlier session
+before this one started — it was committed on its own first, then the
+dark-mode toggle (a distinct, later request) went on top as its own commit.
+Splitting a mixed working tree like that is done by reverting just the new
+edits with the editor, committing what remains, then reapplying — there is no
+interactive `git add -p` available in this environment.
+
+**Dark mode is an explicit toggle, never `prefers-color-scheme`.** `html {
+color-scheme: light }` is fixed; a `:root[data-theme="dark"]` block in
+`globals.css` overrides every token with a restrained dark palette (same
+one-accent, three-semantic-colour discipline as light — no neon, no glow).
+Because the whole app already read through those custom properties, the
+override cascades through nav, tables, badges and charts with zero
+component-level `dark:` variants needed. `lib/theme.tsx` provides
+`ThemeProvider`/`useTheme`, toggled from a sun/moon button in the sidebar's
+account row (shared by the desktop rail and the mobile drawer). Persisted to
+`localStorage` (`ip-theme`) and applied via a `next/script` `beforeInteractive`
+bootstrap in `layout.tsx`, so a returning dark-mode user never sees a flash of
+the light theme.
+
+**A wasted-afternoon lesson from getting here:** the user's own screenshots of
+the running app showed a fully dark, boxy, "hacker tool" UI and asked for a
+"complete visual overhaul." The served CSS, fetched directly with `curl`,
+said otherwise (`--canvas:#f8f8f6`, light). A Playwright screenshot with zero
+browser extensions confirmed the real app was already close to the target —
+what the user saw was almost certainly a force-dark browser extension or
+Chrome's "Auto Dark Mode for Web Contents" repainting the page client-side,
+which a page's own CSS cannot prevent once the browser decides to do it. **If
+a user's screenshot of this app looks wrong in a way the code doesn't explain,
+get an extension-free render (`playwright` in the venv, headless, no profile)
+before trusting the screenshot** — it is cheap and it settles the question
+completely instead of guessing.
+
 ---
 
 ## 6. Files
@@ -596,21 +644,24 @@ backend/
   quota.py        142 lines. Daily per-provider budget, SQLite-backed.
   ratelimit.py    130 lines. Sliding-window per user/IP.
   schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
-frontend-next/    ~5,700 lines across 27 source files. Next.js 15 + React 19 +
+frontend-next/    ~6,400 lines across 28 source files. Next.js 15 + React 19 +
                   Tailwind v4 + TypeScript. Built to a STATIC EXPORT in out/.
-  app/            layout.tsx (Inter via next/font), page.tsx (auth gate +
-                  section switch), globals.css (the whole design system:
-                  surfaces, type scale, semantic colours, motion).
+  app/            layout.tsx (IBM Plex via next/font, theme bootstrap script),
+                  page.tsx (auth gate + section switch), globals.css (the
+                  whole design system: light tokens, dark tokens, type scale,
+                  motion).
   components/
-    layout/       AppShell.tsx — sidebar, page chrome, mobile drawer.
+    layout/       AppShell.tsx — sidebar, page chrome, mobile drawer, the
+                  dark-mode toggle.
     pages/        OverviewPage, ProcessPage, InvoicesPage, ReferencePage.
     invoice/      RunDetail, StageList (+PhaseStepper), PoMatchPanel,
                   Panels (verdict/extraction/reasons), AuditTrail, ReviewBar.
     ui/           index.tsx (primitives), Modal.tsx (focus trap),
-                  Toast.tsx, icons.tsx (16px/1.5-stroke set).
+                  Toast.tsx, icons.tsx (16px/1.5-stroke set, incl. sun/moon).
     ResetDemoButton.tsx, charts.tsx (hand-drawn SVG, no chart library).
-  lib/            api.ts (fetch + SSE reader), auth.tsx, useData.ts,
-                  metrics.ts (dashboard figures), format.ts, types.ts.
+  lib/            api.ts (fetch + SSE reader), auth.tsx, theme.tsx
+                  (ThemeProvider/useTheme), useData.ts, metrics.ts
+                  (dashboard figures), format.ts, types.ts.
 frontend/         The ORIGINAL vanilla UI. Kept deliberately: main.py serves it
                   when frontend-next/out is missing, so a clone without npm
                   still boots and the Python suite is unaffected.
@@ -912,6 +963,7 @@ demo first (§4), and settle the sample-05 badge question (§9 issue 2).
 | Not-an-invoice **rejects**, unreadable **holds** | A hold means "a human must decide whether to pay this"; there is nothing to decide about a CV. But an empty result from a failed extractor is evidence about the extractor, so degraded routes never hard-reject. |
 | Demo reset is an endpoint, not just a script | It was reported twice as a bug. Recovery should not require deleting a file on the server. Admin-scoped, deletes runs only. |
 | ~~No per-field confidence shown~~ **REVERSED, at the user's explicit request** | Was: the pipeline did not produce one, and rendering an invented percentage would be fabricating evidence. Now: it is a genuine per-instance signal (model self-report, or a regex heuristic) computed by extraction and stored — see § Confidence, provenance and the confidence gate. |
+| Dark mode is an explicit toggle, never `prefers-color-scheme` | A finance product should look the same in a demo as it did in design review; a form this dense reads as a "hacker" tool the instant the OS decides to darken it. Built as `:root[data-theme="dark"]`, opt-in only, persisted to localStorage — see § Visual design system and dark mode. |
 
 ### Bugs already found and fixed — don't reintroduce
 
