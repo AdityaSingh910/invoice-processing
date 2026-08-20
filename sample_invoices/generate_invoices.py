@@ -13,7 +13,11 @@ OUT_DIR = os.path.dirname(__file__)
 
 
 def draw_invoice_text(c, vendor, invoice_number, invoice_date, po_number, line_items,
-                       subtotal, tax_pct, tax, total, note=None):
+                       subtotal, tax_pct, tax, total, note=None, currency="USD"):
+    # Printed as a currency CODE ("EUR 2,000.00"), not a symbol -- matches how
+    # extraction._detect_currency scans for a 3-letter code, and sidesteps
+    # relying on Helvetica's encoding for a symbol like "€".
+    unit = "$" if currency == "USD" else currency + " "
     y = 760
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, y, vendor)
@@ -64,12 +68,12 @@ def draw_invoice_text(c, vendor, invoice_number, invoice_date, po_number, line_i
     c.line(350, y, 545, y)
     y -= 16
     c.setFont("Helvetica", 10)
-    c.drawString(380, y, "Subtotal: $%.2f" % subtotal)
+    c.drawString(380, y, "Subtotal: %s%.2f" % (unit, subtotal))
     y -= 16
-    c.drawString(380, y, "Tax (%s%%): $%.2f" % (tax_pct, tax))
+    c.drawString(380, y, "Tax (%s%%): %s%.2f" % (tax_pct, unit, tax))
     y -= 16
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(380, y, "Total Due: $%.2f" % total)
+    c.drawString(380, y, "Total Due: %s%.2f" % (unit, total))
 
     if note:
         c.setFont("Helvetica-Oblique", 8)
@@ -213,6 +217,36 @@ if __name__ == "__main__":
                     ("Groundskeeping -- July", 1, 2500.00, 2500.00)],
         subtotal=6500.00, tax_pct=0, tax=0.00, total=6500.00,
         note="Consolidated invoice against two purchase orders.",
+    )
+
+    # 8. Currency differs, but a PINNED exchange rate resolves it exactly.
+    #
+    # EUR 2,000.00 converts to USD 2,160.00 at the pinned rate (1.08), which
+    # is precisely what PO-1008 authorises. Genuinely a different currency,
+    # genuinely the same value once converted -- APPROVED, with the audit
+    # trail naming the rate and its version.
+    make_text_pdf(
+        os.path.join(OUT_DIR, "08_fx_match_oscorp.pdf"),
+        vendor="Oscorp Materials", invoice_number="INV-8801", invoice_date="2026-07-15",
+        po_number="PO-1008", currency="EUR",
+        line_items=[("Specialty polymer batch", 1, 2000.00, 2000.00)],
+        subtotal=2000.00, tax_pct=0, tax=0.00, total=2000.00,
+        note="Billed in EUR; the matching purchase order is priced in dollars.",
+    )
+
+    # 9. Currency differs, and the invoice states the SAME raw number as the
+    # PO -- "5000" billed as EUR against a "5000" USD PO. No correct
+    # conversion produces identical digits in a different currency, so this
+    # is not a partial-invoice-shaped discrepancy for a human to reconcile;
+    # it is a currency-code error (or a copied figure) that would silently
+    # mis-pay by the full FX difference if taken at face value. REJECTED.
+    make_text_pdf(
+        os.path.join(OUT_DIR, "09_currency_number_collision_lexcorp.pdf"),
+        vendor="LexCorp Studios", invoice_number="INV-9901", invoice_date="2026-07-18",
+        po_number="PO-1009", currency="EUR",
+        line_items=[("Post-production services", 1, 5000.00, 5000.00)],
+        subtotal=5000.00, tax_pct=0, tax=0.00, total=5000.00,
+        note="States the same 5000 figure as PO-1009, but priced in euros rather than dollars.",
     )
 
     # 5. Scanned invoice -- no text layer, exercises the OCR-fallback / honesty path.

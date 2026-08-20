@@ -47,5 +47,17 @@
     "note": "$6,500 against PO-1006 + PO-1007, which together authorise exactly that. Every dollar is approved, but the invoice never says which PO each line belongs to, so the split is calculated and held for a person to confirm.",
     "expect": "NEEDS_REVIEW",
     "order": 8
+  },
+  "08_fx_match_oscorp.pdf": {
+    "label": "Currency converts to a match",
+    "note": "EUR 2,000.00 converts to USD 2,160.00 at the pinned exchange rate, which is exactly what PO-1008 authorises. A genuinely different currency, genuinely the same value once converted.",
+    "expect": "APPROVED",
+    "order": 9
+  },
+  "09_currency_number_collision_lexcorp.pdf": {
+    "label": "Same number, wrong currency",
+    "note": "States 5,000.00 EUR against a 5,000.00 USD PO -- the identical digits, not a converted equivalent. No correct conversion produces that, so it's rejected as a currency-code error rather than held for review.",
+    "expect": "REJECTED",
+    "order": 10
   }
 }

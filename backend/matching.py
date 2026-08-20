@@ -68,6 +68,8 @@ def empty_match(invoice_total):
         "invoice_currency": None,
         "po_currency": None,
         "currency_mismatch": False,
+        "fx": None,
+        "currency_same_number_suspected": False,
     }
 
 
@@ -106,6 +108,25 @@ def split_across(positions, total):
         amounts.append(amount)
         left = round(left - amount, 2)
     return amounts
+
+
+def fx_convert(amount, from_currency, to_currency):
+    """Convert `amount` from one pinned currency to another.
+
+    Returns None when either currency has no entry in config.FX_RATES -- an
+    unconvertible pair is exactly the case that must fall back to holding for a
+    human, not guessing at a rate. See config.FX_RATES for why the table is
+    pinned rather than fetched live.
+    """
+    if not from_currency or not to_currency:
+        return None
+    rate_from = config.FX_RATES.get(from_currency)
+    rate_to = config.FX_RATES.get(to_currency)
+    if rate_from is None or rate_to is None:
+        return None
+    if from_currency == to_currency:
+        return round(float(amount), 2)
+    return round(float(amount) * rate_from / rate_to, 2)
 
 
 def _position(po_row, exclude_run_id=None):
@@ -195,13 +216,68 @@ def match_po(extracted: dict, exclude_run_id=None):
     consumed = round(sum(p["consumed_before"] for p in positions), 2)
     remaining_before = round(sum(p["remaining_before"] for p in positions), 2)
     total = extracted.get("total") or 0
+
+    # Currency. Computed BEFORE the balance arithmetic below, because which
+    # figure that arithmetic uses depends on it: a EUR invoice against a USD PO
+    # compares nothing meaningful unless one side is converted first.
+    #
+    # Only compared when BOTH sides are known. Note the honest limitation: the
+    # extractor falls back to "USD" when a document carries no currency signal at
+    # all, so a genuinely-unmarked invoice is indistinguishable from a
+    # USD-marked one. That is an extraction question, not a matching one.
+    invoice_currency = _norm_currency(extracted.get("currency"))
+    # Any referenced PO in a different currency makes the combined comparison
+    # meaningless, not just the one that differs -- the balances above were
+    # summed as bare numbers.
+    po_currencies = [p["po_currency"] for p in positions if p["po_currency"]]
+    currency_mismatch = bool(invoice_currency and po_currencies
+                             and any(c != invoice_currency for c in po_currencies))
+
+    # FX conversion. Only attempted when currencies actually differ, both codes
+    # have a pinned rate (config.FX_RATES), and every bound PO shares one
+    # currency -- converting into an ambiguous target is not a conversion, it is
+    # a guess about which PO's currency to trust.
+    fx = None
+    converted_total = total
+    if currency_mismatch:
+        target_currency = po_currencies[0] if len(set(po_currencies)) == 1 else None
+        rate_amount = fx_convert(1, invoice_currency, target_currency) if target_currency else None
+        converted = fx_convert(total, invoice_currency, target_currency) if target_currency else None
+        fx = {
+            "applied": converted is not None,
+            "from_currency": invoice_currency,
+            "to_currency": target_currency,
+            "rate": rate_amount,
+            "rate_version": config.FX_RATES_VERSION if converted is not None else None,
+            "converted_total": converted,
+        }
+        if converted is not None:
+            converted_total = converted
+
+    # A currency mismatch where the invoice states the SAME raw number as the
+    # PO -- "1500" billed as EUR against a "1500" USD PO -- is not an ordinary
+    # discrepancy to hold for review. No correct conversion produces the same
+    # digits in a different currency (bar the day a rate is exactly 1.0), so
+    # this pattern means either a currency-code error that would silently mis-
+    # pay by the full FX difference, or the number was copied rather than
+    # billed. decide() rejects this outright rather than holding it, REGARDLESS
+    # of what fx.converted_total says -- the suspicious signal is the raw match,
+    # not the post-conversion figure.
+    currency_same_number_suspected = bool(
+        currency_mismatch
+        and any(abs(round(total, 2) - round(x, 2)) <= 0.01
+                for x in (po_amount, remaining_before) if x is not None)
+    )
+
     tol = tolerance_for(remaining_before if remaining_before > 0 else po_amount)
-    diff = round(total - remaining_before, 2)
+    diff = round(converted_total - remaining_before, 2)
 
     # How the total is charged. For a multi-PO invoice this is a computed
     # proposal, which is why decide() holds it for a human rather than acting
-    # on it; for a single PO it is simply the whole total.
-    amounts = split_across(positions, total)
+    # on it; for a single PO it is simply the whole total. Uses the CONVERTED
+    # total so the ledger consumes what the invoice is actually worth in the
+    # PO's currency, not the raw foreign-currency digits.
+    amounts = split_across(positions, converted_total)
     allocations = [
         dict(p, amount=amt,
              remaining_after=round(p["remaining_before"] - amt, 2),
@@ -221,24 +297,6 @@ def match_po(extracted: dict, exclude_run_id=None):
     # the case that must NOT be silent: it approves an invoice for more than the
     # PO authorised, so it earns an explicit audit note naming the overage.
     over_within_tolerance = 0 < diff <= tol
-
-    # Currency. Every comparison above is a bare number: `diff = total - remaining`
-    # says nothing about what unit either side is in, so a EUR 3,000 invoice
-    # against a USD 5,000 PO reads as a comfortable partial. Flag it here and let
-    # rules decide -- no conversion, no rate lookup, no third party.
-    #
-    # Only compared when BOTH sides are known. Note the honest limitation: the
-    # extractor falls back to "USD" when a document carries no currency signal at
-    # all, so a genuinely-unmarked invoice is indistinguishable from a
-    # USD-marked one. That is an extraction question, not a matching one; the
-    # comparison here errs toward review whenever the two disagree.
-    invoice_currency = _norm_currency(extracted.get("currency"))
-    # Any referenced PO in a different currency makes the combined comparison
-    # meaningless, not just the one that differs -- the balances above were
-    # summed as bare numbers.
-    po_currencies = [p["po_currency"] for p in positions if p["po_currency"]]
-    currency_mismatch = bool(invoice_currency and po_currencies
-                             and any(c != invoice_currency for c in po_currencies))
 
     # Closed POs. Reported at the top level as "any of them", with the specific
     # ones named in `closed_pos` so the trail can say which rather than implying
@@ -261,9 +319,14 @@ def match_po(extracted: dict, exclude_run_id=None):
         "po_source_row": primary["source_row"],
         "matched_via": matched_via,
         "consumed_before": consumed,
+        # The RAW total, in the invoice's own currency -- always what was
+        # printed on the document. The PO-currency equivalent used for every
+        # balance comparison above is `fx.converted_total` when a conversion
+        # was applied; the two are deliberately kept separate so a UI showing
+        # "invoice_total" next to "invoice_currency" is never wrong.
         "invoice_total": round(total, 2),
         "remaining_before": remaining_before,
-        "remaining_after": round(remaining_before - total, 2) if within else remaining_before,
+        "remaining_after": round(remaining_before - converted_total, 2) if within else remaining_before,
         "tolerance": round(tol, 2),
         "diff": diff,
         "within_tolerance": within,
@@ -273,6 +336,15 @@ def match_po(extracted: dict, exclude_run_id=None):
         "invoice_currency": invoice_currency,
         "po_currency": primary["po_currency"],
         "currency_mismatch": currency_mismatch,
+        # Present only when currency_mismatch is True. `fx["applied"]` is False
+        # when either currency has no pinned rate or the bound POs do not agree
+        # on one -- the invoice is then held for a human exactly as before this
+        # feature existed, with nothing fabricated.
+        "fx": fx,
+        # True when the invoice states the SAME raw number as the PO but in a
+        # different currency -- decide() rejects this outright, regardless of
+        # what conversion says. See the comment above where this is computed.
+        "currency_same_number_suspected": currency_same_number_suspected,
         "po_numbers": [p["po_number"] for p in positions],
         "allocations": allocations,
         "is_multi": is_multi,

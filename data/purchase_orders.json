@@ -61,5 +61,23 @@
     "issued_date": "2026-07-02",
     "status": "open",
     "description": "Q3 groundskeeping"
+  },
+  {
+    "po_number": "PO-1008",
+    "vendor": "Oscorp Materials",
+    "amount": 2160.00,
+    "currency": "USD",
+    "issued_date": "2026-07-10",
+    "status": "open",
+    "description": "Specialty polymer supply"
+  },
+  {
+    "po_number": "PO-1009",
+    "vendor": "LexCorp Studios",
+    "amount": 5000.00,
+    "currency": "USD",
+    "issued_date": "2026-07-12",
+    "status": "open",
+    "description": "Post-production services"
   }
 ]

@@ -23,7 +23,9 @@ dashboard of every run.
 
 Grading: does it actually run, is the judgment behind the design sound, and can
 it be explained to a **non-technical buyer**. Edge cases were self-defined
-(2–4 required; there are 5).
+(2–4 required; there are 6: split-PO tracking, missing required field, scanned/
+no-text-layer, duplicate detection, multi-PO consolidation, currency mismatch
++ FX conversion).
 
 **Working directory:** `c:\Users\adity\OneDrive\Desktop\Invoice processing`
 Windows 11. PowerShell is primary; a Bash tool is also available.
@@ -35,10 +37,10 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | | |
 |---|---|
 | Pipeline | ✅ Working, 9 stages, streamed live over SSE |
-| Samples | ✅ 8/8 match the manifest, driven through the real pipeline |
+| Samples | ✅ 10/10 match the manifest, driven through the real pipeline |
 | UI | ✅ **Next.js 15 + React 19 + Tailwind v4**, 4 sections, light + dark |
 | Extraction | ✅ **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | ✅ **401 passing** deterministically, 17 files, both providers mocked |
+| Automated tests | ✅ **416 passing** deterministically, 17 files, both providers mocked |
 | Audit trail | ✅ Structured, deterministic, emitted by the rule engine itself |
 | Human review | ✅ Accept/reject, recorded beside the automated decision |
 | API security | ✅ OAuth2 bearer tokens, scopes, rate limits, input validation |
@@ -46,6 +48,7 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Daily AI budget | ✅ Per-provider circuit breaker, SQLite-backed |
 | Non-invoice detection | ✅ Rejects documents containing no invoice, saying so |
 | Multi-PO invoices | ✅ `run_allocations` ledger; split calculated, always held |
+| Currency mismatch + FX | ✅ Pinned-rate conversion; same-number collision rejects |
 | Demo reset | ✅ Admin button in the UI, plus `.\reset-demo.ps1` |
 | Original audit defects | ✅ **All 3 fixed** |
 | Gemini vision route | ⚠️ Intermittent **503** from Google — see §9 |
@@ -87,9 +90,13 @@ README.
 ## 3. ⚠️ Standing instruction — do not skip
 
 **The remaining phases (§8) must not be started unprompted.** Phase 4 and the
-multi-PO part of Phases 6/7 are done — but only because the user explicitly asked
-for the multi-PO limitation to be fixed. Phases 2, 3, 5 and the rest of 6/7 are
-untouched and stay that way until asked.
+multi-PO part of Phases 6/7 are done, and the FX/currency decision has been
+reversed — all three only because the user explicitly asked. Phases 2, 3, 5 and
+the rest of 6/7 are untouched and stay that way until asked. The FX reversal in
+particular is recorded in §10 as *why* it changed, not as a silent overwrite —
+read that entry before assuming a prior "don't relitigate" decision is still in
+force; this project has now shown one can be reopened when the user asks for it
+by name.
 
 The user works **one discrete step at a time, with a commit after each** — not
 batched work. Every step so far was inspected, tested, verified and committed
@@ -121,7 +128,7 @@ Then <http://127.0.0.1:8000> and sign in.
 # Reset run history so the samples tell their intended story again.
 # Also available in the UI: sign in as admin -> Overview -> "Reset demo data".
 .\reset-demo.ps1              # clear only
-.\reset-demo.ps1 -Replay      # clear, then drive all 8 through the API in order
+.\reset-demo.ps1 -Replay      # clear, then drive all 10 through the API in order
 
 # Tests -- no server needed, no API key needed, no network
 .\venv\Scripts\python.exe -m pytest tests/ -v
@@ -222,11 +229,14 @@ Stage 8 only *reports* what stage 6 decided. The split exists for the run view.
 ### Decision hierarchy
 
 - **REJECTED** — must not be overridden automatically: duplicates, vendor on file
-  but not approved, **document is not an invoice**.
+  but not approved, **document is not an invoice**, invoice states the PO's own
+  number under a different currency (§ Currency mismatch and FX).
 - **NEEDS_REVIEW** — recoverable: missing fields, unreadable scan, over tolerance,
-  no PO match, currency mismatch, bad arithmetic, invalid total, inferred PO,
-  injection-shaped text.
-- **APPROVED** — everything passed.
+  no PO match, a currency mismatch with no pinned rate or that still doesn't fit
+  after conversion, bad arithmetic, invalid total, inferred PO, multi-PO invoice
+  with no stated split, injection-shaped text.
+- **APPROVED** — everything passed. Includes a currency mismatch a pinned rate
+  resolves within tolerance.
 
 Reject wins over review when both fire.
 
@@ -289,6 +299,43 @@ working them out; the audit trail records `allocation_basis: calculated`.
 The cascade (`reevaluate_po_queue`) deliberately **skips** multi-PO runs: they
 are held on the unstated split, not a short balance, so freeing budget elsewhere
 must not release them.
+
+### Currency mismatch and FX conversion
+
+**This reverses a prior "decisions already made" entry** ("FX conversion must
+not widen auto-approval") — done explicitly at the user's request, not
+unprompted. The old rule held any currency mismatch for review, unconditionally,
+because a rate fetched at run time is not reproducible by an auditor. That
+objection is about *when* the rate is fetched; it does not apply to a table that
+is pinned and versioned (`config.FX_RATES` / `FX_RATES_VERSION`, same pinning
+argument as the extraction models). Three outcomes now:
+
+1. **Pinned rate resolves within tolerance → APPROVED.** `matching.fx_convert()`
+   converts at `FX_RATES[from]/FX_RATES[to]`; the ledger consumes the converted
+   amount (`po_match["fx"]["converted_total"]`), never the raw foreign-currency
+   digits. The audit trail's `currency.fx` block names the rate and version.
+2. **Same raw number, different currency → REJECTED.** `1500` billed as EUR
+   against a `1500` USD PO. No correct conversion produces identical digits in a
+   different currency, so this is not an ordinary discrepancy — it reads as a
+   currency-code error or a copied figure, and paying face value silently mis-
+   pays by the full FX difference. `po_match["currency_same_number_suspected"]`;
+   checked against both `po_amount` and `remaining_before`. This is the ONE
+   place a currency finding rejects rather than holds.
+3. **No pinned rate, or converted amount still doesn't fit → NEEDS_REVIEW.**
+   Unchanged from before this feature existed.
+
+`po_match["invoice_total"]` stays the RAW total in the invoice's own currency,
+always — `po_match["fx"]["converted_total"]` is the PO-currency equivalent used
+for every balance comparison. A UI pairing `invoice_total` with `invoice_currency`
+must never show the converted figure; both frontends had exactly this bug
+(`money()` hardcoded `$` for the invoice's own total, subtotal and tax — visible
+once a non-USD sample could reach a clean run view) and it was fixed alongside
+this feature, not before it, because nothing exposed it earlier.
+
+`extraction.MONEY` regex was extended to recognise a 3-letter currency CODE
+before an amount (`"EUR 2,000.00"`), not just a symbol — needed for sample 08/09
+to extract under the regex fallback. `_to_float()` already stripped non-numeric
+characters, so this needed no downstream change.
 
 ### Extraction routes
 
@@ -462,10 +509,10 @@ backend/
                   + its backfill, migrations via _ensure_columns().
   auth.py         324 lines. OAuth2 bearer tokens, scopes, user store,
                   production config enforcement.
-  config.py       244 lines. .env loader, APP_ENV, provider settings, tolerances,
-                  rate limits, daily quotas. Operational settings + policy numbers.
+  config.py       .env loader, APP_ENV, provider settings, tolerances, rate
+                  limits, daily quotas, FX_RATES + FX_RATES_VERSION (pinned).
   matching.py     PO lookup, tolerance_for(), split-PO maths, currency,
-                  multi-PO binding and split_across().
+                  multi-PO binding, split_across(), fx_convert().
   quota.py        142 lines. Daily per-provider budget, SQLite-backed.
   ratelimit.py    130 lines. Sliding-window per user/IP.
   schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
@@ -490,15 +537,15 @@ frontend/         The ORIGINAL vanilla UI. Kept deliberately: main.py serves it
 data/
   purchase_orders.json / approved_vendors.json / users.json   (TRACKED)
   app.db                                                      (NOT tracked)
-sample_invoices/  8 PDFs, generate_invoices.py, manifest.json
+sample_invoices/  10 PDFs, generate_invoices.py, manifest.json
 scripts/          replay_samples.py — drives the 7 samples in manifest order
                   and checks each verdict. Used by reset-demo.ps1 -Replay.
 reset-demo.ps1    Clears run history (and optionally replays the samples).
-tests/            17 files, 401 tests. conftest.py provides auth_headers()
+tests/            17 files, 416 tests. conftest.py provides auth_headers()
                   as a plain function, NOT a fixture -- import it.
 ```
 
-### Test suite — 401 tests, 17 files
+### Test suite — 416 tests, 17 files
 
 | File | n | Covers |
 |---|---|---|
@@ -513,10 +560,10 @@ tests/            17 files, 401 tests. conftest.py provides auth_headers()
 | `test_audit_trail.py` | 22 | trail structure, provenance, determinism |
 | `test_arithmetic.py` | 22 | subtotal + tax == total |
 | `test_invalid_amount.py` | 21 | zero / negative totals |
-| `test_currency.py` | 16 | mismatch → review, no conversion |
+| `test_currency.py` | 29 | pinned-rate FX approve, same-number reject, held-else |
 | `test_inferred_po.py` | 13 | distance cap, ambiguity guard |
 | `test_po_edge_cases.py` | 12 | split-PO, idempotency, reversal, concurrency |
-| `test_samples.py` | 8 | the 8 samples end to end, in manifest order |
+| `test_samples.py` | 10 | the 10 samples end to end, in manifest order |
 | `test_multi_po.py` | 28 | multi-PO binding, the split, the ledger, the hold |
 | `test_allocations.py` | 13 | the allocation ledger, its migration and idempotence |
 
@@ -559,11 +606,15 @@ GET  /api/sample-invoices/{name} [invoice:read]
 | PO-1005 | Stark Industrial Parts | $15,400.00 | open |
 | PO-1006 | Wayne Facilities | $4,000.00 | open |
 | PO-1007 | Wayne Facilities | $2,500.00 | open |
+| PO-1008 | Oscorp Materials | $2,160.00 | open |
+| PO-1009 | LexCorp Studios | $5,000.00 | open |
 
-All six vendors approved (V-001 … V-006). **Wayne Facilities is the only vendor
-with two POs**, and it exists for exactly that reason — sample 07 needs one
-vendor billing across two purchase orders. Nothing else references it, so the
-other samples are unaffected by it.
+All eight vendors approved (V-001 … V-008). **Wayne Facilities is the only
+vendor with two POs**, for sample 07's multi-PO story. **Oscorp Materials**
+(PO-1008) and **LexCorp Studios** (PO-1009) exist for samples 08/09 — the FX
+conversion and the same-number-collision reject — and are otherwise untouched
+by anything else. Nothing else references any of these three vendors, so the
+other samples are unaffected.
 
 ---
 
@@ -579,9 +630,12 @@ other samples are unaffected by it.
 | 6 | `05_scanned_no_text.pdf` | Image-only PDF | NEEDS_REVIEW † |
 | 7 | `06_duplicate_of_01.pdf` | Resubmission of INV-2201 | REJECTED |
 | 8 | `07_multi_po_wayne.pdf` | $6,500 across PO-1006 + PO-1007 | NEEDS_REVIEW ‡ |
+| 9 | `08_fx_match_oscorp.pdf` | €2,000 converts to exactly $2,160 (PO-1008) | APPROVED § |
+| 10 | `09_currency_number_collision_lexcorp.pdf` | €5,000 vs a $5,000 PO — same digits | REJECTED § |
 
 **Run 2 → 3 → 4 in order** or the split-PO story doesn't work. **Run 1 before 7**
-or the duplicate has nothing to collide with.
+or the duplicate has nothing to collide with. **8, 9 and 10 are order-independent**
+— own vendors, own POs, untouched by anything else.
 
 † Sample 05 is route-dependent by design: no key → nothing to read → refuse to
 guess → NEEDS_REVIEW; with the vision route → reads INV-9004 / PO-1005 /
@@ -598,6 +652,17 @@ and watch both POs go to $0.00 — one invoice, two ledgers moved correctly.
 **Sample 04 legitimately fails two rules.** Its PDF states Subtotal $8,200 + Tax
 $0.00 = Total $8,150, which does not add up. Both routes read it identically, so
 the arithmetic check is correct — the fixture is inconsistent. Verdict unaffected.
+
+§ **Samples 08 and 09 are the same shape, opposite outcome, deliberately paired.**
+Both bill in EUR against a USD PO. 08's €2,000.00 converts to exactly $2,160.00
+at the pinned rate (`config.FX_RATES["EUR"] = 1.08`) — a genuinely different
+currency landing on a genuinely matching value; approved, with the rate and
+table version named in the audit trail. 09 states €5,000.00 against a $5,000.00
+PO — the identical digits, not a converted equivalent (no correct conversion
+produces that) — rejected outright rather than held: at the pinned rate it is
+actually $5,400.00, so paying face value would silently underpay by $400. The
+`extraction.MONEY` regex was extended to recognise a currency CODE
+("EUR 2,000.00"), not just a symbol, so the regex fallback can read either.
 
 ### The demo money-shot
 
@@ -618,7 +683,7 @@ invoice. The decision depends on the PO's history, not the file alone. Watch
 | 3 | `rules.yaml` versioned policy + typed loader | ◨ thresholds in `config.py`; YAML to do |
 | 4 | Transactions; `run_allocations` table | ✅ done |
 | 5 | `DecisionTrace` + reference snapshot; stop re-seeding | ◨ audit trail done; snapshot to do |
-| 6 | Line-item decomposition, multi-PO consolidation, FX provider | ◨ multi-PO done; line items + FX to do |
+| 6 | Line-item decomposition, multi-PO consolidation, FX provider | ◨ multi-PO done; currency mismatch resolves against a pinned rate table (config.FX_RATES); line items + a broader/live FX provider to do |
 | 7 | UI: confidence badges, evidence snippets, allocation view | ◨ allocation view done; confidence to do |
 
 **Sequencing trap (already navigated):** multi-PO consolidation is a **ledger**
@@ -627,9 +692,9 @@ on its own and behaviour-neutral; multi-PO matching went on top of it. Doing it
 the other way round would have over-consumed every PO an invoice touched.
 
 **Most valuable thing left:** Phase 2's confidence gate — it closes the
-low-confidence auto-approve problem as a *class*. But nothing in Phases 2–7
-changes a verdict on any of the seven samples, so none of it blocks the case
-study.
+low-confidence auto-approve problem as a *class*. But nothing in the phases
+still open changes a verdict on any of the ten samples, so none of it blocks
+the case study.
 
 ---
 
@@ -650,7 +715,7 @@ So **any document past roughly 20k characters (~7+ pages) silently loses the LLM
 route** and drops to regex. The failure is safe and visible in the run trail
 ("Groq text extraction failed - APIStatusError (413). Used regex instead."), but
 a real multi-page invoice would be read by regex without anyone intending it. All
-seven samples are one page, so it has never surfaced there. Fix is one constant.
+ten samples are one page, so it has never surfaced there. Fix is one constant.
 
 ⚠️ **2. Gemini vision returns intermittent 503.** Google-side unavailability, not
 quota and not our code. Observed 0/5 on one probe and working minutes later. The
@@ -709,8 +774,8 @@ unaffected. The amount rule cannot catch a sign the extractor discarded.
 
 1. Read this file, then [README.md](README.md) (current and verified).
 2. `git log --oneline -10` and `git status` — confirm nothing moved.
-3. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **401 passed**.
-   No key or network needed. If it is not 401, find out what changed before
+3. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **416 passed**.
+   No key or network needed. If it is not 416, find out what changed before
    building anything. Two known non-regressions: `test_samples` 05 depends on
    Gemini being reachable (503 and 429 both happen), and
    `test_extraction_routing` fails 4 cases when the local vision quota is spent
@@ -743,7 +808,8 @@ demo first (§4), and settle the sample-05 badge question (§9 issue 2).
 | Refuse to guess when unreadable | Empty fields → review, rather than fabricating. `vendor_check` is tri-state: not-on-list (reject) ≠ couldn't-read-a-name (review). |
 | pypdfium2 over pytesseract | Self-contained wheel; no system binaries for a reviewer to install. |
 | No rule engine (JSON-logic etc.) | One-sided tolerance and ledger-derived balances express badly in a DSL; a sign error in exactly that comparison has been a bug twice. YAML for policy, Python for predicates. |
-| FX conversion must not widen auto-approval | A verdict depending on a rate fetched at run time is not reproducible by an auditor. |
+| ~~FX conversion must not widen auto-approval~~ **REVERSED, at the user's explicit request** | Was: a verdict depending on a rate fetched at run time is not reproducible by an auditor. Now: conversion is allowed against a **pinned, versioned** rate table (`config.FX_RATES`) — the objection was about *when* the rate is fetched, not conversion itself, and a pinned table is exactly as reproducible as a pinned model. See § Currency mismatch and FX conversion. |
+| Same raw number, different currency → REJECTED, not held | No correct conversion produces identical digits in a different currency, so it isn't an ordinary discrepancy for a human to reconcile — it reads as a currency-code error, and paying face value would silently mis-pay by the full FX difference. The one place a currency finding rejects rather than holds. |
 | Pydantic `Field()` rejected for confidence | Class-level schema metadata; confidence is per-instance data. Use `Tracked[T]`. |
 | **Groq for text, Gemini for vision** | Gemini's free tier is 20/day and is the only route that can read a picture. Economics, not architecture — the swap touched only `extraction.py` + `config.py`. |
 | Groq failure → regex, NOT → Gemini | Falling through would spend the scarce vision budget on a route that already has a local fallback. |
@@ -800,6 +866,18 @@ demo first (§4), and settle the sample-05 badge question (§9 issue 2).
 17. **`PageHeader` used negative margins inside an unpadded `<main>`**, pushing
     the page wider than the viewport and adding a horizontal scrollbar on
     tablet and mobile.
+18. **Both frontends showed an invoice's own total/subtotal/tax with a
+    hardcoded `$`**, regardless of the invoice's actual currency —
+    `ExtractedFields`, `VerdictHeader`, the invoices register, and the vanilla
+    UI's equivalents all used `money()` (bare `$`) instead of `amount(v,
+    currency)`. Invisible while every sample was USD; surfaced immediately by
+    the first non-USD sample. PO-side ledger figures (consumed/remaining/
+    authorised) were left as `money()` — legitimately correct since every seed
+    PO is USD, not a currency bug.
+19. **`Variance` and `Tolerance applied` in the audit trail were labelled with
+    the invoice's currency, not the PO's** — both are computed against
+    `remaining_before`, which is always PO-currency. Invisible until FX
+    conversion made a clean APPROVED run on a non-USD invoice possible.
 
 ---
 

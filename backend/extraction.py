@@ -31,7 +31,11 @@ import pdfplumber
 import config
 from schemas import ExtractedInvoice, LineItem
 
-MONEY = r"([\-\(]?\s*[\$€£₹]?\s*[\d][\d,\s]*(?:\.\d{1,2})?\)?)"
+# A currency marker before the digits is either a SIGN ($€£₹) or a 3-letter
+# CODE ("EUR 2,000.00") -- vendors write both. `_to_float` strips whichever one
+# ends up captured, so allowing the code here does not need a matching change
+# there.
+MONEY = r"([\-\(]?\s*(?:[\$€£₹]|[A-Z]{3}\s)?\s*[\d][\d,\s]*(?:\.\d{1,2})?\)?)"
 
 CURRENCY_SIGNS = {"$": "USD", "€": "EUR", "£": "GBP", "₹": "INR"}
 CURRENCY_CODES = ["USD", "EUR", "GBP", "INR", "AUD", "CAD", "SGD", "JPY", "CHF", "SEK", "AED"]

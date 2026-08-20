@@ -271,6 +271,39 @@ def _check_multi_po(result):
         "the hold should say the split was calculated, not that money is missing"
 
 
+def _check_fx_match(result):
+    """EUR 2,000.00 converts to exactly USD 2,160.00 at the pinned rate, which
+    is precisely what PO-1008 authorises. A genuinely different currency,
+    genuinely the same value once converted -- the case the old "mismatch
+    always holds" rule could never approve, and the pinned+versioned rate
+    table is what makes approving it safe.
+    """
+    pm = result["po_match"]
+    assert pm["currency_mismatch"] is True
+    assert pm["currency_same_number_suspected"] is False
+    assert pm["fx"]["applied"] is True
+    assert pm["fx"]["converted_total"] == 2160.00
+    assert pm["within_tolerance"] is True
+
+    assert result["audit"]["currency"]["fx"]["rate_version"]
+    assert any(r["text"].startswith("Currency converted:") for r in result["reasons"])
+
+
+def _check_currency_collision(result):
+    """Invoice states 5,000.00 EUR -- the same raw digits as PO-1009's
+    5,000.00 USD, not a converted equivalent. No correct conversion produces
+    identical digits in a different currency, so this is rejected outright
+    rather than held: at the pinned rate it is actually 5,400.00, so paying
+    the face value would silently underpay by $400.
+    """
+    pm = result["po_match"]
+    assert pm["currency_same_number_suspected"] is True
+    assert pm["fx"]["converted_total"] == 5400.00
+
+    assert any("exact same figure" in r["text"] for r in result["reasons"])
+    assert result["audit"]["currency"]["same_number_suspected"] is True
+
+
 EXTRA_CHECKS = {
     "01_happy_path_acme.pdf": _check_happy_path,
     "02_split_po_globex_a.pdf": _check_split_a,
@@ -280,6 +313,8 @@ EXTRA_CHECKS = {
     "05_scanned_no_text.pdf": _check_scanned,
     "06_duplicate_of_01.pdf": _check_duplicate,
     "07_multi_po_wayne.pdf": _check_multi_po,
+    "08_fx_match_oscorp.pdf": _check_fx_match,
+    "09_currency_number_collision_lexcorp.pdf": _check_currency_collision,
 }
 
 

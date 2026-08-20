@@ -49,6 +49,29 @@ PO_TOLERANCE_DOLLARS = 50.0   # ...or this, whichever is larger
 ARITHMETIC_TOLERANCE_DOLLARS = 0.05
 
 # --------------------------------------------------------------------------
+# Foreign-exchange rates (USD per 1 unit of the currency)
+#
+# PINNED, not fetched live -- the same argument as pinning the extraction
+# models below: an AP process must be able to say which rate approved an
+# invoice months ago, and a rate fetched at run time is not reproducible by an
+# auditor. Whenever this table changes, bump FX_RATES_VERSION; every converted
+# figure in the audit trail is stamped with the version that produced it, so a
+# later rate change cannot silently reinterpret an old decision.
+#
+# A currency with no entry here cannot be converted at all -- match_po() then
+# holds the invoice for a human rather than guessing at a rate, exactly like a
+# provider outage falls back to a safe path instead of fabricating a value.
+# --------------------------------------------------------------------------
+FX_RATES_VERSION = "2026-08-01"
+FX_RATES = {
+    "USD": 1.0,
+    "EUR": 1.08,
+    "GBP": 1.27,
+    "INR": 0.012,
+    "CAD": 0.73,
+}
+
+# --------------------------------------------------------------------------
 # Extraction providers
 #
 # TWO providers, split by what the document physically is:

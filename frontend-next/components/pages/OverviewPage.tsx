@@ -11,7 +11,7 @@
  * placeholder series, and no metric the backend cannot actually support.
  */
 import { useMemo } from "react";
-import { money, whenCompact } from "@/lib/format";
+import { amount, money, whenCompact } from "@/lib/format";
 import {
   byDay,
   compactMoney,
@@ -411,7 +411,7 @@ export default function OverviewPage({
                         </span>
                       </span>
                       <span className="tnum shrink-0 text-[12.5px] font-medium">
-                        {money(r.total)}
+                        {amount(r.total, r.audit?.invoice?.currency || "USD")}
                       </span>
                       <StatusBadge status={r.status} />
                       <span className="tnum t-meta w-11 shrink-0 text-right text-[11px]">

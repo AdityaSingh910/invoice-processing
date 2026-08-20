@@ -167,7 +167,9 @@ export default function ProcessPage({
             vendor={result.extracted.vendor_name}
             invoiceNumber={result.extracted.invoice_number}
             total={result.extracted.total}
+            currency={result.extracted.currency}
             remaining={result.po_match?.po_number ? result.po_match.remaining_before : null}
+            poCurrency={result.po_match?.po_currency}
           />
         )}
 

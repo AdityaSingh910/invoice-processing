@@ -12,16 +12,16 @@ Built for the Zamp AI Solutions Associate case study, **PS-1 (Finance / AP)**.
 
 ## Where the project stands right now
 
-**The app runs. All 8 sample invoices produce their expected verdicts, and the
+**The app runs. All 10 sample invoices produce their expected verdicts, and the
 suite is green.**
 
 | | |
 |---|---|
 | Pipeline | Working, 9 stages, streamed live to the browser |
-| Sample invoices | 8 / 8 matching the manifest, driven through the real pipeline |
+| Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light + dark |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **401 passing** deterministically, 17 files, no live API calls |
+| Automated tests | **416 passing** deterministically, 17 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
@@ -101,6 +101,17 @@ a migrated legacy database, then multi-PO matching on top of it. The split itsel
 is calculated rather than read, so such an invoice is always held for a person —
 see [Invoices covering several POs](#invoices-covering-several-pos).
 
+**12. Currency mismatch, revisited.** A mismatch used to hold unconditionally,
+on the grounds that a rate fetched at run time is not reproducible by an
+auditor — a decision this project once explicitly refused to relitigate. That
+objection is about *when* the rate is fetched, not conversion itself, so it
+does not hold against a table that is pinned and versioned. Added: FX
+conversion at a pinned rate (approve when it resolves within tolerance), and a
+hard reject when the invoice states the PO's own raw number under a different
+currency — no correct conversion produces that, so it isn't an ordinary
+discrepancy for a human to puzzle over. See
+[Currency mismatch and FX conversion](#currency-mismatch-and-fx-conversion).
+
 ---
 
 ## Quick start (Windows)
@@ -158,7 +169,7 @@ start refuses to boot while they exist — see [Running in production](#running-
 .\venv\Scripts\python.exe -m pytest tests\ -q
 ```
 
-**401 tests across 17 files.** They mock both providers, so they need no API
+**416 tests across 17 files.** They mock both providers, so they need no API
 key, no network and no quota. With keys present, `tests/test_samples.py` additionally exercises the
 real Groq and Gemini routes end to end — the fixture prints which mode ran,
 because a green suite means a different thing in each.
@@ -180,7 +191,7 @@ Two ways back to a clean slate:
 
 - **In the app** — sign in as `admin` and use **Reset demo data** on Overview.
 - **From a terminal** — `.\reset-demo.ps1`, or `.\reset-demo.ps1 -Replay` to
-  clear and then drive all eight samples through the API in order.
+  clear and then drive all ten samples through the API in order.
 
 Both clear run history only. Purchase orders, vendors and users are seed data in
 `data/*.json` and are reloaded on startup, so nothing is lost that re-running an
@@ -216,6 +227,8 @@ Regenerate anytime with `python sample_invoices/generate_invoices.py`.
 | `05_scanned_no_text.pdf` | Image-only PDF, no text layer | **NEEDS_REVIEW** † |
 | `06_duplicate_of_01.pdf` | Resubmission of `INV-2201` | **REJECTED** |
 | `07_multi_po_wayne.pdf` | One invoice covering two POs | **NEEDS_REVIEW** ‡ |
+| `08_fx_match_oscorp.pdf` | Different currency, converts to an exact match | **APPROVED** § |
+| `09_currency_number_collision_lexcorp.pdf` | Same raw number, wrong currency | **REJECTED** § |
 
 **Order matters.** Several cases are history-dependent by design:
 
@@ -248,6 +261,17 @@ Sample `04` also flags an arithmetic inconsistency: the document states
 `Subtotal $8,200 + Tax $0.00 = Total $8,150`, which does not add up. Both
 extraction routes read it identically, so the check is correct — the fixture
 itself is inconsistent. The verdict is unaffected.
+
+§ **Samples 08 and 09 are the same shape, opposite outcome, deliberately paired.**
+Both bill in EUR against a USD PO. Sample 08's `€2,000.00` converts to exactly
+`$2,160.00` at the pinned rate — a genuinely different currency landing on a
+genuinely matching value, so it approves, with the rate and its table version
+named in the audit trail. Sample 09 states `€5,000.00` against a `$5,000.00`
+PO — the identical digits, not a converted equivalent, which no correct
+conversion produces — so it is rejected outright rather than held: at the
+pinned rate it is actually `$5,400.00`, meaning paying the face value would
+silently underpay by $400. See
+[Currency mismatch and FX conversion](#currency-mismatch-and-fx-conversion).
 
 ---
 
@@ -301,11 +325,15 @@ scanned invoice is still held for a person.
 ### Decision hierarchy
 
 - **REJECTED** — things the process must not override: duplicates, vendors on
-  file but not approved, documents that are not invoices.
+  file but not approved, documents that are not invoices, and an invoice that
+  states the PO's own number under a different currency.
 - **NEEDS_REVIEW** — recoverable: missing fields, unreadable scan, amount over
-  tolerance, no PO match, currency mismatch, bad arithmetic, an invalid total,
-  an inferred PO, or text that reads as an instruction to the extractor.
-- **APPROVED** — everything passed.
+  tolerance, no PO match, a currency mismatch with no pinned rate (or one that
+  still doesn't fit after conversion), bad arithmetic, an invalid total, an
+  inferred PO, an invoice covering several POs with no stated split, or text
+  that reads as an instruction to the extractor.
+- **APPROVED** — everything passed. Includes a currency mismatch that a
+  pinned, versioned exchange rate resolves within tolerance.
 
 Reject wins over review when both fire.
 
@@ -368,6 +396,40 @@ distinguish a computed split from a single-PO charge.
 If the invoice exceeds every balance combined, the excess lands on the last PO
 rather than vanishing — the allocations must sum to the invoice total, or the
 ledger is describing money nobody billed — and that PO is flagged as over.
+
+### Currency mismatch and FX conversion
+
+An invoice in one currency matched against a PO in another used to hold for
+review unconditionally — "no conversion, no rate lookup, no third party,
+because a verdict that depends on an exchange rate fetched at run time is not
+reproducible by an auditor." That objection is about *when* the rate is
+fetched, not about conversion itself, so it does not apply to a table that is
+**pinned** and **versioned** (`config.FX_RATES` / `FX_RATES_VERSION`, the same
+pinning argument already used for the extraction models). Three outcomes now,
+not one:
+
+1. **The pinned rate resolves the conversion within tolerance.** APPROVED.
+   `€2,000.00` converting to exactly `$2,160.00` against a `$2,160.00` PO is a
+   genuinely different currency and genuinely the same value — the audit trail
+   names the rate and the table version that priced it, so the decision stays
+   reproducible.
+2. **The invoice states the *same raw number* as the PO, in a different
+   currency** — `€1,500.00` against a `$1,500.00` PO. No correct conversion
+   produces identical digits in a different currency, so this is not an
+   ordinary discrepancy for a human to reconcile against the numbers in front
+   of them; it reads as a currency-code error or a copied figure, and paying
+   the face value would silently over- or under-pay by the full FX
+   difference. **REJECTED outright**, not held — the audit trail names the
+   correctly-converted figure so the reviewer sees the gap immediately.
+3. **No pinned rate exists for the pair, or the converted amount still doesn't
+   fit.** Held for a human, exactly as every mismatch was before this
+   feature existed. Nothing is guessed.
+
+The ledger always consumes the **converted** amount, not the raw
+foreign-currency digits — `run_allocations` and the PO balance are in the PO's
+currency, so a `€2,000.00` invoice against a USD PO consumes exactly
+`$2,160.00`, and reversing it refunds exactly that. The raw invoice total is
+still shown, in its own currency, everywhere the document itself is quoted.
 
 ### Extraction routes
 
@@ -596,12 +658,12 @@ availability, so the badge can briefly contradict the run beside it.
 | **3** | `rules.yaml` — pull every threshold out of Python, stamp the version on each run | ◨ thresholds centralised; YAML + loader to do |
 | **4** | Transaction boundaries and the `run_allocations` ledger table | ✅ done |
 | **5** | `DecisionTrace` + reference snapshot; stop re-seeding on startup | ◨ audit trail done; snapshot to do |
-| **6** | Line-item decomposition, multi-PO consolidation, FX provider | ◨ multi-PO done; line items + FX to do |
+| **6** | Line-item decomposition, multi-PO consolidation, FX provider | ◨ multi-PO done; currency mismatch resolves against a pinned rate table; line items + a broader/live FX provider to do |
 | **7** | UI: confidence badges, evidence snippets, allocation view | ◨ allocation view done; confidence to do |
 
 **The most valuable thing left** is Phase 2's confidence gate — it closes the
 low-confidence auto-approve problem as a *class* rather than case by case.
-Nothing in the phases still open changes a verdict on any of the eight samples, so
+Nothing in the phases still open changes a verdict on any of the ten samples, so
 none of it is what is blocking the case study.
 
 **The sequencing trap this already hit:** multi-PO consolidation was a *ledger*
@@ -644,9 +706,9 @@ frontend-next/    The UI. Next.js 15 + React 19 + Tailwind v4, TypeScript
   lib/            API client, auth context, metrics, formatting, types
 frontend/         The original vanilla UI, kept as a no-build fallback
 data/             Seed POs + vendors + demo users (tracked); app.db (not tracked)
-sample_invoices/  8 PDFs, the generator, and manifest.json of scenarios
+sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            17 files, 401 tests, both providers mocked
+tests/            17 files, 416 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

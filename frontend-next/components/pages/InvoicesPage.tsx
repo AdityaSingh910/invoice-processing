@@ -11,7 +11,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "@/lib/api";
-import { money, when } from "@/lib/format";
+import { amount, money, when } from "@/lib/format";
 import type { RunRecord, Verdict } from "@/lib/types";
 import type { Async } from "@/lib/useData";
 import { PageBody, PageHeader } from "@/components/layout/AppShell";
@@ -281,7 +281,11 @@ export default function InvoicesPage({ runs }: { runs: Async<RunRecord[]> }) {
                           </span>
                         </td>
                         <td className="tnum px-3 py-2 text-right text-[12.5px] font-semibold whitespace-nowrap">
-                          {money(r.total)}
+                          {/* Falls back to USD, matching the extractor's own
+                              default -- a run with no stored audit trail must
+                              not lose its currency SYMBOL, just its precision
+                              about which currency it actually was. */}
+                          {amount(r.total, r.audit?.invoice?.currency || "USD")}
                         </td>
                         <td className="tnum px-3 py-2 text-[12px] text-muted">
                           {r.po_number || "—"}
@@ -370,6 +374,7 @@ export default function InvoicesPage({ runs }: { runs: Async<RunRecord[]> }) {
               vendor={detail.vendor_name}
               invoiceNumber={detail.invoice_number}
               total={detail.total}
+              currency={detail.audit?.invoice?.currency}
               compact
             />
             <RunDetail

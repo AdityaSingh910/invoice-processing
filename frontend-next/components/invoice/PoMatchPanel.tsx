@@ -121,14 +121,37 @@ export function MatchTable({ pm, audit }: { pm: PoMatch; audit?: Audit }) {
   }
 
   // --- currency -----------------------------------------------------------
-  const curRule = findRule(audit, "currency");
+  const curRule = (audit?.rules || []).find((r) => r.name === "Currency match");
+  const fx = pm.fx;
   rows.push({
     field: "Currency",
     invoice: cur,
     po: po.po_currency || cur,
     state: curRule ? (curRule.passed ? "match" : "mismatch") : "unknown",
+    label: fx?.applied
+      ? `Converts to ${money(fx.converted_total)}`
+      : pm.currency_mismatch
+        ? "No rate"
+        : undefined,
     note: curRule?.detail,
   });
+
+  // The same-number collision is a distinct finding from an ordinary
+  // mismatch -- shown only when it fired, since it drives a REJECT rather
+  // than a hold and deserves its own row rather than hiding inside "Currency".
+  if (pm.currency_same_number_suspected) {
+    const collisionRule = (audit?.rules || []).find(
+      (r) => r.name === "Currency/amount not reused across currencies"
+    );
+    rows.push({
+      field: "Currency vs amount",
+      invoice: <b>{amount(pm.invoice_total, cur)}</b>,
+      po: fx?.applied ? `converts to ${money(fx.converted_total)}` : "unconvertible",
+      state: "mismatch",
+      label: "Same digits, wrong currency",
+      note: collisionRule?.detail,
+    });
+  }
 
   // --- amount -------------------------------------------------------------
   const amountRule = findRule(audit, "po remaining");
@@ -298,7 +321,11 @@ function AllocationBar({ a }: { a: Allocation }) {
 function PoBudgetSingle({ pm }: { pm: PoMatch }) {
   const total = pm.po_amount || 0;
   const consumed = pm.consumed_before || 0;
-  const claim = pm.invoice_total || 0;
+  // The PO-currency equivalent of the invoice, when a conversion applied --
+  // `po_amount`/`remaining_before` are always in the PO's currency, so the bar
+  // must compare against the same figure or it under- or over-fills relative
+  // to what was actually approved.
+  const claim = pm.fx?.applied ? (pm.fx.converted_total ?? 0) : pm.invoice_total || 0;
   const fits = !!pm.within_tolerance;
 
   const scale = Math.max(total, consumed + claim) || 1;
@@ -318,6 +345,14 @@ function PoBudgetSingle({ pm }: { pm: PoMatch }) {
         </span>
         <span className="t-meta">{pm.po_vendor}</span>
       </div>
+
+      {pm.fx?.applied && (
+        <p className="t-meta mb-2 text-[11.5px]">
+          Invoice is {amount(pm.invoice_total, pm.invoice_currency || "")} — converted to{" "}
+          <span className="tnum font-medium text-fg">{money(claim)}</span> at the pinned rate{" "}
+          {pm.fx.rate?.toFixed(4)} (FX table v{pm.fx.rate_version}).
+        </p>
+      )}
 
       <div
         className="flex h-2 w-full overflow-hidden rounded-full bg-sunken"

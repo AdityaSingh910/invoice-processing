@@ -76,6 +76,16 @@ export default function AuditTrail({ audit, run }: { audit?: Audit; run?: Review
           <KeyValues
             rows={[
               ["Invoice total", <b key="a" className="tnum">{amount(c.invoice_total, cur)}</b>],
+              // Only shown when a currency conversion applied -- otherwise
+              // it's identical to "Invoice total" and just repeats it.
+              ...(c.invoice_total_converted != null
+                ? [[
+                    "Converted total",
+                    <b key="a2" className="tnum">
+                      {amount(c.invoice_total_converted, po.po_currency || cur)}
+                    </b>,
+                  ] as [string, React.ReactNode]]
+                : []),
               ["PO amount", <span key="b" className="tnum">{amount(c.po_amount, po.po_currency || cur)}</span>],
               [
                 "Already consumed",
@@ -87,15 +97,21 @@ export default function AuditTrail({ audit, run }: { audit?: Audit; run?: Review
               ],
               [
                 "Variance",
+                // Always in the PO's currency -- it is `converted_total -
+                // remaining`, never the raw invoice figure once a conversion
+                // has applied.
                 <span
                   key="e"
                   className="tnum"
                   style={Number(c.variance) > 0 ? { color: "var(--bad)" } : undefined}
                 >
-                  {amount(c.variance, cur)}
+                  {amount(c.variance, po.po_currency || cur)}
                 </span>,
               ],
-              ["Tolerance applied", <span key="f" className="tnum">{amount(c.tolerance, cur)}</span>],
+              [
+                "Tolerance applied",
+                <span key="f" className="tnum">{amount(c.tolerance, po.po_currency || cur)}</span>,
+              ],
             ]}
           />
         </Section>

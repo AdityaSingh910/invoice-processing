@@ -288,8 +288,8 @@ function showResult(r) {
     `run #${r.run_id} · ${r.extracted.vendor_name || "unknown vendor"}` +
     (r.extracted.invoice_number ? ` · ${r.extracted.invoice_number}` : "");
   $("verdictTotals").innerHTML = `
-    <div class="vt"><div class="vt-num">${money(r.extracted.total)}</div><div class="vt-lbl">invoice total</div></div>
-    ${pm.po_number ? `<div class="vt"><div class="vt-num">${money(pm.remaining_before)}</div><div class="vt-lbl">PO available</div></div>` : ""}`;
+    <div class="vt"><div class="vt-num">${amt(r.extracted.total, r.extracted.currency)}</div><div class="vt-lbl">invoice total</div></div>
+    ${pm.po_number ? `<div class="vt"><div class="vt-num">${amt(pm.remaining_before, pm.po_currency || r.extracted.currency)}</div><div class="vt-lbl">PO available</div></div>` : ""}`;
   bar.classList.remove("hidden");
 
   // PO balance
@@ -319,9 +319,9 @@ function showResult(r) {
     ${row("Invoice #", req(e.invoice_number))}
     ${row("Date", e.invoice_date ? esc(e.invoice_date) : "—")}
     ${row("PO refs", (e.po_references || []).join(", ") || "—")}
-    ${row("Subtotal", money(e.subtotal))}
-    ${row("Tax", money(e.tax))}
-    ${row("Total", e.total !== null && e.total !== undefined ? `<b>${money(e.total)}</b>` : req(null))}
+    ${row("Subtotal", amt(e.subtotal, e.currency))}
+    ${row("Tax", amt(e.tax, e.currency))}
+    ${row("Total", e.total !== null && e.total !== undefined ? `<b>${amt(e.total, e.currency)}</b>` : req(null))}
     ${row("Line items", (e.line_items || []).length || "—")}
     ${row("Currency", esc(e.currency || "—"))}
     ${row("Extraction route", esc(e.extraction_method))}`;
@@ -423,6 +423,13 @@ function auditHTML(a, run) {
           ${po.is_multi ? row("Split basis", esc(a.allocation_basis === "calculated"
               ? "calculated by the process — not stated on the invoice"
               : (a.allocation_basis || "—"))) : ""}
+          ${(a.currency && a.currency.mismatch) ? row("Currency",
+              esc(`${a.currency.invoice_currency} vs ${a.currency.po_currency}`)) : ""}
+          ${(a.currency && a.currency.fx && a.currency.fx.applied) ? row("Converted",
+              esc(`${money(a.currency.fx.converted_total)} at rate ${a.currency.fx.rate} `
+                  + `(FX table v${a.currency.fx.rate_version})`)) : ""}
+          ${(a.currency && a.currency.same_number_suspected) ? row("Currency check",
+              esc("same figure as the PO under a different currency — rejected")) : ""}
           ${row("Source", source)}
         </table>
       </div>
@@ -518,7 +525,10 @@ function balanceHTML(pm, status) {
   if (pm.is_multi) return multiBalanceHTML(pm);
   const total = pm.po_amount || 0;
   const consumed = pm.consumed_before || 0;
-  const claim = pm.invoice_total || 0;
+  // po_amount/remaining_before are always in the PO's currency, so the bar
+  // must compare against the converted total when a conversion applied, not
+  // the raw foreign-currency digits, or it under/over-fills the bar.
+  const claim = (pm.fx && pm.fx.applied) ? (pm.fx.converted_total || 0) : (pm.invoice_total || 0);
   const fits = pm.within_tolerance;
   const scale = Math.max(total, consumed + claim) || 1;
   const pct = (v) => (v / scale) * 100;
@@ -530,11 +540,18 @@ function balanceHTML(pm, status) {
   const seg = (cls, w, label) =>
     w <= 0.4 ? "" : `<div class="bal-seg ${cls}" style="width:${w}%">${w > 9 ? label : ""}</div>`;
 
+  const fxNote = (pm.fx && pm.fx.applied)
+    ? `<p class="po-fx-note">Invoice is ${amt(pm.invoice_total, pm.invoice_currency || "")} —
+       converted to <b>${money(claim)}</b> at the pinned rate ${Number(pm.fx.rate).toFixed(4)}
+       (FX table v${esc(pm.fx.rate_version)}).</p>`
+    : "";
+
   return `
     <div class="po-head">
       <span class="po-num">${esc(pm.po_number)}</span>
       <span class="po-total">${esc(pm.po_vendor || "")} · ${money(total)} authorised</span>
     </div>
+    ${fxNote}
     <div class="bal-bar">
       ${seg("consumed", pct(consumed), money(consumed))}
       ${seg(fits ? "current-ok" : "current-bad", pct(shown), money(shown))}
@@ -656,7 +673,7 @@ function renderRuns() {
       <td>${esc(r.filename)}</td>
       <td>${esc(r.vendor_name || "—")}</td>
       <td class="mono">${esc(r.invoice_number || "—")}</td>
-      <td class="num">${money(r.total)}</td>
+      <td class="num">${amt(r.total, (r.audit && r.audit.invoice && r.audit.invoice.currency) || "USD")}</td>
       <td class="mono">${esc(r.po_number || "—")}</td>
       <td><span class="status-pill ${r.status}">${r.status.replace("_", " ")}</span>${
         // A run a person ruled on reads as APPROVED/REJECTED like any other.
@@ -709,7 +726,7 @@ function openModal(r) {
       <h2>${esc(r.filename)}</h2>
       <span class="status-pill ${r.status}">${r.status.replace("_", " ")}</span>
     </div>
-    <div class="modal-sub">run #${r.id} · ${esc(r.vendor_name || "unknown vendor")} · ${money(r.total)}
+    <div class="modal-sub">run #${r.id} · ${esc(r.vendor_name || "unknown vendor")} · ${amt(r.total, (r.audit && r.audit.invoice && r.audit.invoice.currency) || "USD")}
       · ${new Date(r.created_at).toLocaleString()}</div>
 
     <div class="modal-section">Reasoning</div>

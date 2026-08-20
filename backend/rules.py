@@ -540,22 +540,88 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
         # Currency is checked before any of the amount reasoning below, because
         # when the units differ none of that reasoning means anything: "within
         # tolerance" compares two bare numbers, and 3,000 of one currency is not
-        # 3,000 of another. No conversion is attempted and no rate is fetched --
-        # a verdict that depends on a third party and the time of day is not one
-        # an auditor can reproduce. A human converts and decides.
-        if po_match.get("currency_mismatch"):
-            review = True
+        # 3,000 of another.
+        #
+        # Three outcomes when currencies differ, not one:
+        #
+        #  1. SAME RAW NUMBER, different currency ("1500" billed as EUR against
+        #     a "1500" USD PO). No correct conversion produces identical digits
+        #     in a different currency, so this is not an ordinary discrepancy
+        #     for a human to reconcile -- it is a currency-code error that would
+        #     silently mis-pay by the full FX difference, or a copied figure.
+        #     REJECTED outright.
+        #  2. A PINNED, versioned exchange rate (config.FX_RATES) resolves the
+        #     conversion within tolerance. Approved -- the reason a live-fetched
+        #     rate was refused ("not reproducible by an auditor") does not apply
+        #     to a table that is pinned and stamped with a version, and the
+        #     audit trail records exactly which version priced it.
+        #  3. No pinned rate is available for the pair, or the converted amount
+        #     still does not fit. Held for a human, same as before this existed.
+        fx = po_match.get("fx") or {}
+        suspected = bool(po_match.get("currency_same_number_suspected"))
+        mismatch = bool(po_match.get("currency_mismatch"))
+        fx_resolved = mismatch and fx.get("applied") and po_match["within_tolerance"] and not suspected
+        # The figure actually compared against the PO balance below -- the
+        # converted amount when a conversion applied, the raw total otherwise.
+        # `remaining_before`/`diff`/`tolerance` are always in the PO's currency,
+        # so this must be too or the comparison sentence mixes units.
+        compared_total = fx["converted_total"] if fx.get("applied") else po_match["invoice_total"]
+
+        if suspected:
+            reject = True
             add(
-                f"Currency mismatch: invoice is {po_match['invoice_currency']}, "
-                f"PO {po_match['po_number']} is {po_match['po_currency']}. The amount "
-                f"comparison below treats both as the same unit, so it cannot be relied on. "
-                f"No conversion was applied — confirm the correct amount before payment.",
+                f"Invoice states {po_match['invoice_total']:.2f} {po_match['invoice_currency']} — "
+                f"the exact same figure as PO {po_match['po_number']}, but in a different "
+                f"currency ({po_match['po_currency']}). No correct currency conversion produces "
+                f"identical digits, so this reads as a currency-code error or a copied number "
+                f"rather than a legitimate invoice — rejected rather than held."
+                + (f" Converted at the pinned rate it is actually "
+                   f"{fx['converted_total']:.2f} {po_match['po_currency']}, not "
+                   f"{po_match['invoice_total']:.2f}."
+                   if fx.get("applied") else ""),
                 "fail",
             )
-        _check("Currency match", not po_match.get("currency_mismatch"),
+        elif fx_resolved:
+            add(
+                f"Currency converted: invoice is {po_match['invoice_total']:.2f} "
+                f"{po_match['invoice_currency']}, which is {fx['converted_total']:.2f} "
+                f"{po_match['po_currency']} at the pinned rate {fx['rate']:.4f} "
+                f"(FX table v{fx['rate_version']}) — within tolerance of PO "
+                f"{po_match['po_number']}. The rate is pinned and versioned, not fetched at "
+                f"run time, so this figure is reproducible by an auditor.",
+                "warn",
+            )
+        elif mismatch:
+            review = True
+            if fx.get("applied"):
+                add(
+                    f"Currency mismatch: invoice is {po_match['invoice_total']:.2f} "
+                    f"{po_match['invoice_currency']}, PO {po_match['po_number']} is "
+                    f"{po_match['po_currency']}. Converted at the pinned rate "
+                    f"(v{fx['rate_version']}) it is {fx['converted_total']:.2f} "
+                    f"{po_match['po_currency']}, which does not fit the remaining balance "
+                    f"within tolerance — confirm before payment.",
+                    "fail",
+                )
+            else:
+                add(
+                    f"Currency mismatch: invoice is {po_match['invoice_currency']}, "
+                    f"PO {po_match['po_number']} is {po_match['po_currency']}. No pinned "
+                    f"exchange rate is available for this pair, so it cannot be converted — "
+                    f"confirm the correct amount before payment.",
+                    "fail",
+                )
+        _check("Currency match", not mismatch or fx_resolved,
                f"invoice {po_match.get('invoice_currency') or 'unknown'} vs "
-               f"PO {po_match.get('po_currency') or 'unknown'}",
+               f"PO {po_match.get('po_currency') or 'unknown'}"
+               + (f", converts to {fx['converted_total']:.2f} at v{fx['rate_version']}"
+                  if fx.get("applied") else ""),
                reason="Invoice currency does not match the purchase order currency.")
+        _check("Currency/amount not reused across currencies", not suspected,
+               "Invoice figure matches the PO's raw amount under a different currency code"
+               if suspected else "No currency/amount collision detected",
+               reason="Invoice states the purchase order's own figure under a different "
+                      "currency, which no correct conversion would produce.")
 
         if po_match["matched_via"] == "inferred":
             # An inferred match is a suggestion, not an authorisation. The
@@ -601,9 +667,11 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
 
         _check(
             "PO remaining check", po_match["within_tolerance"],
-            (f"invoice {po_match['invoice_total']:.2f} vs remaining "
+            (f"invoice {compared_total:.2f} vs remaining "
              f"{po_match['remaining_before']:.2f}, variance {po_match['diff']:.2f}, "
-             f"tolerance {po_match['tolerance']:.2f}")
+             f"tolerance {po_match['tolerance']:.2f}"
+             + (f" (converted from {po_match['invoice_total']:.2f} "
+                f"{po_match['invoice_currency']})" if fx.get("applied") else ""))
             if po_match["remaining_before"] is not None else "no balance to compare",
             reason="Invoice total exceeds PO remaining amount.")
 
@@ -742,13 +810,30 @@ def build_audit(status, checks, reasons, extract_info, po_match, extracted=None)
         "allocation_basis": ("calculated" if po_match.get("is_multi")
                              else ("single_po" if po_match.get("po_number") else None)),
         "comparison": {
+            # The RAW total, in the invoice's own currency, as printed.
             "invoice_total": po_match.get("invoice_total"),
+            # What was actually compared against the balances below -- equal to
+            # `invoice_total` unless a currency conversion applied, in which
+            # case `variance`/`po_remaining`/`tolerance` are all in PO currency
+            # and this is the figure that produced them.
+            "invoice_total_converted": (po_match.get("fx") or {}).get("converted_total"),
             "po_amount": po_match.get("po_amount"),
             "consumed_before": po_match.get("consumed_before"),
             "po_remaining": po_match.get("remaining_before"),
             "variance": po_match.get("diff"),
             "tolerance": po_match.get("tolerance"),
             "remaining_after": po_match.get("remaining_after"),
+        },
+        # Present only when the invoice and PO currencies actually differ.
+        # `fx` is the pinned-rate conversion attempted (see config.FX_RATES);
+        # its absence when `mismatch` is true means no rate was available for
+        # the pair, not that conversion was skipped.
+        "currency": {
+            "invoice_currency": po_match.get("invoice_currency"),
+            "po_currency": po_match.get("po_currency"),
+            "mismatch": bool(po_match.get("currency_mismatch")),
+            "same_number_suspected": bool(po_match.get("currency_same_number_suspected")),
+            "fx": po_match.get("fx"),
         },
         "rules": checks,
         "rules_passed": [c["name"] for c in checks if c["passed"]],

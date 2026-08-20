@@ -11,7 +11,7 @@
  * which route read the document, what that implies for reliability, and exactly
  * which required fields came back empty.
  */
-import { money } from "@/lib/format";
+import { amount } from "@/lib/format";
 import type { Extracted, Reason } from "@/lib/types";
 import { Badge, Callout, KeyValues, StatusBadge } from "@/components/ui";
 import { IconAlert, IconCheck, IconShield, IconX } from "@/components/ui/icons";
@@ -139,13 +139,13 @@ export function ExtractedFields({ e }: { e: Extracted }) {
         ["Invoice number", val(e.invoice_number)],
         ["Invoice date", e.invoice_date || "—"],
         ["PO references", (e.po_references || []).join(", ") || "—"],
-        ["Subtotal", <span key="s" className="tnum">{money(e.subtotal)}</span>],
-        ["Tax", <span key="t" className="tnum">{money(e.tax)}</span>],
+        ["Subtotal", <span key="s" className="tnum">{amount(e.subtotal, e.currency)}</span>],
+        ["Tax", <span key="t" className="tnum">{amount(e.tax, e.currency)}</span>],
         [
           "Total",
           e.total != null ? (
             <span key="tt" className="tnum text-[13px] font-semibold">
-              {money(e.total)}
+              {amount(e.total, e.currency)}
             </span>
           ) : (
             <Missing key="tt" />
@@ -192,7 +192,9 @@ export function VerdictHeader({
   vendor,
   invoiceNumber,
   total,
+  currency,
   remaining,
+  poCurrency,
   compact = false,
 }: {
   status: string;
@@ -201,7 +203,14 @@ export function VerdictHeader({
   vendor?: string | null;
   invoiceNumber?: string | null;
   total?: number | null;
+  /** The invoice's own currency. Defaults to USD, matching the extractor's
+   *  own fallback when a document carries no currency signal at all. */
+  currency?: string | null;
   remaining?: number | null;
+  /** The matched PO's currency -- may differ from `currency` when a
+   *  conversion applied. Falls back to `currency` so an ordinary same-currency
+   *  invoice needs no second prop. */
+  poCurrency?: string | null;
   compact?: boolean;
 }) {
   const v = VERDICT[status] ?? { headline: status, blurb: "", tone: "neutral" as const };
@@ -241,9 +250,9 @@ export function VerdictHeader({
       </div>
 
       <div className="flex gap-5">
-        <Figure label="Invoice total" value={money(total)} />
+        <Figure label="Invoice total" value={amount(total, currency || "USD")} />
         {remaining !== null && remaining !== undefined && (
-          <Figure label="PO remaining" value={money(remaining)} />
+          <Figure label="PO remaining" value={amount(remaining, poCurrency || currency || "USD")} />
         )}
       </div>
     </div>

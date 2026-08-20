@@ -75,6 +75,25 @@ export interface PoMatch {
   allocations?: Allocation[];
   is_multi?: boolean;
   closed_pos?: string[];
+  currency_mismatch?: boolean;
+  invoice_currency?: string | null;
+  po_currency?: string | null;
+  /** Present only when `currency_mismatch` is true. */
+  fx?: FxConversion | null;
+  /** True when the invoice states the PO's own figure under a different
+   *  currency -- no correct conversion produces identical digits, so this is
+   *  rejected outright rather than held. */
+  currency_same_number_suspected?: boolean;
+}
+
+/** A currency conversion attempted at the pinned, versioned rate table. */
+export interface FxConversion {
+  applied: boolean;
+  from_currency: string | null;
+  to_currency: string | null;
+  rate: number | null;
+  rate_version: string | null;
+  converted_total: number | null;
 }
 
 export interface AuditRule {
@@ -106,12 +125,24 @@ export interface Audit {
    */
   allocation_basis?: "single_po" | "calculated" | null;
   comparison?: {
+    /** Raw, in the invoice's own currency, as printed. */
     invoice_total?: number | null;
+    /** What was actually compared against the PO balances -- equal to
+     *  `invoice_total` unless a conversion applied. */
+    invoice_total_converted?: number | null;
     po_amount?: number | null;
     consumed_before?: number | null;
     po_remaining?: number | null;
     variance?: number | null;
     tolerance?: number | null;
+  };
+  /** Present whenever the invoice and PO currencies differ. */
+  currency?: {
+    invoice_currency?: string | null;
+    po_currency?: string | null;
+    mismatch?: boolean;
+    same_number_suspected?: boolean;
+    fx?: FxConversion | null;
   };
   extraction?: { method?: string; route?: string };
   rules?: AuditRule[];
