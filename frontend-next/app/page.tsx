@@ -17,7 +17,7 @@ import { useAuth } from "@/lib/auth";
 import { useReference, useRuns } from "@/lib/useData";
 import { totals } from "@/lib/metrics";
 import LoginGate from "@/components/LoginGate";
-import AppShell, { type Section } from "@/components/layout/AppShell";
+import AppShell, { type Navigate, type Section } from "@/components/layout/AppShell";
 import OverviewPage from "@/components/pages/OverviewPage";
 import ProcessPage from "@/components/pages/ProcessPage";
 import InvoicesPage from "@/components/pages/InvoicesPage";
@@ -27,8 +27,17 @@ import { Spinner } from "@/components/ui";
 export default function Home() {
   const { user, ready } = useAuth();
   const [section, setSection] = useState<Section>("overview");
+  // Set only by a navigation that promised a filtered view (Overview's "Open
+  // review queue"); consumed once by InvoicesPage's own initial state, so it
+  // does not fight the reviewer's own filter choice on the way back.
+  const [invoicesFilter, setInvoicesFilter] = useState<"EXCEPTIONS" | undefined>(undefined);
   // Bumped when a run finishes or a review lands, so every view refetches.
   const [reloadKey, setReloadKey] = useState(0);
+
+  const navigate: Navigate = (s, opts) => {
+    setInvoicesFilter(opts?.exceptionsOnly ? "EXCEPTIONS" : undefined);
+    setSection(s);
+  };
 
   // Gated on `user`: fetching before the token exists 401s and would sign the
   // user out at the moment they sign in.
@@ -52,12 +61,12 @@ export default function Home() {
   const refresh = () => setReloadKey((k) => k + 1);
 
   return (
-    <AppShell section={section} onNavigate={setSection} badge={openExceptions}>
+    <AppShell section={section} onNavigate={navigate} badge={openExceptions}>
       {section === "overview" && (
-        <OverviewPage runs={runs} reference={reference} onNavigate={setSection} />
+        <OverviewPage runs={runs} reference={reference} onNavigate={navigate} />
       )}
       {section === "process" && <ProcessPage runs={runs} onRan={refresh} />}
-      {section === "invoices" && <InvoicesPage runs={runs} />}
+      {section === "invoices" && <InvoicesPage runs={runs} initialFilter={invoicesFilter} />}
       {section === "reference" && <ReferencePage reference={reference} runs={runs} />}
     </AppShell>
   );

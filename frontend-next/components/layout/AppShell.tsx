@@ -23,6 +23,10 @@ import {
 
 export type Section = "overview" | "process" | "invoices" | "reference";
 
+/** `exceptionsOnly` lets a caller (Overview's exception card) send the reviewer
+ *  straight to the pre-filtered queue instead of the unfiltered register. */
+export type Navigate = (section: Section, opts?: { exceptionsOnly?: boolean }) => void;
+
 const GROUPS: {
   label: string;
   items: {
@@ -55,7 +59,7 @@ export default function AppShell({
   children,
 }: {
   section: Section;
-  onNavigate: (s: Section) => void;
+  onNavigate: Navigate;
   badge?: number;
   children: React.ReactNode;
 }) {

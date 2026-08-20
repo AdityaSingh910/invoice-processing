@@ -23,7 +23,7 @@ import {
 } from "@/lib/metrics";
 import type { Reference, RunRecord } from "@/lib/types";
 import type { Async } from "@/lib/useData";
-import type { Section } from "@/components/layout/AppShell";
+import type { Navigate } from "@/components/layout/AppShell";
 import { PageBody, PageHeader } from "@/components/layout/AppShell";
 import {
   Badge,
@@ -57,7 +57,7 @@ export default function OverviewPage({
 }: {
   runs: Async<RunRecord[]>;
   reference: Async<Reference>;
-  onNavigate: (s: Section) => void;
+  onNavigate: Navigate;
 }) {
   const rows = useMemo(() => runs.data ?? [], [runs.data]);
   const t = useMemo(() => totals(rows), [rows]);
@@ -163,7 +163,7 @@ export default function OverviewPage({
                   size="sm"
                   variant="secondary"
                   className="mt-3 w-full"
-                  onClick={() => onNavigate("invoices")}
+                  onClick={() => onNavigate("invoices", { exceptionsOnly: true })}
                   icon={<IconChevronRight size={13} />}
                 >
                   Open review queue

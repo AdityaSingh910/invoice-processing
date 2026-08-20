@@ -39,13 +39,22 @@ import Modal from "@/components/ui/Modal";
 import RunDetail from "@/components/invoice/RunDetail";
 import { VerdictHeader } from "@/components/invoice/Panels";
 
-type Filter = "ALL" | Verdict | "EXCEPTIONS";
+export type Filter = "ALL" | Verdict | "EXCEPTIONS";
 type SortKey = "created_at" | "total" | "vendor_name" | "status";
 
 const PAGE_SIZE = 14;
 
-export default function InvoicesPage({ runs }: { runs: Async<RunRecord[]> }) {
-  const [filter, setFilter] = useState<Filter>("ALL");
+export default function InvoicesPage({
+  runs,
+  initialFilter,
+}: {
+  runs: Async<RunRecord[]>;
+  /** Set once, from how the page was navigated to -- e.g. Overview's "Open
+   *  review queue" lands here pre-filtered rather than making the reviewer
+   *  reselect the tab they were just told to open. */
+  initialFilter?: Filter;
+}) {
+  const [filter, setFilter] = useState<Filter>(initialFilter ?? "ALL");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("created_at");
   const [asc, setAsc] = useState(false);
