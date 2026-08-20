@@ -36,47 +36,50 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 |---|---|
 | Pipeline | ✅ Working, 9 stages, streamed live over SSE |
 | Samples | ✅ 7/7 match the manifest, driven through the real pipeline |
-| UI | ✅ Run view, dashboard, reference, audit trail, sign-in; light + dark |
+| UI | ✅ **Next.js 15 + React 19 + Tailwind v4**, 4 sections, light + dark |
 | Extraction | ✅ **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | ✅ **329 passing** deterministically, 13 files, both providers mocked |
+| Automated tests | ✅ **359 passing** deterministically, 15 files, both providers mocked |
 | Audit trail | ✅ Structured, deterministic, emitted by the rule engine itself |
 | Human review | ✅ Accept/reject, recorded beside the automated decision |
 | API security | ✅ OAuth2 bearer tokens, scopes, rate limits, input validation |
 | Production safety | ✅ `APP_ENV=production` refuses demo creds / missing secret |
 | Daily AI budget | ✅ Per-provider circuit breaker, SQLite-backed |
+| Non-invoice detection | ✅ Rejects documents containing no invoice, saying so |
+| Demo reset | ✅ Admin button in the UI, plus `.\reset-demo.ps1` |
 | Original audit defects | ✅ **All 3 fixed** |
 | Gemini vision route | ⚠️ Intermittent **503** from Google — see §9 |
 | Groq input truncation | ⚠️ **Open bug** — 413 on long documents, see §9 |
-| Published | ✅ **<https://github.com/AdityaSingh910/invoice-processing>** (public, 28 commits) |
+| Published | ✅ **<https://github.com/AdityaSingh910/invoice-processing>** (public) |
 | Deployed (hosted) | ❌ Runs locally only |
 | Demo video | ❌ Not recorded |
 
-**Git:** 28 commits on `main`, pushed to
+**Git:** 39 commits on `main`, pushed to
 <https://github.com/AdityaSingh910/invoice-processing> (public). Working tree
 clean, local and remote identical. Verified at push time that `.env`,
-`data/app.db` and `data/app.db.bak` are absent from the published tree and that
-no key material appears in any commit. Recent:
+`data/app.db` and `data/app.db.bak` are absent from the published tree, that
+`frontend-next/node_modules`, `.next/` and `out/` are ignored, and that no key
+material appears in any commit. Recent:
 
 ```
+824d45b Recognise documents that are not invoices, and reject them saying so
+8da60b7 Let an admin clear run history from the UI, and explain duplicate rejections
+634bdc7 Add a one-command reset so the samples keep telling their intended story
+e71d34c Redesign the UI as a premium AP product: surfaces, hierarchy, density
+bdf12a0 Rebuild the UI as a production-grade AP application
+738e2a5 Redesign again: colourful, friendly, and in plain language
+f3a1058 Never cache the HTML shell, so the browser cannot pin an old build
+5c6c69a Redesign the UI: new visual system, same screens and information
+4844e4e Rebuild the frontend as a Next.js + Tailwind app on the same backend
+c9fc298 Record the GitHub publish in CLAUDE.md and add a fresh-session checklist
+e836bd9 Update CLAUDE.md to the current state of the project
 c0e00e9 Rewrite README for the current state of the project
 f78be67 Separate demo config from production, and cap daily AI spend
 9cffa9d Require authenticated, scoped, rate-limited access to the API
-ff64560 Show the audit trail in the UI and let a reviewer accept or reject
-3e45766 Record human review beside the automated decision, never on top of it
-0b4f8dc Emit a deterministic audit trail from the decision evaluation
-da396f6 Route text PDFs to Groq and keep Gemini for scanned pages only
-ff0b1f3 Match vendors by normalised name instead of bidirectional substring
-921d107 Require invoice totals to be greater than zero
-be7ef8b Validate invoice arithmetic: subtotal + tax must equal the stated total
-8a2c30b Compare invoice and PO currency, and hold mismatches for review
-c2e81a3 Cap and disambiguate inferred PO matches, and make the warning bite
-2865a58 Harden the PO ledger: atomicity, reversal + cascade, configurable tolerance
-056d0f2 Harden the extraction layer against indirect prompt injection
-5ed4a53 Swap the LLM extraction layer from Anthropic Claude to Google Gemini
 ```
 
-**[README.md](README.md) is current and accurate** — rewritten `c0e00e9` against
-the code, every figure verified. When the two documents disagree, trust the README.
+**[README.md](README.md) is current and accurate** — every figure re-verified
+against the code at the same time as this file. When the two disagree, trust the
+README.
 
 ---
 
@@ -109,6 +112,11 @@ Then <http://127.0.0.1:8000> and sign in.
 | `admin` | `demo-admin` | + override any run's status |
 
 ```powershell
+# Reset run history so the samples tell their intended story again.
+# Also available in the UI: sign in as admin -> Overview -> "Reset demo data".
+.\reset-demo.ps1              # clear only
+.\reset-demo.ps1 -Replay      # clear, then drive all 7 through the API in order
+
 # Tests -- no server needed, no API key needed, no network
 .\venv\Scripts\python.exe -m pytest tests/ -v
 
@@ -208,7 +216,7 @@ Stage 8 only *reports* what stage 6 decided. The split exists for the run view.
 ### Decision hierarchy
 
 - **REJECTED** — must not be overridden automatically: duplicates, vendor on file
-  but not approved.
+  but not approved, **document is not an invoice**.
 - **NEEDS_REVIEW** — recoverable: missing fields, unreadable scan, over tolerance,
   no PO match, currency mismatch, bad arithmetic, invalid total, inferred PO,
   injection-shaped text.
@@ -370,9 +378,28 @@ Services" trains clerks to click through warnings, which is worse than no guard.
 
 ### Stack
 
-FastAPI + SQLite + vanilla JS (no build step). `POST /api/runs/stream` streams
-stages over SSE, read with `fetch()`. `pyjwt` for tokens; PBKDF2-HMAC-SHA256
-password hashing from the stdlib.
+FastAPI + SQLite + **Next.js 15 / React 19 / Tailwind v4 / TypeScript**.
+`POST /api/runs/stream` streams stages over SSE, read with `fetch()` and a
+`ReadableStream` reader. `pyjwt` for tokens; PBKDF2-HMAC-SHA256 password hashing
+from the stdlib.
+
+**The UI ships as a static export**, not a Node server. `npm run build` in
+`frontend-next/` emits plain HTML/JS into `out/`, and `backend/main.py` mounts
+that at `/`. Consequences worth knowing:
+
+* The UI is **same-origin** with the API, so relative `/api/...` paths resolve
+  with no CORS and no base URL. `next dev` on :3000 proxies `/api` to :8000 so
+  the same relative paths work in development.
+* Nothing Node runs at serve time. One process, one port, `start.ps1` unchanged.
+* `FRONTEND_DIR` falls back to the original `frontend/` when `out/` has not been
+  built, so a clone without npm still boots a working UI and the Python suite is
+  unaffected.
+* **Navigation is client-side state, not routes.** Real paths would need the
+  static mount to resolve deep links — a backend change for no gain across four
+  sections. Documented in `AppShell.tsx` so it does not read as an oversight.
+* The HTML shell is served `Cache-Control: no-store`; hashed `_next/*` assets
+  stay cacheable. Without this the browser pins itself to a build that no longer
+  exists on disk — it happened twice, and looked like the app was broken.
 
 ---
 
@@ -380,15 +407,18 @@ password hashing from the stdlib.
 
 ```
 backend/
-  main.py         622 lines. FastAPI app, 9-stage pipeline as an async generator,
-                  auth endpoints, error handlers, upload validation.
+  main.py         675 lines. FastAPI app, 9-stage pipeline as an async generator,
+                  auth endpoints, error handlers, upload validation,
+                  /api/admin/reset-demo, no-store on the HTML shell.
   extraction.py   744 lines. PDF → text → fields. Groq/Gemini/regex/none,
                   SCHEMA_PROMPT, injection guard. The ONLY module that talks
                   to a model; both SDKs imported lazily.
-  rules.py        575 lines. Validation, vendor tri-state, duplicates, decide()
-                  and build_audit(). The only place a verdict is produced.
-  storage.py      617 lines. SQLite, ledger, write_txn(), save_run_checked(),
-                  record_human_review(), migrations via _ensure_columns().
+  rules.py        655 lines. Validation, vendor tri-state, duplicates,
+                  is_not_an_invoice(), decide() and build_audit().
+                  The only place a verdict is produced.
+  storage.py      641 lines. SQLite, ledger, write_txn(), save_run_checked(),
+                  record_human_review(), clear_run_history(),
+                  migrations via _ensure_columns().
   auth.py         324 lines. OAuth2 bearer tokens, scopes, user store,
                   production config enforcement.
   config.py       244 lines. .env loader, APP_ENV, provider settings, tolerances,
@@ -397,20 +427,42 @@ backend/
   quota.py        142 lines. Daily per-provider budget, SQLite-backed.
   ratelimit.py    130 lines. Sliding-window per user/IP.
   schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
-frontend/         index.html, style.css, app.js — sign-in, run view, dashboard,
-                  reference, audit panel, accept/reject. No framework, no build.
+frontend-next/    ~5,700 lines across 27 source files. Next.js 15 + React 19 +
+                  Tailwind v4 + TypeScript. Built to a STATIC EXPORT in out/.
+  app/            layout.tsx (Inter via next/font), page.tsx (auth gate +
+                  section switch), globals.css (the whole design system:
+                  surfaces, type scale, semantic colours, motion).
+  components/
+    layout/       AppShell.tsx — sidebar, page chrome, mobile drawer.
+    pages/        OverviewPage, ProcessPage, InvoicesPage, ReferencePage.
+    invoice/      RunDetail, StageList (+PhaseStepper), PoMatchPanel,
+                  Panels (verdict/extraction/reasons), AuditTrail, ReviewBar.
+    ui/           index.tsx (primitives), Modal.tsx (focus trap),
+                  Toast.tsx, icons.tsx (16px/1.5-stroke set).
+    ResetDemoButton.tsx, charts.tsx (hand-drawn SVG, no chart library).
+  lib/            api.ts (fetch + SSE reader), auth.tsx, useData.ts,
+                  metrics.ts (dashboard figures), format.ts, types.ts.
+frontend/         The ORIGINAL vanilla UI. Kept deliberately: main.py serves it
+                  when frontend-next/out is missing, so a clone without npm
+                  still boots and the Python suite is unaffected.
 data/
   purchase_orders.json / approved_vendors.json / users.json   (TRACKED)
   app.db                                                      (NOT tracked)
 sample_invoices/  7 PDFs, generate_invoices.py, manifest.json
-tests/            13 files, 329 tests. conftest.py provides auth_headers().
+scripts/          replay_samples.py — drives the 7 samples in manifest order
+                  and checks each verdict. Used by reset-demo.ps1 -Replay.
+reset-demo.ps1    Clears run history (and optionally replays the samples).
+tests/            15 files, 359 tests. conftest.py provides auth_headers()
+                  as a plain function, NOT a fixture -- import it.
 ```
 
-### Test suite — 329 tests, 13 files
+### Test suite — 359 tests, 15 files
 
 | File | n | Covers |
 |---|---|---|
 | `test_api_security.py` | 59 | authn, authz, rate limits, secrets, input, errors |
+| `test_document_type.py` | 19 | the not-an-invoice check and its degraded-route gate |
+| `test_reset_demo.py` | 11 | who may clear run history, and what survives it |
 | `test_vendor_matching.py` | 40 | normalisation, substrings, ambiguity |
 | `test_production_safety.py` | 39 | APP_ENV gates, demo creds, daily quota |
 | `test_human_review.py` | 28 | accept/reject, ledger effect, eligibility |
@@ -446,6 +498,7 @@ GET  /api/runs                   [invoice:read]
 GET  /api/runs/{id}              [invoice:read]   includes the audit trail
 POST /api/runs/{id}/review       [invoice:review]
 POST /api/runs/{id}/status       [invoice:admin]  cascades to held invoices
+POST /api/admin/reset-demo       [invoice:admin]  clears run history only
 GET  /api/reference              [invoice:read]
 GET  /api/sample-invoices        [invoice:read]
 GET  /api/sample-invoices/{name} [invoice:read]
@@ -549,8 +602,18 @@ scanned-sample demo is not reliably reproducible, and `manifest.json` resolves
 that sample's badge on key *presence* rather than provider *availability* — so
 the badge can contradict the run beside it. **Decide before recording.**
 
-⚠️ **3. `data/app.db` accumulates test runs.** Reset before the demo (§4) and
-replay samples 1→7 in order for a clean dashboard.
+⚠️ **3. `data/app.db` accumulates runs, which breaks the samples.** Not a bug —
+the samples are history-dependent by design, so a second pass makes 01 a
+duplicate of itself and leaves PO-1001 with $5.72. It was reported twice as
+"the happy path is rejected". Now recoverable without shell access: **Reset
+demo data** on Overview (admin), or `.\reset-demo.ps1`. Reset before recording.
+
+⚠️ **5. `test_extraction_routing.py` reads the real quota counter.** It is
+described as fully mocked, and the providers are — but `extraction` consults
+`quota.try_consume()` against `data/app.db` before reaching the fakes, and
+`conftest.py` has no DB isolation. With the local vision budget spent, 4 of its
+23 cases fail. Run against a clean database for the true result. A
+`storage.DB_PATH` redirect plugin is the workaround used during this work.
 
 ⚠️ **4. `extraction._first()` strips a leading minus sign** off a captured
 amount, so `Total Due: -500.00` extracts as +500. Accounting parentheses are
@@ -565,12 +628,17 @@ unaffected. The amount rule cannot catch a sign the extractor discarded.
 - Schema stores **one `po_number` per run** — no multi-PO. Phase 4b/6.
 - Rate-limit counters are **per process** — several workers multiply the limit.
 - `_guess_vendor` picks the vendor by **line position**.
+- **Sorting, filtering and paging are client-side** in the invoice register.
+  `GET /api/runs` returns everything and takes no query parameters. Correct at
+  this volume; past a few thousand rows it moves server-side.
+- **No UI for the admin override** (`POST /api/runs/{id}/status`). Only reviewer
+  accept/reject is surfaced. No bulk actions either — there is no batch endpoint.
 
 ### Case-study deliverables still outstanding
 
 1. Settle the sample-05 badge question (issue 2).
-2. Reset the database and replay 1→7.
-3. ✅ **Published to GitHub** — public, 28 commits, secrets verified absent.
+2. Reset the demo (§4) — one click now, not a manual file deletion.
+3. ✅ **Published to GitHub** — public, secrets verified absent.
 4. *(Optional)* Deploy to a host, and smoke-test the *deployed* instance — the DB
    path, the env and SSE buffering all change. `GEMINI_API_KEY`, `GROQ_API_KEY`
    and `AUTH_SECRET` must be **host env vars**, never a committed `.env`. The
@@ -582,14 +650,20 @@ unaffected. The amount rule cannot catch a sign the extractor discarded.
 
 1. Read this file, then [README.md](README.md) (current and verified).
 2. `git log --oneline -10` and `git status` — confirm nothing moved.
-3. `.env\Scripts\python.exe -m pytest tests/ -q` — expect **329 passed**.
-   No key or network needed. If it is not 329, something changed; find out what
-   before building anything.
-4. **Ask the user what they want next.** Do not start Phases 2–7, and do not fix
-   the open issues in this section, without being asked (§3).
+3. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **359 passed**.
+   No key or network needed. If it is not 359, find out what changed before
+   building anything. Two known non-regressions: `test_samples` 05 depends on
+   Gemini being reachable (503 and 429 both happen), and
+   `test_extraction_routing` fails 4 cases when the local vision quota is spent
+   (§9 issue 5) — run against a clean `data/app.db` for the true number.
+4. `cd frontend-next && npm run build` if the UI was touched. The export in
+   `out/` is what FastAPI serves; without a rebuild the browser keeps serving
+   the previous one.
+5. **Ask the user what they want next.** Do not start Phases 2–7, and do not fix
+   the open issues in §9, without being asked (§3).
 
-The single highest-value next task is **recording the demo video**, and the
-housekeeping in §9 issues 2 and 3 should be settled before that happens.
+The single highest-value next task is **recording the demo video**. Reset the
+demo first (§4), and settle the sample-05 badge question (§9 issue 2).
 
 ---
 
@@ -621,6 +695,14 @@ housekeeping in §9 issues 2 and 3 should be settled before that happens.
 | Injection guard forces review, never reject | Auto-rejecting on a keyword lets anyone block a competitor's payment. |
 | Injection patterns narrow, not fuzzy | A guard that flags "System Integration Services" trains clerks to click through warnings. |
 | Test suite honours a live key rather than mocking (samples only) | A mocked LLM proves nothing about whether extraction works. Everything else is mocked so CI needs no key. |
+| **UI is a static export served by FastAPI**, not a Node server | Keeps the UI same-origin with the API (no CORS, no base URL), one process, one port. Nothing Node runs at serve time. |
+| Client-side sections, not real routes | Deep links would need the static mount to resolve them — a backend change for no gain across four sections. |
+| `frontend/` kept after the rewrite | It is the no-npm fallback. A clone with no Node still boots a working UI. |
+| HTML shell served `no-store` | The shell names which hashed bundle to load, so a cached copy pins the browser to a build that no longer exists. Cost two debugging sessions before it was fixed. |
+| Non-invoice detection uses **extraction output, not keywords** | Searching for the word "invoice" misses other languages and fires on any document that merely discusses invoicing — including this project's own brief. A model that reads a page and finds no field is the classifier. |
+| Not-an-invoice **rejects**, unreadable **holds** | A hold means "a human must decide whether to pay this"; there is nothing to decide about a CV. But an empty result from a failed extractor is evidence about the extractor, so degraded routes never hard-reject. |
+| Demo reset is an endpoint, not just a script | It was reported twice as a bug. Recovery should not require deleting a file on the server. Admin-scoped, deletes runs only. |
+| No per-field confidence shown | The pipeline does not produce one (Phase 2). Rendering an invented percentage beside a dollar figure on an audit screen would be fabricating evidence. |
 
 ### Bugs already found and fixed — don't reintroduce
 
@@ -642,6 +724,19 @@ housekeeping in §9 issues 2 and 3 should be settled before that happens.
 12. **Path traversal** in `/api/sample-invoices/{name}` — on Windows a
     backslash parent reference escaped the samples directory.
 13. **`MAX_UPLOAD_BYTES` was dead** — defined in config, never enforced.
+14. **Frontend data hooks fired before sign-in**, so both fetches 401'd, the
+    error was cached, and the 401 handler tried to sign out the user who had
+    just signed in. Gated on the token existing.
+15. **`byDay()` bucketed runs by UTC** while building its axis from local dates,
+    so east of Greenwich every run fell outside the window and the volume chart
+    read "no activity" with data present.
+16. **`is_not_an_invoice()` treated `extracted=None` as "not an invoice"** —
+    absence of evidence read as evidence of absence. `decide()` is called
+    without it on several paths, so valid invoices would have been hard-rejected.
+    Caught immediately by `test_security` and `test_extraction_routing`.
+17. **`PageHeader` used negative margins inside an unpadded `<main>`**, pushing
+    the page wider than the viewport and adding a horizontal scrollbar on
+    tablet and mobile.
 
 ---
 

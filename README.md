@@ -19,12 +19,14 @@ suite is green.**
 |---|---|
 | Pipeline | Working, 9 stages, streamed live to the browser |
 | Sample invoices | 7 / 7 matching the manifest, driven through the real pipeline |
-| UI | Run view, dashboard, reference data, audit trail — light + dark |
+| UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light + dark |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **329 passing** deterministically, 13 files, no live API calls |
+| Automated tests | **359 passing** deterministically, 15 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
+| Non-invoice detection | Rejects documents that contain no invoice, saying so |
+| Demo reset | One click for an admin, or `.\reset-demo.ps1` |
 | Original audit defects | **All fixed** — see [Known problems](#known-problems) |
 | Deployed anywhere | No — runs locally only |
 | Demo video | Not recorded |
@@ -100,7 +102,10 @@ and a daily extraction budget.
 ```
 
 Creates a venv, installs dependencies, generates the sample invoices if missing,
-and opens <http://127.0.0.1:8000>.
+builds the UI on first run, and opens <http://127.0.0.1:8000>.
+
+The UI build needs Node (18+). If npm is not installed the app still starts and
+serves the original vanilla frontend instead — nothing is blocked.
 
 ### Manual start
 
@@ -108,7 +113,16 @@ and opens <http://127.0.0.1:8000>.
 python -m venv venv
 .\venv\Scripts\python.exe -m pip install -r requirements.txt
 .\venv\Scripts\python.exe sample_invoices\generate_invoices.py   # first run only
+cd frontend-next; npm install; npm run build; cd ..            # first run only
 .\venv\Scripts\python.exe -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000
+```
+
+### Working on the UI
+
+```powershell
+cd frontend-next
+npm run dev        # :3000, proxies /api to the backend on :8000
+npm run build      # regenerates the static export FastAPI serves
 ```
 
 ### Signing in
@@ -136,13 +150,33 @@ start refuses to boot while they exist — see [Running in production](#running-
 .\venv\Scripts\python.exe -m pytest tests\ -q
 ```
 
-**329 tests.** They mock both providers, so they need no API key, no network and
-no quota. With keys present, `tests/test_samples.py` additionally exercises the
+**359 tests across 15 files.** They mock both providers, so they need no API
+key, no network and no quota. With keys present, `tests/test_samples.py` additionally exercises the
 real Groq and Gemini routes end to end — the fixture prints which mode ran,
 because a green suite means a different thing in each.
 
-> The server holds `data/app.db` open. To reset run history, **stop the server
-> first**, then delete the file — it is rebuilt from the seed JSON on startup.
+> One test needs a note: `tests/test_extraction_routing.py` reads the real
+> daily-quota counter in `data/app.db`, so if the local vision budget is spent,
+> four of its cases fail even though the providers are mocked. Running against a
+> clean database gives the true result.
+
+### Resetting the demo
+
+The sample invoices are deliberately history-dependent — the split-PO story only
+works as 02 → 03 → 03b, and 06 is only a duplicate because 01 ran first. Every
+run is recorded, so a second pass turns the happy path into a duplicate of
+itself and leaves PO-1001 with no budget. The verdicts stay correct; the samples
+just stop demonstrating what they were written to demonstrate.
+
+Two ways back to a clean slate:
+
+- **In the app** — sign in as `admin` and use **Reset demo data** on Overview.
+- **From a terminal** — `.\reset-demo.ps1`, or `.\reset-demo.ps1 -Replay` to
+  clear and then drive all seven samples through the API in order.
+
+Both clear run history only. Purchase orders, vendors and users are seed data in
+`data/*.json` and are reloaded on startup, so nothing is lost that re-running an
+invoice cannot rebuild.
 
 ---
 
@@ -225,10 +259,31 @@ Stages do **not** short-circuit. A missing invoice number at stage 4 does not
 stop stages 5–8 — findings accumulate and only the final stage judges, so a
 reviewer sees the whole picture rather than the first thing that went wrong.
 
+### Is it even an invoice?
+
+Every check after extraction assumes the input **is** an invoice and asks
+whether it may be paid. One check asks the prior question, because without it a
+CV or a contract lands in the review queue described as a defective invoice —
+"missing required fields", which is true and useless.
+
+There is no keyword list. Searching the text for the word *invoice* is both too
+weak and too strong: it misses invoices in other languages, and it fires on any
+document that merely **discusses** invoicing. The extractor is already a
+classifier — when a model reads a page and finds no vendor, no invoice number,
+no amount, no date, no PO reference and not one line item, the document does not
+contain an invoice. Any single one of those signals is enough to accept it as
+one, because invoice formats vary enormously.
+
+This **rejects** rather than holds: a hold means "a human must decide whether to
+pay this", and there is nothing to decide about a CV. It fires only when a model
+route actually read the document — if extraction fell back to regex or failed,
+an empty result is evidence about the *extractor*, not the document, so a
+scanned invoice is still held for a person.
+
 ### Decision hierarchy
 
 - **REJECTED** — things the process must not override: duplicates, vendors on
-  file but not approved.
+  file but not approved, documents that are not invoices.
 - **NEEDS_REVIEW** — recoverable: missing fields, unreadable scan, amount over
   tolerance, no PO match, currency mismatch, bad arithmetic, an invalid total,
   an inferred PO, or text that reads as an instruction to the extractor.
@@ -379,8 +434,18 @@ security boundary — a script ignores it entirely.
   (a self-contained wheel: no poppler or tesseract to install).
 - **Storage** — SQLite at `data/app.db`, seeded from `data/*.json` on startup.
 - **Auth** — `pyjwt`; PBKDF2-HMAC-SHA256 password hashing from the standard library.
-- **Frontend** — vanilla HTML/CSS/JS, no build step, reads the SSE stream with
-  `fetch()`.
+- **Frontend** — Next.js 15 (App Router), React 19, Tailwind v4, TypeScript.
+  Reads the SSE stream with `fetch()` and a `ReadableStream` reader.
+
+  The production build is a **static export**: `npm run build` emits plain
+  HTML/JS into `frontend-next/out/`, which FastAPI serves at `/`. No Node
+  process runs at serve time, the UI stays same-origin with the API (so no
+  CORS and no base URL to get wrong), and the whole app is still one command on
+  one port. `next dev` on :3000 proxies `/api` to :8000 for development.
+
+  The original vanilla frontend is still in `frontend/` and is served
+  automatically if the export has never been built, so a clone without npm
+  still boots a working UI.
 
 ### API endpoints
 
@@ -393,6 +458,7 @@ GET  /api/runs                   run history                       [invoice:read
 GET  /api/runs/{id}              one run, including its audit trail[invoice:read]
 POST /api/runs/{id}/review       accept / reject a held invoice    [invoice:review]
 POST /api/runs/{id}/status       override any run's status         [invoice:admin]
+POST /api/admin/reset-demo       clear run history so samples replay[invoice:admin]
 GET  /api/reference              POs + approved vendors            [invoice:read]
 GET  /api/sample-invoices        the bundled scenarios             [invoice:read]
 GET  /api/sample-invoices/{name} one sample PDF                    [invoice:read]
@@ -514,10 +580,20 @@ backend/
   quota.py        Daily per-provider extraction budget (circuit breaker)
   schemas.py      Shared dataclasses
   config.py       Operational settings, .env loading, environment switch
-frontend/         index.html, style.css, app.js — no build step
+frontend-next/    The UI. Next.js 15 + React 19 + Tailwind v4, TypeScript
+  app/            Root layout, the single client-rendered page, design tokens
+  components/
+    layout/       App shell — sidebar, page chrome, responsive drawer
+    pages/        Overview, Process invoice, Invoices, Purchase orders
+    invoice/      Run detail: stages, three-way match, audit trail, review
+    ui/           Primitives — button, badge, panel, modal, toast, icons
+  lib/            API client, auth context, metrics, formatting, types
+frontend/         The original vanilla UI, kept as a no-build fallback
 data/             Seed POs + vendors + demo users (tracked); app.db (not tracked)
 sample_invoices/  7 PDFs, the generator, and manifest.json of scenarios
-tests/            13 files, 329 tests, both providers mocked
+scripts/          replay_samples.py — drives the samples in manifest order
+tests/            15 files, 359 tests, both providers mocked
+reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing
 PROCESS_MAP.md        The on-paper design done before building
