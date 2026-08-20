@@ -3,9 +3,12 @@
 /* ===========================================================================
    DESIGN SYSTEM
 
-   Dense operations software for finance. The visual language is restrained on
-   purpose: a charcoal surface hierarchy, one interactive accent, and three
-   semantic colours that mean approved / held / rejected and nothing else.
+   Light-first enterprise finance interface. Deliberately does not switch to a
+   dark theme on the OS's `prefers-color-scheme` -- a finance product should
+   look the same in a demo as it did in design review, and a form this dense
+   reads as a "hacker" tool the instant it goes dark. One warm-neutral surface
+   hierarchy, one interactive accent, three semantic colours that mean
+   approved / held / rejected and nothing else.
 
    Structure is carried by SURFACE ELEVATION first and borders second. Outlining
    every element is what makes an interface read as a wireframe; here a panel is
@@ -14,30 +17,43 @@
    =========================================================================== */
 
 :root {
-  /* --- canvas → elevated surfaces ---------------------------------------- */
-  --canvas: #f7f8fa;
+  /* --- canvas → elevated surfaces: warm, not cool-gray --------------------- */
+  --canvas: #f8f8f6;
   --surface: #ffffff;
   --raised: #ffffff;
-  --sunken: #f1f2f5;
-  --hover: #f4f5f8;
+  --sunken: #f3f3f1;
+  --hover: #eeeeec;
 
   /* --- lines: two weights, both quiet ------------------------------------ */
-  --line: #e6e8ec;
-  --line-strong: #d5d8de;
+  --line: #e7e6e2;
+  --line-strong: #d6d5cf;
 
   /* --- text: four steps -------------------------------------------------- */
-  --fg: #11131a;
-  --fg-secondary: #444a56;
-  --fg-muted: #6b7280;
-  --fg-faint: #9aa1ad;
+  --fg: #18181b;
+  --fg-secondary: #52525b;
+  --fg-muted: #71717a;
+  --fg-faint: #98989f;
 
   /* --- one interactive accent -------------------------------------------- */
-  --accent: #4f46e5;
-  --accent-hover: #4338ca;
+  --accent: #1d5fd8;
+  --accent-hover: #164ab3;
   --accent-fg: #ffffff;
-  --accent-quiet: #eef0fe;
-  --accent-line: #c9cdf9;
-  --ring: rgba(79, 70, 229, 0.35);
+  --accent-quiet: #eaf1fd;
+  --accent-line: #bcd4f7;
+  --ring: rgba(29, 95, 216, 0.35);
+
+  /* --- the sidebar rail: a distinct light surface, separated from the canvas
+     by a border rather than a colour shift -- the "clean, lighter sidebar"
+     an enterprise nav needs instead of a filled block of colour ------------ */
+  --rail-bg: #ffffff;
+  --rail-hover: #f4f4f2;
+  --rail-active: #eef3fc;
+  --rail-line: #e7e6e2;
+  --rail-fg: #18181b;
+  --rail-muted: #71717a;
+  --rail-faint: #a3a3aa;
+  --rail-accent: #1d5fd8;
+  --rail-accent-fg: #ffffff;
 
   /* --- semantic: meaning only, never decoration -------------------------- */
   --ok: #067a4d;
@@ -55,58 +71,10 @@
   --bad-line: #f7c8cd;
   --bad-vivid: #ef4444;
 
-  --shadow-xs: 0 1px 2px rgba(16, 19, 26, 0.05);
-  --shadow-sm: 0 1px 3px rgba(16, 19, 26, 0.07), 0 1px 2px rgba(16, 19, 26, 0.04);
-  --shadow-md: 0 8px 24px -8px rgba(16, 19, 26, 0.14), 0 2px 6px rgba(16, 19, 26, 0.05);
-  --shadow-lg: 0 24px 56px -16px rgba(16, 19, 26, 0.24), 0 6px 16px rgba(16, 19, 26, 0.08);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    /* Charcoal, not black. A true-black canvas under large empty regions is
-       what makes a dark UI read as a void; these four steps keep the page
-       feeling built even where content is sparse. */
-    --canvas: #0b0d11;
-    --surface: #131720;
-    --raised: #171c26;
-    --sunken: #0f131a;
-    --hover: #1c2230;
-
-    --line: #232936;
-    --line-strong: #313949;
-
-    --fg: #e9ecf2;
-    --fg-secondary: #b3bac8;
-    --fg-muted: #8b94a6;
-    --fg-faint: #626c80;
-
-    --accent: #6d7cf6;
-    --accent-hover: #8a95f8;
-    --accent-fg: #0a0c14;
-    --accent-quiet: #1a1f3a;
-    --accent-line: #2f3766;
-    --ring: rgba(109, 124, 246, 0.4);
-
-    --ok: #3ddc97;
-    --ok-quiet: #0e2a20;
-    --ok-line: #1d4f3c;
-    --ok-vivid: #10b981;
-
-    --warn: #f7c05b;
-    --warn-quiet: #2b2109;
-    --warn-line: #55420f;
-    --warn-vivid: #f59e0b;
-
-    --bad: #fb7c86;
-    --bad-quiet: #2c1216;
-    --bad-line: #5a2229;
-    --bad-vivid: #ef4444;
-
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.5);
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.6);
-    --shadow-md: 0 10px 28px -10px rgba(0, 0, 0, 0.75);
-    --shadow-lg: 0 28px 64px -20px rgba(0, 0, 0, 0.85);
-  }
+  --shadow-xs: 0 1px 2px rgba(24, 24, 27, 0.04);
+  --shadow-sm: 0 1px 3px rgba(24, 24, 27, 0.06), 0 1px 2px rgba(24, 24, 27, 0.04);
+  --shadow-md: 0 8px 24px -8px rgba(24, 24, 27, 0.1), 0 2px 6px rgba(24, 24, 27, 0.04);
+  --shadow-lg: 0 24px 56px -16px rgba(24, 24, 27, 0.16), 0 6px 16px rgba(24, 24, 27, 0.06);
 }
 
 @theme inline {
@@ -129,6 +97,16 @@
   --color-accent-fg: var(--accent-fg);
   --color-accent-quiet: var(--accent-quiet);
   --color-accent-line: var(--accent-line);
+
+  --color-rail: var(--rail-bg);
+  --color-rail-hover: var(--rail-hover);
+  --color-rail-active: var(--rail-active);
+  --color-rail-line: var(--rail-line);
+  --color-rail-fg: var(--rail-fg);
+  --color-rail-muted: var(--rail-muted);
+  --color-rail-faint: var(--rail-faint);
+  --color-rail-accent: var(--rail-accent);
+  --color-rail-accent-fg: var(--rail-accent-fg);
 
   --color-ok: var(--ok);
   --color-ok-quiet: var(--ok-quiet);
@@ -155,22 +133,32 @@
 
 @layer base {
   html {
-    color-scheme: light dark;
+    /* Fixed, not `light dark` -- a page that says it supports both lets the
+       browser repaint form controls (and, on some engines, more) to match the
+       OS theme regardless of what this stylesheet renders, which is how a
+       light-first product ends up looking like it never changed. */
+    color-scheme: light;
   }
 
   body {
     background: var(--canvas);
     color: var(--fg);
     font-family: var(--font-sans), ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
-    font-size: 13.5px;
-    line-height: 1.5;
+    font-size: 14px;
+    line-height: 1.55;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 
-  /* Ledger figures must align vertically and never wobble as they update. */
-  .tnum,
+  /* Ledger figures must align vertically and never wobble as they update.
+     `.tnum` marks a value as genuinely numeric data (money, IDs, dates) --
+     those get set in the mono face so a dense screen of figures reads as a
+     ledger rather than as prose that happens to contain digits. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  }
   td,
   th,
   input[type="search"] {
@@ -224,54 +212,57 @@
    Seven roles, each with its own size, weight and tracking. Hierarchy comes
    from the combination — a metric is not simply "big body text", it is heavier
    and tighter as well, which is what lets a dense screen stay readable.
-   --------------------------------------------------------------------------- */
+
+   Page titles and financial figures carry the most weight in this pass: a
+   finance user should be able to find the number that matters without
+   reading labels first. Captions are set in sentence case, not upper-case —
+   a page of all-caps labels reads as a spec sheet, not a product. */
 @layer utilities {
   .t-display {
-    font-size: 30px;
-    line-height: 1.05;
-    font-weight: 600;
-    letter-spacing: -0.035em;
-  }
-  .t-metric {
-    font-size: 22px;
-    line-height: 1.1;
+    font-size: 34px;
+    line-height: 1.08;
     font-weight: 600;
     letter-spacing: -0.03em;
   }
-  .t-metric-sm {
-    font-size: 17px;
+  .t-metric {
+    font-size: 27px;
     line-height: 1.15;
     font-weight: 600;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.025em;
+  }
+  .t-metric-sm {
+    font-size: 19px;
+    line-height: 1.2;
+    font-weight: 600;
+    letter-spacing: -0.015em;
   }
   .t-page {
-    font-size: 17px;
+    font-size: 23px;
     line-height: 1.25;
     font-weight: 600;
     letter-spacing: -0.02em;
   }
   .t-section {
-    font-size: 13px;
-    line-height: 1.3;
+    font-size: 14.5px;
+    line-height: 1.35;
     font-weight: 600;
     letter-spacing: -0.005em;
   }
   .t-body {
-    font-size: 13px;
-    line-height: 1.5;
+    font-size: 14px;
+    line-height: 1.55;
   }
   .t-meta {
-    font-size: 12px;
-    line-height: 1.45;
+    font-size: 12.5px;
+    line-height: 1.5;
     color: var(--fg-muted);
   }
   .t-caption {
-    font-size: 10.5px;
+    font-size: 11.5px;
     line-height: 1.4;
     font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
+    letter-spacing: -0.005em;
+    color: var(--fg-muted);
   }
 
   /* Surfaces. `panel` is the workhorse; it is lighter than the canvas rather

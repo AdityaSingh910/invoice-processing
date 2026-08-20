@@ -10,7 +10,7 @@
  */
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
-import { Badge, Button, Tooltip } from "@/components/ui";
+import { Button, Tooltip } from "@/components/ui";
 import {
   IconInvoice,
   IconLedger,
@@ -82,7 +82,9 @@ export default function AppShell({
 
         return (
           <div key={group.label}>
-            <p className="t-caption px-2 pb-1.5">{group.label}</p>
+            <p className="px-2 pb-1.5 text-[10.5px] font-semibold tracking-[0.06em] text-rail-faint uppercase">
+              {group.label}
+            </p>
             <div className="flex flex-col gap-px">
               {items.map((item) => {
                 const active = item.key === section;
@@ -96,7 +98,9 @@ export default function AppShell({
                     // text, so the filled row always means "you are here".
                     className={`group relative flex items-center gap-2.5 rounded-[var(--radius-md)]
                       py-1.5 pr-2 pl-2.5 text-[12.5px] transition-colors ${
-                        active ? "bg-hover font-medium text-fg" : "text-muted hover:text-fg"
+                        active
+                          ? "bg-rail-active font-medium text-rail-fg"
+                          : "text-rail-muted hover:text-rail-fg"
                       }`}
                   >
                     {/* A 2px rule marks the active item instead of a filled
@@ -104,17 +108,22 @@ export default function AppShell({
                     <span
                       aria-hidden
                       className={`absolute top-1/2 left-0 h-4 w-[2.5px] -translate-y-1/2 rounded-full transition-opacity ${
-                        active ? "bg-accent opacity-100" : "opacity-0"
+                        active ? "bg-rail-accent opacity-100" : "opacity-0"
                       }`}
                     />
-                    <span className={active ? "text-accent" : "text-faint group-hover:text-muted"}>
+                    <span
+                      className={active ? "text-rail-accent" : "text-rail-faint group-hover:text-rail-muted"}
+                    >
                       <Icon size={15} />
                     </span>
                     <span className="flex-1 text-left">{item.label}</span>
                     {item.key === "invoices" && !!badge && (
-                      <Badge tone="warn" title={`${badge} awaiting review`}>
+                      <span
+                        title={`${badge} awaiting review`}
+                        className="inline-flex items-center rounded-[var(--radius-sm)] bg-warn-vivid/15 px-1.5 py-0.5 text-[11px] font-semibold text-warn-vivid tnum"
+                      >
                         {badge}
-                      </Badge>
+                      </span>
                     )}
                   </button>
                 );
@@ -126,16 +135,29 @@ export default function AppShell({
     </nav>
   );
 
-  const brand = (
+  // Shared by the always-dark rail (desktop aside, mobile drawer) and the
+  // theme-reactive mobile top bar, which sits on the light canvas -- the two
+  // contexts need opposite text colors, so this takes which one it is in.
+  const Brand = ({ dark }: { dark: boolean }) => (
     <div className="flex items-center gap-2.5">
-      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-md)] bg-accent text-[11px] font-bold text-accent-fg">
+      <span
+        className={`grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-md)] text-[11px] font-bold ${
+          dark ? "bg-rail-accent text-rail-accent-fg" : "bg-accent text-accent-fg"
+        }`}
+      >
         AP
       </span>
       <div className="min-w-0 leading-tight">
-        <div className="truncate text-[12.5px] font-semibold tracking-[-0.01em]">
+        <div
+          className={`truncate text-[12.5px] font-semibold tracking-[-0.01em] ${
+            dark ? "text-rail-fg" : "text-fg"
+          }`}
+        >
           Invoice Processing
         </div>
-        <div className="t-meta truncate text-[11px]">Accounts payable</div>
+        <div className={`truncate text-[11px] ${dark ? "text-rail-muted" : "t-meta"}`}>
+          Accounts payable
+        </div>
       </div>
     </div>
   );
@@ -150,30 +172,32 @@ export default function AppShell({
           : "Read only";
 
   const account = user && (
-    <div className="flex items-center gap-2 border-t border-line px-3 py-2.5">
-      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-sunken text-[10px] font-semibold text-secondary uppercase">
+    <div className="flex items-center gap-2 border-t border-rail-line px-3 py-2.5">
+      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-rail-hover text-[10px] font-semibold text-rail-muted uppercase">
         {user.username.slice(0, 2)}
       </span>
       <div className="min-w-0 flex-1 leading-tight">
-        <div className="truncate text-[12px] font-medium">{user.username}</div>
-        <div className="t-meta truncate text-[10.5px]">{roleOf()}</div>
+        <div className="truncate text-[12px] font-medium text-rail-fg">{user.username}</div>
+        <div className="truncate text-[10.5px] text-rail-faint">{roleOf()}</div>
       </div>
       <Tooltip label="Sign out">
-        <Button
-          variant="ghost"
-          size="xs"
+        <button
           onClick={() => signOut()}
           aria-label="Sign out"
-          icon={<IconSignOut size={13} />}
-        />
+          className="grid h-6 w-6 shrink-0 place-items-center rounded-[var(--radius-sm)] text-rail-faint transition-colors hover:bg-rail-hover hover:text-rail-fg"
+        >
+          <IconSignOut size={13} />
+        </button>
       </Tooltip>
     </div>
   );
 
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[216px_minmax(0,1fr)]">
-      <aside className="sticky top-0 hidden h-screen flex-col border-r border-line bg-surface lg:flex">
-        <div className="px-3 py-3.5">{brand}</div>
+      <aside className="sticky top-0 hidden h-screen flex-col border-r border-rail-line bg-rail lg:flex">
+        <div className="px-3 py-3.5">
+          <Brand dark />
+        </div>
         <div className="flex-1 overflow-y-auto px-2 py-2">{nav}</div>
         {account}
       </aside>
@@ -187,7 +211,7 @@ export default function AppShell({
           aria-expanded={drawer}
           icon={<IconMenu size={16} />}
         />
-        {brand}
+        <Brand dark={false} />
       </header>
 
       {drawer && (
@@ -201,17 +225,17 @@ export default function AppShell({
             role="dialog"
             aria-modal="true"
             aria-label="Navigation"
-            className="slide-in absolute inset-y-0 left-0 flex w-60 flex-col border-r border-line bg-surface shadow-[var(--shadow-lg)]"
+            className="slide-in absolute inset-y-0 left-0 flex w-60 flex-col border-r border-rail-line bg-rail shadow-[var(--shadow-lg)]"
           >
             <div className="flex items-center justify-between gap-2 px-3 py-3.5">
-              {brand}
-              <Button
-                variant="ghost"
-                size="xs"
+              <Brand dark />
+              <button
                 onClick={() => setDrawer(false)}
                 aria-label="Close navigation"
-                icon={<IconX size={14} />}
-              />
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-[var(--radius-sm)] text-rail-faint transition-colors hover:bg-rail-hover hover:text-rail-fg"
+              >
+                <IconX size={14} />
+              </button>
             </div>
             <div className="flex-1 overflow-y-auto px-2 py-2">{nav}</div>
             {account}
