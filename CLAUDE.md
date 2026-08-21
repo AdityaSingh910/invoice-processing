@@ -64,7 +64,7 @@ history — do not conflate them:
 | E | Review workflow hardening | ✅ Complete | `66e6f79` |
 | F | Email security & trusted-source verification | ✅ Complete | `d351869` |
 | G | Email invoice ingestion & extraction | ✅ Complete | `8dfc286` |
-| H | KPIs + analytics | ✅ Complete (backend; frontend uncommitted, §13.1) | `9bdbeeb` |
+| H | KPIs + analytics | ✅ Complete — backend committed; frontend complete but uncommitted (§11.3) | `9bdbeeb` |
 | I | Logs + filters + grouping + exports | ⬜ **Next — not started** | — |
 | J | Client access / client portal | ⬜ Not started | — |
 | K | Chatbot (read-only invoice/AP assistant) | ⬜ Not started | — |
@@ -74,7 +74,7 @@ history — do not conflate them:
 **Do not start Phase I or any later phase without being explicitly asked.**
 This project has been built one verified phase at a time, each requested
 individually, each committed on its own before the next began. See §9 for
-what H–M are planned to cover — plan only, nothing implemented.
+what I–M are planned to cover — plan only, nothing implemented.
 
 **Do not redo A–H.** They are complete, tested, and committed. If something
 in A–H looks wrong, raise it — don't silently "fix" or rebuild it.
@@ -1454,14 +1454,26 @@ edits** to `lib/types.ts`, `lib/useData.ts`, `lib/metrics.ts`,
 `components/ui/icons.tsx`; **Phase-H edits inside files the redesign had
 already modified** — `components/charts.tsx` (a pure append),
 `components/layout/AppShell.tsx` (the nav row and `Section`/`NavId` unions) and
-`app/page.tsx` (routing the section). See §13 for what that means for
-committing.
+`app/page.tsx` (routing the section).
+
+**This UI is complete and verified but is NOT committed**, because it cannot be
+separated from the redesign — the Analytics page uses `DataTable`, a redesign
+component that does not exist at `HEAD`. That was established by compiling the
+Phase H files against `HEAD` in a throwaway worktree, not by inspection. See
+§11.3 for the compiler error and the reasoning.
 
 The dashboard was verified end to end against a seeded throwaway Postgres
 schema holding 90 runs, 41 held, 31 ruled on across three reviewers — empty
 states, the insufficient-sample guard, the self-scope reviewer view and the
-over-budget PO indicator all render correctly. **The developer's own `public`
-schema was not touched**, and was confirmed unchanged afterwards.
+over-budget PO indicator all render correctly, with no console or page errors
+in any of the five sections. **The developer's own `public` schema was not
+touched**, and was confirmed unchanged afterwards.
+
+One label was disambiguated during that verification: the Analytics Volume
+panel reads **"By the rules' verdict, per UTC day"**, because Overview's
+identically-named chart is keyed on the LEDGER STATUS while this screen is
+framed on `automated_decision`. Same word, genuinely different numbers — so
+each says which it means.
 
 ### 7c.14 Schema changes — four indexes, nothing else
 
@@ -1808,74 +1820,105 @@ something to "fix" without being asked.
 
 ## 11. Frontend state — ⚠️ read before touching any frontend file
 
-**There is a substantial, intentional frontend redesign sitting uncommitted
-in the working tree, and as of Phase H there is now Phase H frontend work
-sitting in the same tree alongside it.** The redesign predates Phases C–G,
-none of which touched it (each was scoped backend-and-tests-only). **Do not
-revert, discard, reformat, or commit the redesign as part of an unrelated
-change.** Verify with a fresh `git status` before assuming any of the below is
-still accurate.
+**The working tree holds two bodies of uncommitted frontend work: a
+pre-existing redesign, and the Phase H Analytics UI built on top of it.**
+Neither is unfinished — both are complete and verified. They are uncommitted
+because they cannot be separated (§11.3), which was tested rather than assumed.
 
-### 11.1 The pre-existing redesign (NOT Phase H — do not commit)
+**Do not revert, discard, reformat, or "clean up" either one.** Verify with a
+fresh `git status` before assuming any list below is still accurate.
+
+### 11.1 The pre-existing redesign
 
 A redesign toward a light-first enterprise finance interface with an explicit
 dark-mode toggle (`:root[data-theme="dark"]`, never `prefers-color-scheme`);
 `RunDetail.tsx` was split into `DocumentPreview.tsx` + `ReviewWorkspace.tsx`.
+It predates Phases C–G, none of which touched it.
 
 ```
 modified:   frontend-next/app/globals.css
-modified:   frontend-next/app/page.tsx                        ← also has Phase H edits
-modified:   frontend-next/components/charts.tsx               ← also has Phase H edits
 modified:   frontend-next/components/invoice/Panels.tsx
 modified:   frontend-next/components/invoice/PoMatchPanel.tsx
 deleted:    frontend-next/components/invoice/RunDetail.tsx
 modified:   frontend-next/components/invoice/StageList.tsx
-modified:   frontend-next/components/layout/AppShell.tsx      ← also has Phase H edits
 modified:   frontend-next/components/pages/InvoicesPage.tsx
 modified:   frontend-next/components/pages/OverviewPage.tsx
 modified:   frontend-next/components/pages/ProcessPage.tsx
 modified:   frontend-next/components/pages/ReferencePage.tsx
 modified:   frontend-next/components/ui/index.tsx
-
 untracked:  frontend-next/components/invoice/DocumentPreview.tsx
 untracked:  frontend-next/components/invoice/ReviewWorkspace.tsx
-untracked:  claudee.md   (stray file at repo root — not part of the app; leave as-is unless asked)
 ```
 
-### 11.2 Phase H frontend work (§7c.13), and how it overlaps
+Verified untouched by Phase H: none of these eleven files contains any Phase H
+token (`analytics`, `RateTrend`, `SplitBar`, `kpiState`, `formatSeconds`,
+`bucketsToDays`, `formatCount`), and their modification times all predate the
+Phase H session.
 
-Phase H was the first phase asked to do frontend work, so it is the first time
-the two are interleaved. Three categories:
+### 11.2 Phase H frontend (§7c.13)
 
-| Category | Files | Safe to commit alone? |
-|---|---|---|
-| **New, Phase H only** | `components/pages/AnalyticsPage.tsx` | ✅ yes |
-| **Modified, Phase H only** — these were *untouched* by the redesign | `lib/types.ts`, `lib/useData.ts`, `lib/metrics.ts`, `components/ui/icons.tsx` | ✅ yes |
-| **Modified by BOTH** | `components/charts.tsx`, `components/layout/AppShell.tsx`, `app/page.tsx` | ⚠️ see below |
+```
+untracked:  frontend-next/components/pages/AnalyticsPage.tsx   (new, ~900 lines)
+modified:   frontend-next/lib/types.ts          +278 -0   Phase H only
+modified:   frontend-next/lib/useData.ts         +22 -0   Phase H only
+modified:   frontend-next/lib/metrics.ts         +80 -0   Phase H only
+modified:   frontend-next/components/ui/icons.tsx +11 -0  Phase H only
+modified:   frontend-next/components/charts.tsx           BOTH (append-only hunk)
+modified:   frontend-next/components/layout/AppShell.tsx  BOTH (interleaved)
+modified:   frontend-next/app/page.tsx                    BOTH (interleaved)
+```
 
-For the three shared files:
+The four `lib/` + `icons.tsx` files are pure additions (`-0` deletions) to
+files the redesign never touched. `charts.tsx` gains one appended hunk
+(`RateTrend`, `SplitBar`). `AppShell.tsx` and `app/page.tsx` gain the
+`"analytics"` section, the nav row and the render branch — **inside the same
+diff hunks as the redesign's own nav rework**.
 
-- **`charts.tsx`** — Phase H's change is a **pure append** (`RateTrend`,
-  `SplitBar`) and is a separate hunk from the redesign's edits. Hunk-splittable.
-- **`AppShell.tsx`** — Phase H added `"analytics"` to the `Section` and `NavId`
-  unions, an `IconAnalytics` import, and a "Reporting" nav group. These land
-  **inside the same diff hunks** as the redesign's nav rework. **Not
-  hunk-splittable.**
-- **`app/page.tsx`** — Phase H added the `AnalyticsPage` import and the
-  `{section === "analytics" && ...}` branch, likewise **inside** redesign
-  hunks. **Not hunk-splittable.**
+### 11.3 Why Phase H's frontend was NOT committed on its own
 
-**So a Phase H commit that both builds and excludes the redesign is not
-achievable by staging alone.** Committing the backend-plus-unentangled-frontend
-set leaves a tree where `AnalyticsPage.tsx` exists but nothing routes to it and
-its two chart imports are unresolved. This is a real decision, not an
-oversight — see §13 for what was actually done about it.
+This was **tested, not assumed.** A throwaway `git worktree` was created at
+`HEAD`, the Phase H files were applied to it *without* the redesign, and it was
+compiled:
+
+```
+components/pages/AnalyticsPage.tsx(53,3): error TS2305:
+    Module '"@/components/ui"' has no exported member 'DataTable'.
+```
+
+**`DataTable` is a redesign component.** It does not exist at `HEAD`, and the
+Analytics page uses it for four tables (per-stage timings, vendors, purchase
+orders, reviewer workload). Its `.dt` styles are likewise redesign-only — 11
+occurrences in the redesigned `globals.css`, zero at `HEAD`.
+
+With a temporary `DataTable` stub the rest compiled, so the coupling is narrow
+— but "narrow" is not "separable". Committing Phase H alone would have meant:
+
+1. rewriting four tables into a `DataTable`-free form that only exists to
+   satisfy a commit boundary;
+2. committing a version of `AnalyticsPage.tsx` **different from the one that
+   was actually verified** (every screenshot, empty-state check and
+   authorization check was against the redesigned UI kit);
+3. committing `HEAD`-shaped `AppShell.tsx` / `page.tsx` that would be
+   overwritten again the moment the redesign lands;
+4. then undoing all of it.
+
+That is churn with negative value, so it was not done. **The safest and
+recommended path is one frontend commit containing the redesign and the Phase H
+UI together**, once the repository owner has reviewed the redesign. That commit
+was prepared and its file list presented; it awaits approval.
+
+**Consequence to know about:** at the committed revision the analytics **API is
+complete and fully tested**, but the analytics **screen does not exist**. The
+dashboard only appears with the working tree applied. It is uncommitted, not
+unfinished.
+
+### 11.4 Committing rules
 
 **If asked to commit backend-only work, stage files explicitly by name
 (`git add backend/x.py tests/y.py CLAUDE.md`), never `git add -A` or
 `git add .`** — that discipline was followed for the Phase E (`66e6f79`), F
-(`d351869`) and G (`8dfc286`) commits, and the frontend diff was verified
-byte-identical afterwards each time.
+(`d351869`), G (`8dfc286`) and H (`9bdbeeb`) commits, and verified afterwards
+each time: `9bdbeeb` contains zero frontend paths.
 
 ---
 
@@ -1923,21 +1966,29 @@ is already configured.
 
 ## 13. Git / handoff state
 
-**Latest completed phase: H (KPIs & analytics), §7c — implemented, tested, and
-committed. Its BACKEND is committed; its FRONTEND is not (see below).**
-**Phase I (logs, filtering, grouping, exports) has NOT been implemented — do
-not start it without being explicitly asked. Its brief is in §9.**
+### 13.1 Phase status in one paragraph
 
-### 13.1 What Phase H committed, and what it deliberately did not
+**Phase H (KPIs & analytics) is COMPLETE.** Its backend, tests and
+documentation are **committed** (`9bdbeeb`, plus `4e76ef3` recording the hash).
+Its frontend is **complete, verified, and deliberately uncommitted**, because
+it cannot be separated from the pre-existing frontend redesign — see §11.3,
+where that was tested with a throwaway worktree rather than assumed.
+**Phase I (logs, filtering, grouping, exports) has NOT been started.** Its
+brief is in §9.
 
-Phases E, F and G were each staged **by name** — never `git add -A` — so the
-unrelated frontend redesign (§11) stayed in the working tree untouched, and
-that was verified after the fact each time. Phase H followed the same rule, but
-hit a case the earlier phases never could: **it was the first phase asked to do
-frontend work**, so its own changes are interleaved with the redesign's in
-three files (§11.2).
+| Phase H part | State | Where |
+|---|---|---|
+| `backend/analytics.py` — the KPI/query layer | ✅ committed | `9bdbeeb` |
+| `backend/storage.py` — set-based ledger + 4 indexes | ✅ committed | `9bdbeeb` |
+| `backend/main.py` — 7 `/api/analytics` endpoints | ✅ committed | `9bdbeeb` |
+| `tests/test_analytics.py` — 119 tests | ✅ committed | `9bdbeeb` |
+| `CLAUDE.md` / `README.md` | ✅ committed | `9bdbeeb`, `4e76ef3` |
+| Analytics dashboard UI | ⚠️ **complete, verified, uncommitted** | working tree (§11.2) |
 
-**Committed** (staged by name):
+### 13.2 What `9bdbeeb` committed
+
+Staged by name — never `git add -A` — so no frontend file could be swept in.
+Verified afterwards: **the commit contains zero frontend paths.**
 
 ```
 backend/analytics.py            new -- the whole KPI/query layer
@@ -1948,50 +1999,25 @@ CLAUDE.md
 README.md
 ```
 
-**Deliberately NOT committed — still in the working tree:**
+### 13.3 The frontend, and the recommended way to finish it
+
+The working tree holds the redesign **and** the Phase H UI. They share
+`AppShell.tsx`, `app/page.tsx` and `charts.tsx`, and the Analytics page depends
+on `DataTable`, a redesign component that does not exist at `HEAD` (§11.3).
+
+**Recommended: one frontend commit containing both.** Its file list was
+prepared and presented; it awaits the repository owner's approval. Splitting it
+further means rewriting verified code into a throwaway form and then undoing
+that, which is why it was not forced.
+
+**Not recommended:** committing a `DataTable`-free variant of `AnalyticsPage`,
+or `HEAD`-shaped `AppShell.tsx` / `page.tsx`. Both would commit code that was
+never the code that was verified, and both would be replaced immediately after.
+
+### 13.4 Commits
 
 ```
-frontend-next/components/pages/AnalyticsPage.tsx    (new, Phase H)
-frontend-next/lib/types.ts                          (Phase H only)
-frontend-next/lib/useData.ts                        (Phase H only)
-frontend-next/lib/metrics.ts                        (Phase H only)
-frontend-next/components/ui/icons.tsx               (Phase H only)
-frontend-next/components/charts.tsx                 (Phase H + redesign)
-frontend-next/components/layout/AppShell.tsx        (Phase H + redesign)
-frontend-next/app/page.tsx                          (Phase H + redesign)
-...plus the entire pre-existing redesign (§11.1)
-```
-
-**Why.** The Phase H edits to `AppShell.tsx` and `app/page.tsx` land inside the
-same diff hunks as the redesign's own changes, so they cannot be staged apart.
-Committing them would have swept part of the redesign into an unrelated commit
-— the one thing §11 forbids. Committing only the *separable* frontend files
-would have produced a tree where `AnalyticsPage.tsx` exists but nothing routes
-to it and two of its imports are unresolved. So the backend went in clean and
-the whole frontend stayed out, on the repository owner's explicit instruction.
-
-**Consequence to know about before doing anything:** at the committed revision
-the analytics **API is complete and fully tested**, but the analytics **screen
-does not exist**. The dashboard only appears with the working tree applied. It
-was built, and it was verified end to end (§7c.13) — it is uncommitted, not
-unfinished.
-
-**The right way to finish this** is one frontend commit covering the redesign
-and the Phase H UI together, once the repository owner has reviewed the
-redesign. Splitting them further is not worth the risk to work that was never
-committed in the first place.
-
-### 13.2 Verification that the redesign was not disturbed
-
-The redesign's own hunks were not edited, reformatted, reverted or staged. The
-three shared files gained Phase H additions **on top of** the redesign, never
-in place of it: `charts.tsx` is a pure append, and the `AppShell.tsx` /
-`page.tsx` changes add a union member, an import and a render branch. Confirm
-with `git diff -- frontend-next/` before trusting this paragraph.
-
-### 13.3 Commits
-
-```
+4e76ef3 Record the Phase H commit hash in the handoff notes
 9bdbeeb Answer how well the process is actually working, from the rows already on file (Phase H)
 8dfc286 Go and fetch the invoices, instead of waiting to be handed one (Phase G)
 d351869 Verify what an incoming email can actually prove about its own origin (Phase F)
@@ -1999,10 +2025,9 @@ d351869 Verify what an incoming email can actually prove about its own origin (P
 345033a Add multi-user review collaboration and activity history (Phase D)
 4d72899 Add persistent invoice PDF storage behind a swappable local/S3 backend
 147c0ce Migrate persistence from SQLite to PostgreSQL
-cba2f01 Bring README and CLAUDE.md up to date with the frontend redesign
 ```
 
-Branch `main`, **8 commits ahead of `origin/main`, not yet pushed** (push only
+Branch `main`, **9 commits ahead of `origin/main`, not yet pushed** (push only
 if explicitly asked).
 
 **[README.md](README.md)** is kept in sync with the code and is the other
@@ -2012,16 +2037,17 @@ the code, verify against the code directly rather than trusting either.
 ### Before doing anything in a new session
 
 1. Read this file, then `README.md`.
-2. `git status` and `git log --oneline -10` — confirm nothing has moved since
-   §11/§13 above were written. Expect a working tree holding the redesign
-   **and** the Phase H frontend (§13.1).
+2. `git status` and `git log --oneline -10` — expect a working tree holding the
+   redesign **and** the Phase H frontend (§11), and `4e76ef3` at the tip.
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
 4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **848 passed, 4
    failed**, the 4 being the known `test_extraction_routing.py` cases, which
    pass 23/23 when that file runs alone (§10). A 5th failure in
    `test_samples.py`'s scanned sample means the live Gemini free-tier quota is
    spent, not that anything broke.
-5. `cd frontend-next && npm run build` if you touch any frontend file —
-   FastAPI serves the static export in `out/`.
-6. Ask what to work on next. Do not start Phase I or later without being asked
-   (§2, §9).
+5. `cd frontend-next && npm run build` if you touch any frontend file — FastAPI
+   serves the static export in `out/`. There is **no frontend test suite and no
+   ESLint config** in this project; `npx tsc --noEmit` plus `npm run build`
+   (which type-checks) is the whole frontend gate.
+6. **Next phase is I.** Do not start it, or any later phase, without being
+   asked (§2, §9).

@@ -19,7 +19,7 @@ suite is green.**
 |---|---|
 | Pipeline | Working, 9 stages, streamed live to the browser |
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
-| UI | **Next.js 15 + React 19 + Tailwind v4**, five sections, light-first enterprise design with an explicit dark-mode toggle |
+| UI | **Next.js 15 + React 19 + Tailwind v4**, five sections, light-first enterprise design with an explicit dark-mode toggle. The redesign and the Analytics screen are complete but **not yet committed** — see [Frontend state](#frontend-state) |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
 | Automated tests | **848 passing** deterministically, 23 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
@@ -28,7 +28,7 @@ suite is green.**
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
 | Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine |
-| KPIs and analytics | Automation / task-success / review KPIs, per-stage bottlenecks, review latency, vendor + PO + email funnels — **all derived at read time, no stored counters** |
+| KPIs and analytics | Automation / task-success / review KPIs, per-stage bottlenecks, review latency, vendor + PO + email funnels — **all derived at read time, no stored counters**. API committed; dashboard built and verified, awaiting the frontend commit |
 | Email invoice ingestion | IMAP mailbox → cheap sender/relevance filter → security verification → the same invoice pipeline a browser upload uses |
 | Document storage | Uploaded PDFs persist after processing — metadata in Postgres, bytes behind a swappable local/S3 store |
 | Non-invoice detection | Rejects documents that contain no invoice, saying so |
@@ -841,6 +841,30 @@ There are no webhooks (IMAP has none) and no `IDLE`, so latency is one poll
 interval. OAuth tokens are consumed from configuration, not refreshed. PDFs
 only — other formats are recorded and skipped with a reason.
 
+### Frontend state
+
+Two bodies of frontend work sit **complete but uncommitted** in the working
+tree: a light-first redesign of the whole interface, and the Phase H Analytics
+screen built on top of it. Both are finished and verified — neither is a
+work in progress.
+
+They are uncommitted because they cannot be separated. The Analytics page uses
+`DataTable`, a component the redesign introduced, and the two share
+`AppShell.tsx`, `app/page.tsx` and `charts.tsx`. Compiling the Phase H files
+against the last commit fails on exactly that:
+
+```
+components/pages/AnalyticsPage.tsx(53,3): error TS2305:
+    Module '"@/components/ui"' has no exported member 'DataTable'.
+```
+
+So at the committed revision the **analytics API is complete and fully tested,
+but the analytics screen does not exist** — it appears only with the working
+tree applied. The intended fix is a single frontend commit carrying both.
+`CLAUDE.md` §11 has the full breakdown of which file belongs to which.
+
+---
+
 ### KPIs and analytics
 
 The dashboard's fifth section answers *how well is this actually working* —
@@ -1131,6 +1155,15 @@ availability, so the badge can briefly contradict the run beside it.
 | **5** | `DecisionTrace` + reference snapshot; stop re-seeding on startup | ◨ audit trail done; snapshot to do |
 | **6** | Line-item decomposition, multi-PO consolidation, FX provider | ◨ multi-PO done; currency mismatch resolves against a pinned rate table; line items + a broader/live FX provider to do |
 | **7** | UI: confidence badges, evidence snippets, allocation view | ◨ allocation view + confidence badges + reviewer brief done; nothing queued |
+
+**Two differently-lettered phase tracks exist — do not conflate them.** The
+numbered table above is the original case-study track (0–7). A separate
+**lettered deployment-prep track (A–M)** turned the case study into a
+deployable multi-user platform: **A–H are complete**, with Phase H (KPIs &
+analytics) the most recent — its backend committed, its dashboard built and
+verified but awaiting the frontend commit ([Frontend state](#frontend-state)).
+**Phase I — logs, filtering, grouping and exports — is next and has not been
+started.** `CLAUDE.md` is the authority on that track.
 
 **The most valuable thing left** was Phase 2's confidence gate — done, closing
 the low-confidence auto-approve problem as a *class* rather than case by case.
