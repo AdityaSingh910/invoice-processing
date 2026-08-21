@@ -75,7 +75,7 @@ history — do not conflate them:
 | G | Email invoice ingestion & extraction | ✅ Complete | `8dfc286` |
 | H | KPIs + analytics | ✅ Complete | `9bdbeeb` (backend) + `96b3f92` (frontend) |
 | I | Logs + filters + grouping + exports | ✅ Complete | `248009e` |
-| J | Client access / client portal | ✅ Complete | (this phase — §7g) |
+| J | Client access / client portal | ✅ Complete | `79b5b54` |
 | K | Security hardening | ✅ Complete | `2b0f97e` |
 | K2 | Chatbot (read-only invoice/AP assistant) | ✅ Complete | `86f4421` |
 | L | Multilingual support | ⬜ Not started | — |
@@ -3435,7 +3435,7 @@ Phase K2 Assistant screen and Phase J supplier portal are all in the history.
 | Interface redesign (light-first, explicit dark-mode toggle, `RunDetail` split) | `96b3f92` |
 | Phase H Analytics screen | `96b3f92` |
 | Phase K2 Assistant screen | `86f4421` |
-| Phase J supplier portal | (this phase — §7g.9) |
+| Phase J supplier portal | `79b5b54` |
 
 ### 11.0 There are TWO frontends in one bundle (Phase J)
 
@@ -3603,7 +3603,7 @@ any of them present.
 | A–I | (see §13.3 commit list) | ✅ Committed in order |
 | K | `2b0f97e` | ✅ Committed (security hardening) |
 | K2 | `86f4421` | ✅ Committed (read-only assistant) |
-| J | see §13.3 | ✅ Committed (supplier portal) |
+| J | `79b5b54` | ✅ Committed (supplier portal) |
 | L, M | — | ⬜ Not started |
 
 **Phase J's schema change is ONE COLUMN AND ONE INDEX** — `runs.client_id` and
@@ -3675,7 +3675,7 @@ Neither commit contains `claudee.md`.
 ### 13.3 Commits
 
 ```
-(Phase J)  Let a supplier see their own invoices, and nothing else (Phase J)
+79b5b54 Let a supplier see their own invoices, and nothing else (Phase J)
 2514355 Record that phases K and K2 are fully committed and finalized
 86f4421 Let someone ask the records a question, without letting the model near them (Phase K2)
 2b0f97e Close what an issued token could still do after the account behind it changed (Phase K)
@@ -3701,9 +3701,9 @@ made that state obsolete, which is why §11 now reads differently from it.)*
 Branch `main`. Everything through the Phase J commit **is committed locally**.
 Push only if explicitly asked.
 
-*(The Phase J row above is written without its own hash because the commit
-cannot cite itself. The hash is recorded in the short follow-up commit that
-comes immediately after it — the same pattern `4e76ef3` used for Phase H.)*
+*(The Phase J hashes above were filled in by the short follow-up commit
+immediately after `79b5b54`, because a commit cannot cite itself — the same
+pattern `4e76ef3` used for Phase H.)*
 
 **[README.md](README.md)** is kept in sync with the code and is the other
 primary reference — when it and this file disagree on a factual claim about
