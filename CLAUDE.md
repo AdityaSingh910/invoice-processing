@@ -64,7 +64,7 @@ history — do not conflate them:
 | E | Review workflow hardening | ✅ Complete | `66e6f79` |
 | F | Email security & trusted-source verification | ✅ Complete | `d351869` |
 | G | Email invoice ingestion & extraction | ✅ Complete | `8dfc286` |
-| H | KPIs + analytics | ✅ Complete | (this phase) |
+| H | KPIs + analytics | ✅ Complete (backend; frontend uncommitted, §13.1) | `9bdbeeb` |
 | I | Logs + filters + grouping + exports | ⬜ **Next — not started** | — |
 | J | Client access / client portal | ⬜ Not started | — |
 | K | Chatbot (read-only invoice/AP assistant) | ⬜ Not started | — |
@@ -1992,7 +1992,7 @@ with `git diff -- frontend-next/` before trusting this paragraph.
 ### 13.3 Commits
 
 ```
-<Phase H commit>  Answer how well the process is actually working, from the rows already on file (Phase H)
+9bdbeeb Answer how well the process is actually working, from the rows already on file (Phase H)
 8dfc286 Go and fetch the invoices, instead of waiting to be handed one (Phase G)
 d351869 Verify what an incoming email can actually prove about its own origin (Phase F)
 66e6f79 Make the review decision path atomic, closing a concurrency gap Phase D left open
