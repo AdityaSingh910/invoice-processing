@@ -9,13 +9,14 @@ from dataclasses import asdict
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from fastapi import (Body, Depends, FastAPI, File, HTTPException, Request,
+from fastapi import (Body, Depends, FastAPI, File, HTTPException, Query, Request,
                      Security, UploadFile, status)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 
+import analytics
 import auth
 import config
 import documents
@@ -1138,6 +1139,135 @@ def get_email_attachments(email_id: int,
     if not storage.get_email_message(email_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
     return {"email_id": email_id, "attachments": storage.list_email_attachments(email_id)}
+
+
+# --------------------------------------------------------------------------
+# analytics (Phase H)
+#
+# Read-only, every one of them. Nothing under /api/analytics writes a row,
+# creates a run, or changes a status -- these endpoints are queries over the
+# history the application already keeps (see analytics.py for what each KPI
+# means and why no counter is stored anywhere).
+#
+# AUTHORIZATION. Aggregate invoice analytics need `invoice:read`, the same
+# scope that already reads a run, its audit trail and its document: a
+# dashboard showing that 12 invoices were held is derived from rows the same
+# caller can already fetch individually, so requiring more would be theatre.
+#
+# `/api/analytics/users` is the exception, because it is the only one about
+# PEOPLE rather than invoices -- see analytics.users() for why it shows the
+# caller their own row unless they hold `invoice:admin`.
+#
+# NO NEW SCOPE WAS ADDED, matching what Phases F and G did: a fifth scope
+# needs a role to carry it, which means editing every deployment's user store
+# for a reporting screen.
+#
+# Responses carry aggregates and reference data (vendor names, PO numbers,
+# rule names) -- never invoice line items, never document bytes, never email
+# subjects or addresses, and never a raw audit_json blob.
+# --------------------------------------------------------------------------
+
+def analytics_window(
+    range_key: str = Query("30d", alias="range",
+                           description="today | 7d | 30d | month | all | custom"),
+    date_from: str = Query(None, alias="from", description="YYYY-MM-DD (custom range)"),
+    date_to: str = Query(None, alias="to", description="YYYY-MM-DD (custom range, inclusive)"),
+) -> "analytics.Window":
+    """Validate the time-range parameters every analytics endpoint shares.
+
+    One dependency rather than a try/except repeated six times, so every route
+    rejects a bad `range` or a malformed date identically -- and so a caller's
+    typo is never silently reinterpreted as the default window.
+
+    `range`, `from` and `to` are the query names because they are what an
+    operator would type; `from` is a Python keyword and `range` shadows a
+    builtin, so both are taken through an alias rather than renaming the API.
+    """
+    try:
+        return analytics.resolve_window(range_key, date_from, date_to)
+    except analytics.AnalyticsError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.get("/api/analytics/overview")
+def analytics_overview(window: "analytics.Window" = Depends(analytics_window),
+                       principal: auth.Principal = Security(auth.current_principal,
+                                                            scopes=["invoice:read"])):
+    """Headline KPIs, the decision mix, value by currency, and the open backlog."""
+    return analytics.overview(window)
+
+
+@app.get("/api/analytics/trends")
+def analytics_trends(window: "analytics.Window" = Depends(analytics_window),
+                     principal: auth.Principal = Security(auth.current_principal,
+                                                          scopes=["invoice:read"])):
+    """One row per UTC calendar day, with empty days present as explicit zeroes."""
+    try:
+        return analytics.trends(window)
+    except analytics.AnalyticsError as exc:
+        # A range wider than the daily-bucket cap. Refused rather than
+        # truncated, so the caller knows it did not get the series it asked for.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.get("/api/analytics/processing")
+def analytics_processing(window: "analytics.Window" = Depends(analytics_window),
+                         principal: auth.Principal = Security(auth.current_principal,
+                                                              scopes=["invoice:read"])):
+    """Run and per-stage timing, extraction routes, and extraction budget use."""
+    return analytics.processing(window)
+
+
+@app.get("/api/analytics/reviews")
+def analytics_reviews(window: "analytics.Window" = Depends(analytics_window),
+                      principal: auth.Principal = Security(auth.current_principal,
+                                                           scopes=["invoice:read"])):
+    """The human-review funnel, its latency, and what reviewers decided.
+
+    Aggregate only. Per-person figures are /api/analytics/users."""
+    return analytics.reviews(window)
+
+
+@app.get("/api/analytics/vendors")
+def analytics_vendors(window: "analytics.Window" = Depends(analytics_window),
+                      limit: int = Query(None, ge=1, le=analytics.MAX_GROUP_LIMIT),
+                      principal: auth.Principal = Security(auth.current_principal,
+                                                           scopes=["invoice:read"])):
+    """Per-vendor invoice behaviour, and every PO's budget position."""
+    try:
+        resolved = analytics.resolve_limit(limit)
+    except analytics.AnalyticsError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return analytics.vendors(window, resolved)
+
+
+@app.get("/api/analytics/email")
+def analytics_email(window: "analytics.Window" = Depends(analytics_window),
+                    principal: auth.Principal = Security(auth.current_principal,
+                                                         scopes=["invoice:read"])):
+    """The email ingestion funnel: what arrived, what triage filtered, what
+    verification admitted, and what became an invoice run. Counts and statuses
+    only -- no sender addresses, no subjects, no message content."""
+    return analytics.email(window)
+
+
+@app.get("/api/analytics/users")
+def analytics_users(window: "analytics.Window" = Depends(analytics_window),
+                    principal: auth.Principal = Security(auth.current_principal,
+                                                         scopes=["invoice:read"])):
+    """Reviewer workload.
+
+    Your own activity, unless you hold `invoice:admin`, in which case the whole
+    team's -- the same "your own, unless you are an administrator" shape
+    `/review/release` already uses. The response says which of the two it is in
+    `scope`, so a client never has to infer it from the row count.
+
+    The decision is made HERE from the authenticated principal, never from a
+    query parameter: a `?user=` filter the caller could set would be an
+    authorization check the caller performs on themselves.
+    """
+    return analytics.users(window, viewer=principal.username,
+                           see_everyone=principal.has("invoice:admin"))
 
 
 @app.get("/api/reference")

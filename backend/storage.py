@@ -252,6 +252,42 @@ def _consumed(conn, po_number, exclude_run_id=None):
         return float(cur.fetchone()["c"] or 0.0)
 
 
+def consumed_amounts_by_po():
+    """`_consumed` for every PO at once: {po_number: consumed}.
+
+    THE SAME LEDGER RULE, NOT A SECOND ONE. `_consumed` above answers the
+    question for one PO because that is what committing a run needs; an
+    analytics table needs the answer for all of them, and asking `_consumed`
+    once per PO is a query per row. So the rule -- sum `run_allocations`,
+    joined to `runs.status = 'APPROVED'` -- is expressed once more, set-based,
+    and it lives HERE, immediately beside its single-PO sibling, so the two
+    cannot be edited apart by someone who only found one of them.
+
+    That adjacency is a convention, not a guarantee, so it is backed by a test:
+    `test_analytics.py::test_set_based_ledger_matches_the_per_po_ledger` asserts
+    this function and `consumed_amount_for_po()` agree for every PO on a
+    database with multi-PO invoices, reversals and rejections in it. If someone
+    changes what "consumed" means in one place and not the other, that test
+    fails rather than a dashboard quietly disagreeing with the PO screen.
+
+    POs with no approved allocations are absent from the result rather than
+    present as 0.0 -- callers use `.get(po, 0.0)`, which keeps this a pure
+    projection of the allocation rows instead of a list that also has to know
+    which POs exist.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT a.po_number, COALESCE(SUM(a.amount), 0) AS c
+                   FROM run_allocations a JOIN runs r ON r.id = a.run_id
+                   WHERE r.status = 'APPROVED'
+                   GROUP BY a.po_number""")
+            return {r["po_number"]: float(r["c"] or 0.0) for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
 def _write_allocations(conn, run_id, allocations):
     """Record which POs a run's total was charged against, and how much to each.
 
@@ -1005,6 +1041,26 @@ def init_db(reset_runs: bool = False):
             # a shared server under concurrent load benefits from both.
             cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_invoice_number ON runs(invoice_number)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status)")
+
+            # ANALYTICS (Phase H). Indexes, and nothing else -- no counter
+            # column, no summary table. Every KPI is a query over the rows
+            # that already exist (see analytics.py's module docstring for why
+            # a stored rollup was rejected), so the only thing analytics needs
+            # from the schema is for those queries to be cheap.
+            #
+            # `created_at` is the one every analytics query filters on and the
+            # only column here nothing previously indexed -- date windows are
+            # half-open ISO-string ranges, which a plain B-tree on a TEXT
+            # column serves directly, because every timestamp this application
+            # writes is UTC with the same `+00:00` spelling and therefore
+            # sorts lexicographically in true chronological order.
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at)")
+            # Per-vendor and per-reviewer breakdowns group by these.
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_vendor_name ON runs(vendor_name)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_reviewed_by ON runs(reviewed_by)")
+            # Per-person activity counts group by actor; the existing
+            # invoice_activity indexes are on run_id and created_at only.
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_activity_actor ON invoice_activity(actor)")
 
             # Runs committed before this table existed carry their charge in
             # (po_number, total). Synthesise the one allocation row each of them always

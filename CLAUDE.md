@@ -27,7 +27,7 @@ dashboard and an activity history.
 - **Backend** (`backend/`) — FastAPI, PostgreSQL, the 9-stage pipeline, the
   deterministic rule engine, OAuth2 auth, document storage, multi-user review
   collaboration, email trusted-source verification (§7a), email invoice
-  ingestion (§7b).
+  ingestion (§7b), and the derived-at-read-time KPI/analytics layer (§7c).
 - **Frontend** (`frontend-next/`) — Next.js 15 / React 19 / Tailwind v4,
   served as a static export by FastAPI. **Has uncommitted redesign work in
   progress — see §11, read before touching any frontend file.**
@@ -36,7 +36,7 @@ dashboard and an activity history.
 - **`data/`** — seed POs, vendors, demo users (JSON, tracked in git,
   reloaded into Postgres on every startup) plus gitignored runtime state
   (`documents/`).
-- **`tests/`** — 733 tests, 22 files, real (schema-isolated) PostgreSQL, both
+- **`tests/`** — 852 tests, 23 files, real (schema-isolated) PostgreSQL, both
   LLM providers mocked. See §10.
 
 ---
@@ -62,22 +62,22 @@ history — do not conflate them:
 | C | Persistent invoice PDF/document storage | ✅ Complete | `4d72899` |
 | D | Multi-user collaboration + activity history | ✅ Complete | `345033a` |
 | E | Review workflow hardening | ✅ Complete | `66e6f79` |
-| F | Email security & trusted-source verification | ✅ Complete | see `git log` |
-| G | Email invoice ingestion & extraction | ✅ Complete | see `git log` |
-| H | KPIs + analytics | ⬜ **Next — not started** | — |
-| I | Logs + filters + grouping + exports | ⬜ Not started | — |
+| F | Email security & trusted-source verification | ✅ Complete | `d351869` |
+| G | Email invoice ingestion & extraction | ✅ Complete | `8dfc286` |
+| H | KPIs + analytics | ✅ Complete | (this phase) |
+| I | Logs + filters + grouping + exports | ⬜ **Next — not started** | — |
 | J | Client access / client portal | ⬜ Not started | — |
 | K | Chatbot (read-only invoice/AP assistant) | ⬜ Not started | — |
 | L | Multilingual support | ⬜ Not started | — |
 | M | Final security + deployment hardening | ⬜ Not started | — |
 
-**Do not start Phase H or any later phase without being explicitly asked.**
+**Do not start Phase I or any later phase without being explicitly asked.**
 This project has been built one verified phase at a time, each requested
 individually, each committed on its own before the next began. See §9 for
 what H–M are planned to cover — plan only, nothing implemented.
 
-**Do not redo A–G.** They are complete, tested, and committed. If something
-in A–G looks wrong, raise it — don't silently "fix" or rebuild it.
+**Do not redo A–H.** They are complete, tested, and committed. If something
+in A–H looks wrong, raise it — don't silently "fix" or rebuild it.
 
 ---
 
@@ -1075,6 +1075,440 @@ uvicorn workers is safe — see §7b.5.
    messages with a real generated key — an unsigned message is correctly
    quarantined by Phase F and never reaches the pipeline.
 
+**Two code comments are now out of date and were deliberately left alone**
+(they are comments only — no behaviour depends on them, and changing them
+would have put unrelated edits in the Phase G commit). Both predate the
+lettered phase tracks and refer to a "Phase J" that no longer means anything:
+
+- `backend/config.py` (~line 291) — "when ingestion (Phase J) adds a second
+  producer"
+- `backend/main.py` (~line 547) — "for when Phase J's ingestion path exists,
+  but nothing writes it yet"
+
+Phase G *is* that ingestion path, and it **does** now write
+`source="EMAIL"`. Worth correcting the next time those files are touched for
+another reason.
+
+## 7c. KPIs & analytics (Phase H)
+
+**Status: implemented, tested (119 tests), verified.**
+
+Phases A–G built the machine. Phase H answers **how well it is actually
+working** — from the rows the application already keeps, and from nothing else.
+
+### 7c.1 The one rule this phase is built on
+
+**Everything is a query. Nothing is a stored number.**
+
+`backend/analytics.py` writes nothing. There is no `analytics` table, no
+`kpi_daily` rollup, no `runs.is_automated` flag, no `total_approved` counter.
+Every figure is aggregated at read time from `runs`, `invoice_activity`,
+`review_claims`, `run_allocations`, `email_messages` and `email_attachments`.
+
+This is the third time this project has made that choice, and for the third
+time it is the same reason:
+
+| | Stored counter | Derived at read time |
+|---|---|---|
+| PO balance (§3) | rejected twice | ✅ `SUM(run_allocations)` joined to APPROVED |
+| Review claim holder (§6.2) | rejected | ✅ most recent unreleased, unexpired row |
+| **Every KPI (this phase)** | **rejected** | ✅ **aggregated per request** |
+
+A counter is authoritative, so the moment one code path forgets to bump it the
+number is wrong and nobody notices. A derived figure cannot drift from the rows
+it is derived from, because it *is* the rows.
+
+**The only schema change Phase H makes is four indexes** (§7c.14), which is the
+sanctioned way to make a derived figure cheap. A test asserts the schema gained
+no table.
+
+### 7c.2 Where the numbers come from — two mechanisms, chosen per metric
+
+1. **SQL aggregation** for anything expressible in real columns: counts, rates,
+   date buckets, latencies, per-vendor and per-PO groupings. `_run_counts()` is
+   one query with twelve `FILTER`ed aggregates rather than twelve queries — the
+   alternative is a dozen numbers that were each true at a slightly different
+   instant.
+
+2. **One guarded Python pass** (`_scan_run_json`) for the metrics that live
+   inside the JSON columns: per-stage timings (`stages_json`), which rules
+   failed (`audit_json`), the extraction route, and invoice value by currency.
+
+   **Why not SQL for those too:** `stages_json` and `audit_json` are TEXT, not
+   JSONB, and Postgres has no total `try_cast` to jsonb. One malformed blob
+   would abort the whole aggregate query and take a working dashboard down.
+   The Python pass skips that row, counts it in `data_quality.malformed_json`,
+   and reports every other run normally. It is also ONE query serving four
+   breakdowns, so the row-scan is paid once per request rather than per metric.
+   Tested directly, including valid-JSON-of-the-wrong-shape and a `True` that
+   must not be accepted as a millisecond count.
+
+   **The cost is stated, not hidden:** this pass reads the JSON of every run in
+   the window. At this volume that is the right trade; at a much larger one the
+   answer is a JSONB column with a GIN index, which is a self-contained change
+   to that one function.
+
+### 7c.3 The KPI definitions — read these before quoting a number
+
+Each KPI ships its **numerator, denominator and definition string** in the API
+response, so a rate can always be checked against the counts under it and no
+client has to hard-code what a metric means.
+
+**A rate with an empty denominator is `null`.** Never `0.0`, never `100%`.
+"No invoices were processed" and "0% were automated" are different statements
+and only one of them is true on a quiet day. This is asserted throughout the
+test file, and a mutation making `_rate` return `0.0` breaks exactly four tests.
+
+| KPI | Numerator | Denominator |
+|---|---|---|
+| **Automation rate** | `automated_decision` in {APPROVED, REJECTED} | all runs in window |
+| **Processing success rate** | runs whose extraction produced a usable route | all runs in window |
+| **Task success ratio** | resolved **and** not overridden | all runs in window |
+| **Human review rate** | `automated_decision` = NEEDS_REVIEW | all runs in window |
+| **Review completion rate** | held runs carrying a `human_decision` | held runs |
+
+**AUTOMATION RATE — how much work the rules disposed of unaided.**
+A REJECTED run *counts as automated*: correctly stopping a duplicate is the
+process working, not failing. Computed from `automated_decision`, which is
+immutable (§3), so a later human ruling cannot retroactively change how
+automated the process was at the time — tested directly.
+
+**PROCESSING SUCCESS RATE — a machinery metric, not a business one.**
+Whether the pipeline could read the document at all. It says *nothing* about
+whether the invoice was approved: a correctly rejected duplicate is a
+processing **success**, and an unreadable scan held for a human is a processing
+**failure** even though the hold was the right response to it. Detected from
+the `extraction_method` the pipeline wrote (`"none"` on main.py's
+`_abort_unreadable` path), never inferred from fields being absent.
+
+The two are kept apart on purpose. A "success rate" that collapses "the machine
+worked" into "the invoice was approved" is the single most misleading number an
+AP dashboard can show, and it is the default one to build by accident.
+
+**TASK SUCCESS RATIO — did the work finish, by the route it was meant to?**
+
+```
+resolved     the run waits on nobody: its automated decision was terminal,
+             OR a person has ruled on it
+overridden   an administrator changed its status outside the review path
+             (a STATUS_OVERRIDDEN event in invoice_activity)
+
+numerator = resolved − overridden
+```
+
+Genuinely distinct from automation rate, and the distinction is the point: a
+held invoice a reviewer then accepted is **not automated** but **is** a task
+success — the process invited a person, a person came, the work finished. An
+administrator reaching past the process to correct a decision is not, even
+though the run ends terminal either way. A test asserts the two metrics
+diverge, so neither is a redundant restatement of the other.
+
+> **THIS MEASURES OPERATIONAL SUCCESS, NOT CORRECTNESS.** The database holds no
+> independent record of what the right answer was — no ground-truth label, no
+> downstream payment confirmation — so nothing in this phase claims a decision
+> was correct. It claims the work finished. The definition string says exactly
+> that, travels with every response, and a test asserts the words are in it.
+
+**REVIEW EFFECTIVENESS** is reported the same way. A hold a reviewer ACCEPTED
+means the reviewer judged the invoice fine after all; a hold they REJECTED
+means they judged the concern real. Neither is reported as the hold having been
+"right" — the definition strings say `NOT evidence the hold was wrong` /
+`NOT evidence the hold was right`, and a test greps for those words and for the
+absence of any correctness claim. The full
+`automated_decision` × `human_decision` × `status` × `final_decision`
+transition matrix is returned alongside, as rows rather than a nested object,
+so a combination nobody anticipated shows up instead of being dropped.
+
+### 7c.4 Time — everything is UTC, and the response says so
+
+Every timestamp this application writes is
+`datetime.now(timezone.utc).isoformat()`: ISO-8601, UTC, explicit `+00:00`,
+stored as TEXT. Because **every** writer uses that one call the strings compare
+correctly with `>=` / `<`, which is already how `get_active_claim` tests a lease
+expiry (§6.2). Date windows are therefore half-open ISO string ranges
+`[start, end)` — index-servable with no cast.
+
+- Ranges: `today` · `7d` · `30d` · `month` · `all` · `custom` (`from`/`to`).
+- `custom` **includes the day named by `to`** (`from == to` is one full day).
+- Day buckets are **UTC calendar days**, matching how `quota.py` already
+  reckons the extraction budget. Responses carry `"timezone": "UTC"` so a
+  dashboard labels its axis honestly. The bucket key is
+  `substring(created_at from 1 for 10)` — the stored value's first ten
+  characters *are* its UTC date, so there is no cast and no conversion to get
+  wrong.
+- An unrecognised range **raises** rather than falling back to a default: a
+  typo in `range` silently becoming "all time" would answer a question nobody
+  asked.
+- An unbounded (`all`) window contributes no SQL and no parameters — never a
+  sentinel epoch date, which would quietly exclude anything older than it. For
+  trends, `all` starts the series at the first run rather than scanning to the
+  beginning of time.
+
+Boundary handling is tested directly, including a run written at exactly UTC
+midnight (it belongs to the day that *starts* then) and one a microsecond
+before it.
+
+### 7c.5 Endpoints — no new scope
+
+```
+GET /api/analytics/overview     [invoice:read]   headline KPIs, decision mix, value, backlog
+GET /api/analytics/trends       [invoice:read]   one row per UTC day
+GET /api/analytics/processing   [invoice:read]   run + per-stage timing, routes, quota
+GET /api/analytics/reviews      [invoice:read]   review funnel, latency, effectiveness (aggregate)
+GET /api/analytics/vendors      [invoice:read]   per-vendor + every PO's budget position
+GET /api/analytics/email        [invoice:read]   the ingestion funnel
+GET /api/analytics/users        [invoice:read]   YOUR OWN row — or everyone's, with invoice:admin
+```
+
+All share `?range=` / `?from=` / `?to=` through one FastAPI dependency
+(`main.analytics_window`), so every route rejects a bad range identically.
+`range` and `from` are taken through aliases because one shadows a builtin and
+the other is a Python keyword.
+
+**Aggregate analytics need `invoice:read`** — the same scope that already reads
+a run, its audit trail and its stored document. A dashboard saying 12 invoices
+were held is derived from rows that caller can already fetch one at a time, so
+demanding more would be theatre.
+
+**`/api/analytics/users` is the exception, and it is authorised differently
+because it is the only endpoint about PEOPLE rather than invoices.** It returns
+the caller's own row unless they hold `invoice:admin`, in which case it returns
+the whole team — the same "your own, unless you are an administrator" shape
+`/review/release` already uses (§6.2). The response carries
+`scope: "self" | "all"` so a client never infers it from the row count, and the
+decision is made from the authenticated principal, **never** from a query
+parameter (a `?user=` filter would be an authorization check the caller
+performs on themselves).
+
+> **A stated limitation, not a workaround.** The existing model (§8) has four
+> scopes and **no `manager` role**. The honest choice was between
+> `invoice:review` — which every peer reviewer holds, and which would therefore
+> expose each of them to all the others — and `invoice:admin`, the only scope
+> that denotes authority *over* the review process rather than participation in
+> it. `invoice:admin` it is. A fifth scope was deliberately not invented:
+> Phases F and G both added endpoints without adding scopes, and an
+> `analytics:people` scope needs a role to carry it, which means editing every
+> deployment's user store for a reporting screen.
+
+Both directions are tested, including that a **reviewer** is not an
+administrator for this purpose.
+
+### 7c.6 What analytics deliberately do not disclose
+
+- **No invoice contents.** No line items, no `extracted_json`, no `raw_text`,
+  no raw `audit_json` blob, no `provenance`. Tested by grepping every
+  endpoint's response body.
+- **No document location.** No `storage_key`, no `storage_backend` — the same
+  restriction the Phase C document endpoints already observe (§5).
+- **No email contents.** The email funnel reports counts and statuses only: no
+  sender address, no domain, no subject. Phase F never stored the body and this
+  phase does not start. Tested by seeding a message with a distinctive
+  address and subject and asserting neither appears.
+- **No database internals.** `data_quality.malformed_json` is keyed by what the
+  value means (`stages`, `audit`, `extracted`), not by the column it lives in.
+- **No injectable identifier.** Window bounds are always bind parameters. The
+  COLUMN a window filters on is interpolated (SQL cannot bind an identifier),
+  and every call site passes a hard-coded literal — enforced by a regex check
+  in `Window.clause()` and `email()`'s `by()` helper, so a future edit that
+  threads a request value in there fails loudly instead of becoming an
+  injection point. Tested with hostile column names.
+- **Read-only.** Nothing under `/api/analytics` writes. Asserted by
+  snapshotting every decision-bearing column plus the activity and allocation
+  row counts, calling all seven services, and requiring the snapshot identical.
+  Every endpoint also 405s on POST.
+
+### 7c.7 Money is never summed across currencies
+
+`runs.total` is in the invoice's own currency, so `overview` reports
+**`value_by_currency`** — a bucket per currency — and there is deliberately no
+combined `value_processed` field anywhere for a reader to misinterpret. Adding
+1,000 EUR to 1,000 USD produces a number that is not an amount of anything.
+Tested with a mixed-currency window, including an assertion that no combined
+total exists.
+
+*(The pre-existing `frontend-next/lib/metrics.ts` `totals()` — the Overview
+page's own client-side summary — does sum `r.total` across runs regardless of
+currency. That is a pre-existing approximation on a different screen, left
+alone; the Analytics screen does not repeat it.)*
+
+### 7c.8 PO figures reuse the ledger — and a test proves they agree
+
+`storage.consumed_amounts_by_po()` was added **immediately beside `_consumed`**
+so the two expressions of the ledger rule (sum `run_allocations`, joined to
+`runs.status = 'APPROVED'`) cannot be edited apart by someone who found only
+one of them. The set-based version exists because an analytics table needs all
+POs at once and calling `_consumed` per PO is a query per row.
+
+Adjacency is a convention, so it is backed by a test:
+`test_set_based_ledger_matches_the_per_po_ledger` asserts the two agree for
+**every** PO on a database containing a multi-PO invoice, a duplicate rejection
+and a reversal. Downgrading the set-based query to ignore `status='APPROVED'`
+breaks exactly that test and one other — verified by mutation.
+
+**PO consumption is deliberately NOT windowed.** A remaining balance "as of the
+last 30 days" is meaningless to anyone about to approve an invoice against that
+PO. The balances are all-time (the ledger's own); the invoice *counts* beside
+them are windowed and named `*_in_range`. Both halves are tested, as is the
+property that a reversal refunds the analytics view in the same instant —
+because nothing was ever deducted.
+
+### 7c.9 One window means two different things — deliberately
+
+Every endpoint windows on **when the invoice arrived** (`runs.created_at`),
+because they all ask about a cohort of invoices: "of the work that entered last
+week, how much was automated".
+
+**`users()` is the single exception: it windows on `runs.reviewed_at`**, because
+it asks about work a *person did*, and "your workload this week" plainly means
+the decisions you made this week — not the decisions you made about invoices
+that happened to arrive this week. Windowing it on `created_at` reports a
+reviewer who spent today clearing a month-old backlog as having done nothing,
+which is both wrong and the case a review queue produces most often. It also
+keeps those counts consistent with the per-person activity counts beside them,
+which are windowed on when the event happened.
+
+**This was found by looking at the rendered dashboard, not by a test** — the
+Today range showed three reviewers with zero reviews each despite visible
+activity. It now has one
+(`test_reviewer_workload_is_windowed_by_when_the_work_was_done`).
+
+### 7c.10 Latency is measured two ways, and says which it could not measure
+
+- **`time_to_decision`** — `runs.created_at` → `runs.reviewed_at`. Available
+  for every reviewed run. Answers "how long did the vendor wait".
+- **`handling_time`** — first `review_claims.claimed_at` → `runs.reviewed_at`.
+  Answers "how long did the reviewer take once they picked it up", and is
+  available **only for runs that were claimed**. Claiming is optional (§6.4),
+  so the count it cannot measure is reported as `unclaimed_reviews` rather than
+  averaged in as zero. Tested both ways, plus the null-`reviewed_at` case.
+
+Both use `percentile_cont` in SQL for the median. Timing statistics always
+carry a `samples` count, so a caller can tell an average of zero (every
+measurement really was zero) from no average at all (nothing was measured).
+
+The backlog block reports what is open **right now** — `claimed_now` is derived
+exactly the way `get_active_claim` derives it (most recent unreleased row per
+run, lease unexpired), and is deliberately *not* windowed: who is holding a
+claim is a fact about this moment, not about the reporting range.
+
+### 7c.11 Hold reasons group by rule name, not by reason sentence
+
+`audit_json.rules_failed` is a list of **rule names** — a fixed, hand-written
+vocabulary from `rules.py` ("PO remaining check", "Duplicate check", "Vendor
+approved", …). The reason *sentence* embeds the invoice's own amounts and
+numbers, so grouping by it produces a list of individual invoices rather than a
+list of causes. Tested with two invoices of different amounts failing the same
+rule: they group to one row, and neither amount leaks into the key.
+
+A run failing three rules contributes to three rows, so these counts sum to
+more than the run count. The API says so and the dashboard prints it, because a
+table of them looks like it should sum to the total.
+
+### 7c.12 Extraction usage — counts, never invented cost
+
+`extraction_quota` records **requests per provider per day** and nothing else:
+no token counts, no price table, no provider invoice. So the payload reports
+used/limit/remaining/utilisation, sets **`cost_available: false`**, and carries
+a note saying a spend figure cannot be derived from this application's data.
+Tested, including a grep asserting no `cost`/`spend`/`price` field exists.
+
+`extraction_quota` is created lazily by `quota.py` on first use, so a database
+that has never run an extraction genuinely has no such table. That reads as
+"nothing has been extracted yet", not as a failure.
+
+### 7c.13 Frontend
+
+A new **Analytics** section (its own "Reporting" nav group), integrated into the
+existing redesign rather than replacing any of it — it reuses `Panel`,
+`PanelHeader`, `DataTable`, `Meter`, `Segmented`, `Tooltip`, `EmptyState`,
+`Badge`, `VolumeChart`, `LegendItem` and the existing colour tokens. Two chart
+primitives were added to the existing `charts.tsx` (still no charting
+dependency): `RateTrend` and `SplitBar`.
+
+**Every figure on that screen is computed by the server.** The page formats and
+arranges; it calculates no KPI, so the browser cannot show a number that
+disagrees with what an auditor would get from the database. (Contrast
+`lib/metrics.ts`'s `totals()`, which is the *Overview* page's own client-side
+summary of runs it already holds — a different job, kept separate.)
+
+**Three display states, not two** (`lib/metrics.ts`'s `kpiState`):
+
+| State | When | Rendered as |
+|---|---|---|
+| `ok` | denominator ≥ 5 | the figure |
+| `insufficient` | a real rate over fewer than 5 runs | the figure, plus "Only 2 invoices — too few to read as a rate" |
+| `unavailable` | denominator is 0 | `—` plus "No invoices in this period" |
+
+The middle state is the one that matters: "100% automated" over two invoices is
+arithmetically true and operationally meaningless, and rendering it identically
+to 100% over two thousand is misleading whether or not any single number is
+wrong. Verified visually on the `Today` range.
+
+`RateTrend` **refuses to draw a null as zero**: a day with no invoices had no
+automation rate, so the line breaks into segments and the readout says "no
+invoices that day". Coercing null to 0 would draw a cliff to the floor and back
+— a statement the data does not make.
+
+Files touched: **new** `components/pages/AnalyticsPage.tsx`; **Phase-H-only
+edits** to `lib/types.ts`, `lib/useData.ts`, `lib/metrics.ts`,
+`components/ui/icons.tsx`; **Phase-H edits inside files the redesign had
+already modified** — `components/charts.tsx` (a pure append),
+`components/layout/AppShell.tsx` (the nav row and `Section`/`NavId` unions) and
+`app/page.tsx` (routing the section). See §13 for what that means for
+committing.
+
+The dashboard was verified end to end against a seeded throwaway Postgres
+schema holding 90 runs, 41 held, 31 ruled on across three reviewers — empty
+states, the insufficient-sample guard, the self-scope reviewer view and the
+over-budget PO indicator all render correctly. **The developer's own `public`
+schema was not touched**, and was confirmed unchanged afterwards.
+
+### 7c.14 Schema changes — four indexes, nothing else
+
+Added in `init_db()` beside the existing index block:
+
+```
+idx_runs_created_at      runs(created_at)        every analytics query filters on it;
+                                                 nothing indexed it before
+idx_runs_vendor_name     runs(vendor_name)       per-vendor grouping
+idx_runs_reviewed_by     runs(reviewed_by)       per-reviewer grouping
+idx_activity_actor       invoice_activity(actor) per-person activity counts
+```
+
+No table, no column, no counter — asserted by
+`test_the_new_indexes_exist_and_the_schema_gained_no_table`.
+`EXPLAIN (ANALYZE, BUFFERS)` over 5,000 runs confirms `idx_runs_created_at` is
+used (Bitmap Index Scan; the 30-day window query executes in **0.3 ms**), and
+every endpoint returns in **under 11 ms** at that volume.
+
+### 7c.15 Known limitations
+
+1. **No ground truth, therefore no correctness metric.** Nothing here can say a
+   decision was *right* — only what was decided and whether the work finished.
+   Stated in the payload, not only in this file (§7c.3).
+2. **No monetary cost.** Request counts only (§7c.12).
+3. **The JSON pass reads every run in the window** (§7c.2). Fine at this
+   volume; the remedy at a larger one is a JSONB column, and it is a
+   self-contained change to one function.
+4. **No `manager` role exists**, so team-wide reviewer figures require
+   `invoice:admin` (§7c.5). This is the existing model's limit, reported rather
+   than bypassed.
+5. **Trends are daily buckets only** — no weekly or monthly rollup, and a range
+   wider than 400 buckets is refused rather than truncated.
+6. **No CSV/export**, and no per-run drill-down from a chart. Both are Phase I
+   (logs, filters, grouping, exports), deliberately not started.
+7. **`by_route` counts the extraction method the run recorded**, which for runs
+   written before that field existed may be absent; those are reported as
+   `(unrecorded)` rather than guessed at.
+8. **Vendor and PO breakdowns group by the stored `vendor_name` string**, not
+   by a normalised vendor identity — so two spellings of one vendor are two
+   rows. `storage.normalize_vendor_name()` exists and could be applied here,
+   but doing so would make the analytics grouping disagree with what the
+   Invoices table displays, which is a change worth making deliberately rather
+   than as a side effect of this phase.
+
+---
+
 ## 8. Authentication, authorization
 
 - **OAuth 2.0 resource-server pattern.** `Authorization: Bearer <JWT>`,
@@ -1101,9 +1535,11 @@ uvicorn workers is safe — see §7b.5.
 
 ---
 
-## 9. Roadmap — Phase F and beyond
+## 9. Roadmap — Phase I and beyond
 
-**Nothing in this section is implemented. This is a plan only.**
+**Phases F, G and H are done and are recorded here as markers only** (§7a, §7b
+and §7c are the authority on what they actually do). **Everything from I onward
+is a plan and nothing in it is implemented.**
 
 ### Phase F — Email security & trusted-source verification (DONE)
 
@@ -1120,17 +1556,90 @@ reason rather than the plan pretending otherwise.
 for what it does, and §7b.12 for what it deliberately does not.** This entry is
 a marker only; §7b is the authority.
 
-### H–M (NEXT is H)
+### Phase H — KPIs & analytics (DONE)
 
-KPIs/analytics, logs/filters/grouping/exports, a client-facing portal, a
-read-only AP chatbot, multilingual support, and a final security/deployment
-hardening pass — all unstarted, all deferred until asked for individually.
+**Implemented, tested and verified — see [§7c](#7c-kpis--analytics-phase-h) for
+what it does, and §7c.15 for what it deliberately does not.** This entry is a
+marker only; §7c is the authority.
+
+Two things the original brief asked for came out differently, and are recorded
+here rather than quietly dropped:
+
+- The brief described success-rate KPIs partly in terms of **"how often the
+  hold was the right call"** and a task-success ratio over outcomes that were
+  **"correct-looking"**. Neither is derivable: this database holds no
+  ground-truth label and no downstream payment confirmation, so nothing can
+  establish that a decision was *right*. The metrics were defined against what
+  the rows can actually prove — what was decided, and whether the work finished
+  by the route it was meant to — and every response says so in its own
+  definition string (§7c.3). The alternative would have been a
+  confident-sounding number measuring nothing.
+- The brief listed **manager-visible** analytics as one of the role tiers. No
+  `manager` role exists in the scope model (§8), so team-wide per-person
+  figures were placed behind `invoice:admin` and the limitation is stated
+  (§7c.5) rather than worked around by inventing a fifth scope.
+
+**The trap the brief named was avoided:** no counter column and no summary
+table were added. The only schema change is four indexes (§7c.14), and a test
+asserts the schema gained no table.
+
+### Phase I — Logs, filtering, grouping & exports (NEXT, not started)
+
+**Nothing is implemented. This is the brief, recorded so the next session
+starts from the right place.**
+
+**Purpose:** make the history already on file searchable, groupable and
+extractable, for the people who have to answer a specific question about a
+specific invoice rather than read a dashboard.
+
+**Planned scope:**
+- **Logs** — a queryable view over `invoice_activity` and `email_activity`
+  (both already append-only, both already carry actor, event type and
+  timestamp), and over the per-run stage log in `runs.stages_json`.
+- **Filtering** — by date range, decision, status, vendor, PO, reviewer,
+  source (`MANUAL_UPLOAD` / `EMAIL`), and rule that failed.
+- **Grouping** — the same axes Phase H aggregates on, but returning the ROWS
+  behind a figure rather than the figure. This is the natural drill-down that
+  §7c.15 lists as deliberately absent from the analytics screen.
+- **Exports** — CSV at minimum. Note that an export leaves the application and
+  the authorization boundary with it, so exports must carry the same scope
+  rules the read endpoints do, and a per-person export must respect the
+  `users()` restriction in §7c.5 rather than becoming a way around it.
+
+**What already exists to build on:**
+
+| Need | Where it already is |
+|---|---|
+| what people did, append-only | `invoice_activity`, `email_activity` |
+| per-run stage log | `runs.stages_json` (name, status, detail, ms) |
+| why a verdict was reached | `runs.audit_json` (`rules`, `rules_failed`, `reason`) |
+| validated time windows | `analytics.resolve_window()` — reuse it, do not write a second date parser |
+| safe JSON reads | `analytics._loads()` — the guarded parse (§7c.2) |
+| date-range indexes | `idx_runs_created_at`, `idx_activity_created_at`, `idx_activity_actor` |
+
+**The traps to avoid:**
+- **Do not write a second time-window parser.** `analytics.resolve_window()` is
+  already validated, already half-open, already UTC, and already tested against
+  boundary cases. A filter panel that parses dates its own way will disagree
+  with the dashboard beside it.
+- **Do not let an export widen authorization.** The most likely accidental leak
+  in this phase is a CSV of reviewer activity available to anyone holding
+  `invoice:read`.
+- **Do not paginate by OFFSET over a growing table** without an index that
+  supports the sort; `list_runs()` currently caps at 200 rows for exactly this
+  reason (§6.3).
+
+### J–M
+
+A client-facing portal, a read-only AP chatbot, multilingual support, and a
+final security/deployment hardening pass — all unstarted, all deferred until
+asked for individually.
 
 ---
 
 ## 10. Testing
 
-**733 tests, 22 files.** Both Groq and Gemini mocked at the HTTP transport
+**852 tests, 23 files.** Both Groq and Gemini mocked at the HTTP transport
 boundary — the suite needs no API key, no network, no quota, only a reachable
 PostgreSQL (`DATABASE_URL`). `test_samples.py` is the deliberate exception:
 it honours a live key and exercises the real routes end-to-end.
@@ -1146,6 +1655,7 @@ signature verified, an actual signature actually verified.
 
 | File | Tests | Covers |
 |---|---|---|
+| `test_analytics.py` | 119 | Phase H: every KPI against known rows, the null-not-zero rule, task-success vs automation-rate divergence, per-stage timing and bottleneck ordering, both review latencies, date windows and UTC boundaries, trends with gaps, malformed/wrong-shaped JSON, the ledger-agreement anti-drift test, the email funnel, per-person authorization from both sides, read-only-ness, and no-leak greps |
 | `test_email_ingestion.py` | 95 | Phase G: sender/relevance triage, the no-LLM-for-junk guarantee (an extraction spy), provider failure, idempotency under 8 threads, attachment validation & path traversal, multi-invoice emails, the Phase F gate, quarantine→release→process, authorization, backwards compatibility |
 | `test_email_security.py` | 110 | Phase F: real DKIM verification (all four canonicalisations, tampered signature/body, revoked key), DMARC alignment, discarded/forged Authentication-Results, spoofed From, conflicting signals, unavailable-vs-failed, S/MIME + PGP detection, malformed/hostile headers, quarantine gate, 10-thread ruling race, authorization, backwards compatibility |
 | `test_api_security.py` | 59 | authn, authz, rate limits, secrets, input, errors |
@@ -1171,6 +1681,42 @@ signature verified, an actual signature actually verified.
 
 (Counts verified via `pytest --collect-only -q` on the current tree — not
 copied from an old table.)
+
+**Verified state at the end of Phase H** (2026-08-21).
+`tests/test_analytics.py` alone: **119 passed.**
+
+| Run | Result |
+|---|---|
+| **Baseline**, before any Phase H change, tree at `8dfc286` | 733 tests — **728 passed, 5 failed** |
+| **After Phase H** | 852 tests — **848 passed, 4 failed** |
+
+The 4 remaining failures are exactly the pre-existing
+`test_extraction_routing.py` cases described below, and that file still passes
+**23/23 when run alone**. The 5th baseline failure
+(`test_samples.py::test_sample_invoice[05_scanned_no_text.pdf]`) is the
+live-Gemini free-tier quota condition documented further down; it passed on the
+post-Phase-H run, which is the flakiness that entry already predicts rather
+than anything Phase H did.
+
+848 − 728 = 120 = the 119 tests Phase H added, plus that one recovered sample.
+**No Phase A–G test changed behaviour.**
+
+Those 119 were checked against passing vacuously by mutation — four
+mutations, each breaking exactly the tests that should break, all reverted
+and re-verified green:
+
+| Mutation | Broke | Correct? |
+|---|---|---|
+| `_rate()` returns `0.0` instead of `None` for an empty denominator | 4 tests (the empty-data / quiet-day assertions) | ✅ |
+| `users()` ignores `see_everyone` and always returns everyone | 4 tests (both authorization directions, service and HTTP) | ✅ |
+| `consumed_amounts_by_po()` drops `status='APPROVED'` | 2 tests (ledger agreement, reversal refund) | ✅ |
+| automation rate counts held runs as automated | 7 tests (automation, review-rate complement, task success) | ✅ |
+
+**One real design flaw was found by looking at the rendered dashboard rather
+than by a test**, and fixed: reviewer workload was windowed on when the
+INVOICE arrived, so a reviewer who spent today clearing a month-old backlog
+read as having done nothing. It now windows on `reviewed_at` (§7c.9) and has
+a test.
 
 **Concurrency tests use real threads against real PostgreSQL** — a
 `threading.Barrier` so every thread starts simultaneously, then asserts the
@@ -1263,21 +1809,28 @@ something to "fix" without being asked.
 ## 11. Frontend state — ⚠️ read before touching any frontend file
 
 **There is a substantial, intentional frontend redesign sitting uncommitted
-in the working tree.** It predates Phases C, D and E, and none of those
-phases touched, committed, or discarded any of it — each was scoped
-backend-and-tests-only. **Do not revert, discard, reformat, or commit any of
-it as part of an unrelated backend change.** Current `git status` (verify
-with a fresh `git status` before assuming this is still accurate):
+in the working tree, and as of Phase H there is now Phase H frontend work
+sitting in the same tree alongside it.** The redesign predates Phases C–G,
+none of which touched it (each was scoped backend-and-tests-only). **Do not
+revert, discard, reformat, or commit the redesign as part of an unrelated
+change.** Verify with a fresh `git status` before assuming any of the below is
+still accurate.
+
+### 11.1 The pre-existing redesign (NOT Phase H — do not commit)
+
+A redesign toward a light-first enterprise finance interface with an explicit
+dark-mode toggle (`:root[data-theme="dark"]`, never `prefers-color-scheme`);
+`RunDetail.tsx` was split into `DocumentPreview.tsx` + `ReviewWorkspace.tsx`.
 
 ```
 modified:   frontend-next/app/globals.css
-modified:   frontend-next/app/page.tsx
-modified:   frontend-next/components/charts.tsx
+modified:   frontend-next/app/page.tsx                        ← also has Phase H edits
+modified:   frontend-next/components/charts.tsx               ← also has Phase H edits
 modified:   frontend-next/components/invoice/Panels.tsx
 modified:   frontend-next/components/invoice/PoMatchPanel.tsx
 deleted:    frontend-next/components/invoice/RunDetail.tsx
 modified:   frontend-next/components/invoice/StageList.tsx
-modified:   frontend-next/components/layout/AppShell.tsx
+modified:   frontend-next/components/layout/AppShell.tsx      ← also has Phase H edits
 modified:   frontend-next/components/pages/InvoicesPage.tsx
 modified:   frontend-next/components/pages/OverviewPage.tsx
 modified:   frontend-next/components/pages/ProcessPage.tsx
@@ -1289,20 +1842,40 @@ untracked:  frontend-next/components/invoice/ReviewWorkspace.tsx
 untracked:  claudee.md   (stray file at repo root — not part of the app; leave as-is unless asked)
 ```
 
-This is a redesign toward a light-first enterprise finance interface with an
-explicit dark-mode toggle (`:root[data-theme="dark"]`, never
-`prefers-color-scheme`) — `RunDetail.tsx` was split into `DocumentPreview.tsx`
-+ `ReviewWorkspace.tsx`. **If asked to commit backend work, stage backend/
-test/doc files explicitly by name (`git add backend/x.py tests/y.py
-CLAUDE.md`), never `git add -A` or `git add .`,** or this frontend work will
-be swept into an unrelated commit. This exact discipline was followed for
-the Phase E commit (`66e6f79`) — only `backend/storage.py`,
-`tests/test_review_collaboration.py`, `CLAUDE.md`, and `README.md` were
-staged.
+### 11.2 Phase H frontend work (§7c.13), and how it overlaps
 
-If the frontend needs work, that is explicitly out of scope for backend
-phase work unless asked — see the Phase D/E briefs, which both stated the
-restriction directly.
+Phase H was the first phase asked to do frontend work, so it is the first time
+the two are interleaved. Three categories:
+
+| Category | Files | Safe to commit alone? |
+|---|---|---|
+| **New, Phase H only** | `components/pages/AnalyticsPage.tsx` | ✅ yes |
+| **Modified, Phase H only** — these were *untouched* by the redesign | `lib/types.ts`, `lib/useData.ts`, `lib/metrics.ts`, `components/ui/icons.tsx` | ✅ yes |
+| **Modified by BOTH** | `components/charts.tsx`, `components/layout/AppShell.tsx`, `app/page.tsx` | ⚠️ see below |
+
+For the three shared files:
+
+- **`charts.tsx`** — Phase H's change is a **pure append** (`RateTrend`,
+  `SplitBar`) and is a separate hunk from the redesign's edits. Hunk-splittable.
+- **`AppShell.tsx`** — Phase H added `"analytics"` to the `Section` and `NavId`
+  unions, an `IconAnalytics` import, and a "Reporting" nav group. These land
+  **inside the same diff hunks** as the redesign's nav rework. **Not
+  hunk-splittable.**
+- **`app/page.tsx`** — Phase H added the `AnalyticsPage` import and the
+  `{section === "analytics" && ...}` branch, likewise **inside** redesign
+  hunks. **Not hunk-splittable.**
+
+**So a Phase H commit that both builds and excludes the redesign is not
+achievable by staging alone.** Committing the backend-plus-unentangled-frontend
+set leaves a tree where `AnalyticsPage.tsx` exists but nothing routes to it and
+its two chart imports are unresolved. This is a real decision, not an
+oversight — see §13 for what was actually done about it.
+
+**If asked to commit backend-only work, stage files explicitly by name
+(`git add backend/x.py tests/y.py CLAUDE.md`), never `git add -A` or
+`git add .`** — that discipline was followed for the Phase E (`66e6f79`), F
+(`d351869`) and G (`8dfc286`) commits, and the frontend diff was verified
+byte-identical afterwards each time.
 
 ---
 
@@ -1314,7 +1887,7 @@ is already configured.
 
 ```powershell
 .\start.ps1                 # installs deps, generates samples, starts server, opens browser
-.\venv\Scripts\python.exe -m pytest tests\ -q      # 733 tests, no key/network needed
+.\venv\Scripts\python.exe -m pytest tests\ -q      # 852 tests, no key/network needed
 .\reset-demo.ps1             # clear run history (samples are order-dependent)
 .\reset-demo.ps1 -Replay     # clear, then drive all 10 samples through the API
 ```
@@ -1339,41 +1912,98 @@ is already configured.
   serves the static export in `out/`; without a rebuild the browser keeps
   serving the old one (the HTML shell is served `no-store` specifically to
   avoid this class of problem, but the export itself still has to be rebuilt).
+- **Email ingestion is OFF by default and stays off** unless both
+  `EMAIL_INGEST_ENABLED=1` and `EMAIL_PROVIDER=imap` are set (§7b.11). Nothing
+  polls a mailbox and no outbound connection is made otherwise, so the demo
+  and the test suite are unaffected by it.
+- **Email endpoints exist but have no UI** (§7b.12) — exercise them with the
+  API directly, or through `POST /api/email/messages` with a `.eml` file.
 
 ---
 
 ## 13. Git / handoff state
 
-**Latest completed phase: G (email invoice ingestion & extraction), §7b —
-implemented, tested, and committed as its own commit (the most recent one;
-`git log --oneline -1` names it).**
-**Phase H has NOT been implemented — do not start it without being
-explicitly asked.**
+**Latest completed phase: H (KPIs & analytics), §7c — implemented, tested, and
+committed. Its BACKEND is committed; its FRONTEND is not (see below).**
+**Phase I (logs, filtering, grouping, exports) has NOT been implemented — do
+not start it without being explicitly asked. Its brief is in §9.**
 
-Phases F and G were each staged **by name** — never `git add -A` — so the
-unrelated frontend redesign (§11) stayed in the working tree untouched.
-Verified after the fact both times: the frontend diff is byte-identical to what
-it was before the phase began. Phase G's files were
-`backend/config.py`, `backend/email_ingest.py`, `backend/email_provider.py`,
-`backend/email_security.py`, `backend/email_triage.py`, `backend/main.py`,
-`backend/storage.py`, `data/email_domain_policy.json`,
-`tests/test_email_ingestion.py`, `.env.example`, `CLAUDE.md`, `README.md`.
-**Do the same for Phase H.**
+### 13.1 What Phase H committed, and what it deliberately did not
 
-Recent commits (`git log --oneline -6`):
+Phases E, F and G were each staged **by name** — never `git add -A` — so the
+unrelated frontend redesign (§11) stayed in the working tree untouched, and
+that was verified after the fact each time. Phase H followed the same rule, but
+hit a case the earlier phases never could: **it was the first phase asked to do
+frontend work**, so its own changes are interleaved with the redesign's in
+three files (§11.2).
+
+**Committed** (staged by name):
+
 ```
+backend/analytics.py            new -- the whole KPI/query layer
+backend/storage.py              consumed_amounts_by_po() + four indexes
+backend/main.py                 the seven /api/analytics endpoints
+tests/test_analytics.py         new -- 119 tests
+CLAUDE.md
+README.md
+```
+
+**Deliberately NOT committed — still in the working tree:**
+
+```
+frontend-next/components/pages/AnalyticsPage.tsx    (new, Phase H)
+frontend-next/lib/types.ts                          (Phase H only)
+frontend-next/lib/useData.ts                        (Phase H only)
+frontend-next/lib/metrics.ts                        (Phase H only)
+frontend-next/components/ui/icons.tsx               (Phase H only)
+frontend-next/components/charts.tsx                 (Phase H + redesign)
+frontend-next/components/layout/AppShell.tsx        (Phase H + redesign)
+frontend-next/app/page.tsx                          (Phase H + redesign)
+...plus the entire pre-existing redesign (§11.1)
+```
+
+**Why.** The Phase H edits to `AppShell.tsx` and `app/page.tsx` land inside the
+same diff hunks as the redesign's own changes, so they cannot be staged apart.
+Committing them would have swept part of the redesign into an unrelated commit
+— the one thing §11 forbids. Committing only the *separable* frontend files
+would have produced a tree where `AnalyticsPage.tsx` exists but nothing routes
+to it and two of its imports are unresolved. So the backend went in clean and
+the whole frontend stayed out, on the repository owner's explicit instruction.
+
+**Consequence to know about before doing anything:** at the committed revision
+the analytics **API is complete and fully tested**, but the analytics **screen
+does not exist**. The dashboard only appears with the working tree applied. It
+was built, and it was verified end to end (§7c.13) — it is uncommitted, not
+unfinished.
+
+**The right way to finish this** is one frontend commit covering the redesign
+and the Phase H UI together, once the repository owner has reviewed the
+redesign. Splitting them further is not worth the risk to work that was never
+committed in the first place.
+
+### 13.2 Verification that the redesign was not disturbed
+
+The redesign's own hunks were not edited, reformatted, reverted or staged. The
+three shared files gained Phase H additions **on top of** the redesign, never
+in place of it: `charts.tsx` is a pure append, and the `AppShell.tsx` /
+`page.tsx` changes add a union member, an import and a render branch. Confirm
+with `git diff -- frontend-next/` before trusting this paragraph.
+
+### 13.3 Commits
+
+```
+<Phase H commit>  Answer how well the process is actually working, from the rows already on file (Phase H)
+8dfc286 Go and fetch the invoices, instead of waiting to be handed one (Phase G)
+d351869 Verify what an incoming email can actually prove about its own origin (Phase F)
 66e6f79 Make the review decision path atomic, closing a concurrency gap Phase D left open
 345033a Add multi-user review collaboration and activity history (Phase D)
 4d72899 Add persistent invoice PDF storage behind a swappable local/S3 backend
 147c0ce Migrate persistence from SQLite to PostgreSQL
 cba2f01 Bring README and CLAUDE.md up to date with the frontend redesign
-2a8f5c7 Add an explicit dark-mode toggle to the sidebar
 ```
 
-Branch `main`, **5 commits ahead of `origin/main`, not yet pushed** (push
-only if explicitly asked). Working tree has the uncommitted frontend work
-described in §11 **plus all of Phase F** — verify with `git status` rather
-than trusting this file if time has passed.
+Branch `main`, **8 commits ahead of `origin/main`, not yet pushed** (push only
+if explicitly asked).
 
 **[README.md](README.md)** is kept in sync with the code and is the other
 primary reference — when it and this file disagree on a factual claim about
@@ -1382,10 +2012,16 @@ the code, verify against the code directly rather than trusting either.
 ### Before doing anything in a new session
 
 1. Read this file, then `README.md`.
-2. `git status` and `git log --oneline -10` — confirm nothing has moved
-   since §11/§13 above were written.
+2. `git status` and `git log --oneline -10` — confirm nothing has moved since
+   §11/§13 above were written. Expect a working tree holding the redesign
+   **and** the Phase H frontend (§13.1).
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
-4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect 733 passed (or
-   729 + the 4 known `test_extraction_routing.py` cases, see §10).
-5. Ask what to work on next. Do not start Phase H or later without being
-   asked (§2, §9).
+4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **848 passed, 4
+   failed**, the 4 being the known `test_extraction_routing.py` cases, which
+   pass 23/23 when that file runs alone (§10). A 5th failure in
+   `test_samples.py`'s scanned sample means the live Gemini free-tier quota is
+   spent, not that anything broke.
+5. `cd frontend-next && npm run build` if you touch any frontend file —
+   FastAPI serves the static export in `out/`.
+6. Ask what to work on next. Do not start Phase I or later without being asked
+   (§2, §9).

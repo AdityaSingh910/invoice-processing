@@ -19,15 +19,16 @@ suite is green.**
 |---|---|
 | Pipeline | Working, 9 stages, streamed live to the browser |
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
-| UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light-first enterprise design with an explicit dark-mode toggle |
+| UI | **Next.js 15 + React 19 + Tailwind v4**, five sections, light-first enterprise design with an explicit dark-mode toggle |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **733 passing** deterministically, 22 files, no live API calls |
+| Automated tests | **848 passing** deterministically, 23 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
 | Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine |
+| KPIs and analytics | Automation / task-success / review KPIs, per-stage bottlenecks, review latency, vendor + PO + email funnels — **all derived at read time, no stored counters** |
 | Email invoice ingestion | IMAP mailbox → cheap sender/relevance filter → security verification → the same invoice pipeline a browser upload uses |
 | Document storage | Uploaded PDFs persist after processing — metadata in Postgres, bytes behind a swappable local/S3 store |
 | Non-invoice detection | Rejects documents that contain no invoice, saying so |
@@ -840,6 +841,82 @@ There are no webhooks (IMAP has none) and no `IDLE`, so latency is one poll
 interval. OAuth tokens are consumed from configuration, not refreshed. PDFs
 only — other formats are recorded and skipped with a reason.
 
+### KPIs and analytics
+
+The dashboard's fifth section answers *how well is this actually working* —
+from the rows already on file, and from nothing else.
+
+**Everything is a query. Nothing is a stored number.** There is no analytics
+table, no nightly rollup, no `approved_count` column. Every figure is
+aggregated at read time from `runs`, `invoice_activity`, `review_claims`,
+`run_allocations` and the email tables. That is the third time this project has
+made that choice — the PO balance and the review-claim holder are derived the
+same way, for the same reason: a counter is one missed code path away from
+being wrong, and nobody notices. The only schema change is four indexes.
+
+**Every KPI ships the arithmetic behind it.** The API returns a numerator, a
+denominator and a definition string beside each rate, so a figure can always be
+checked against the counts under it:
+
+```json
+"automation_rate": {
+  "value": 0.5444, "numerator": 49, "denominator": 90,
+  "definition": "Runs the deterministic rules decided outright (APPROVED or
+                 REJECTED), over every run that entered. A correct automatic
+                 rejection counts as automation. Read from
+                 automated_decision, which no later human ruling rewrites."
+}
+```
+
+**A rate with no denominator is `null`, never `0%`.** "No invoices were
+processed" and "0% were automated" are different statements, and only one of
+them is true on a quiet day. The dashboard renders three states, not two: the
+figure, the figure qualified as too small a sample to read (*"Only 2 invoices —
+too few to read as a rate"*), and `—` for genuinely undefined. The trend chart
+draws a day with no invoices as a **gap in the line**, not a drop to zero.
+
+**The metric names mean exactly one thing each**, because these are easy to
+conflate and expensive to get wrong:
+
+| | |
+|---|---|
+| **Automation rate** | What the rules disposed of unaided. A correct automatic **rejection counts as automation** — stopping a duplicate is the process working. |
+| **Processing success rate** | Whether the pipeline could **read the document at all**. A machinery metric: a correctly rejected duplicate is a processing *success*, and an unreadable scan held for a human is a processing *failure* even though the hold was right. |
+| **Task success ratio** | Of everything that entered, how much **finished by the route it was meant to** — terminal by rules, or held and then ruled on — without an administrator overriding it. A held invoice a reviewer accepted is *not* automated but *is* a task success. |
+| **Human review rate** | The exact complement of the automation rate. |
+
+> **None of this measures correctness.** The database holds no ground-truth
+> label and no downstream payment confirmation, so nothing here claims a
+> decision was *right* — only what was decided and whether the work finished.
+> A reviewer accepting a held invoice is reported as an acceptance, explicitly
+> **not** as evidence the hold was wrong. The definition strings say so, and a
+> test asserts they do.
+
+Also reported: **per-stage timings** (the pipeline already records an `ms` on
+every stage, so the bottleneck is a fact it wrote down, not an estimate), two
+kinds of **review latency** (invoice-to-ruling, and claim-to-ruling — the
+second only where a claim exists, with the count it *cannot* measure reported
+rather than averaged in as zero), **why invoices stop** grouped by the rule
+that failed rather than by the reason sentence, **per-vendor and per-PO**
+behaviour, and the **email ingestion funnel**.
+
+**Money is never summed across currencies.** Values come back bucketed per
+currency; there is deliberately no combined total to misread.
+
+**Analytics do not leak.** No line items, no raw audit blobs, no document
+storage keys, no email addresses or subjects — tested by grepping every
+endpoint's response. Aggregate analytics need `invoice:read`, the same scope
+that already reads a run. **Per-person reviewer figures are the exception**:
+you see your own row unless you hold `invoice:admin`, because a reviewer seeing
+every colleague's throughput is employee-performance data and `invoice:read` is
+not consent to it. There is no `manager` role in the scope model, so that limit
+is stated rather than worked around by inventing a fifth scope.
+
+Time ranges are `today` / `7d` / `30d` / `month` / `all` / custom, and
+**everything is UTC** — the responses say so, so the axis is labelled honestly.
+
+---
+
 ### API security
 
 The frontend is treated as an untrusted client. CORS is configured but is not a
@@ -938,6 +1015,13 @@ GET  /api/email/ingestion        ingestion config + counts         [invoice:admi
 POST /api/email/ingestion/poll   fetch the mailbox now             [invoice:process]
 POST /api/email/messages/{id}/process   run an admitted message    [invoice:process]
 GET  /api/email/messages/{id}/attachments  what arrived            [invoice:read]
+GET  /api/analytics/overview     headline KPIs + decision mix      [invoice:read]
+GET  /api/analytics/trends       one row per UTC day               [invoice:read]
+GET  /api/analytics/processing   run + per-stage timing, quota     [invoice:read]
+GET  /api/analytics/reviews      review funnel, latency, reasons   [invoice:read]
+GET  /api/analytics/vendors      per-vendor + every PO's budget    [invoice:read]
+GET  /api/analytics/email        the ingestion funnel              [invoice:read]
+GET  /api/analytics/users        YOUR reviewer stats — or everyone's, with invoice:admin
 GET  /api/reference              POs + approved vendors            [invoice:read]
 GET  /api/sample-invoices        the bundled scenarios             [invoice:read]
 GET  /api/sample-invoices/{name} one sample PDF                    [invoice:read]
@@ -1079,6 +1163,8 @@ backend/
   matching.py     PO lookup, split-PO balance maths, tolerance, currency
   rules.py        Validation, vendor, duplicates, decision + audit trail
   storage.py      PostgreSQL: seed data, run history, ledger, human review
+  analytics.py    KPIs and reporting queries. Reads only -- every figure is
+                  aggregated at request time; no counter or rollup is stored
   documents.py    Document storage abstraction: local disk or S3-compatible
   email_security.py   Incoming-message verification: DKIM (verified here),
                   SPF/DMARC evidence, alignment, deterministic classification
@@ -1099,7 +1185,7 @@ frontend-next/    The UI. Next.js 15 + React 19 + Tailwind v4, TypeScript
   app/            Root layout, the single client-rendered page, design tokens
   components/
     layout/       App shell — sidebar, page chrome, responsive drawer
-    pages/        Overview, Process invoice, Invoices, Purchase orders
+    pages/        Overview, Analytics, Process invoice, Invoices, Purchase orders
     invoice/      Run detail: stages, three-way match, audit trail, review
     ui/           Primitives — button, badge, panel, modal, toast, icons
   lib/            API client, auth context, theme (dark-mode toggle), metrics,
@@ -1112,7 +1198,7 @@ sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
 docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            22 files, 733 tests, both providers mocked
+tests/            23 files, 852 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing
