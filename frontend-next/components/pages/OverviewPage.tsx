@@ -28,6 +28,7 @@ import { PageBody, PageHeader } from "@/components/layout/AppShell";
 import {
   Badge,
   Button,
+  DataTable,
   EmptyState,
   ErrorState,
   Meter,
@@ -35,6 +36,9 @@ import {
   PanelHeader,
   Skeleton,
   StatusBadge,
+  TD,
+  TH,
+  toneFor,
   Tooltip,
 } from "@/components/ui";
 import {
@@ -46,9 +50,19 @@ import {
   IconInvoice,
   IconRefresh,
   IconUpload,
+  IconX,
 } from "@/components/ui/icons";
 import { LegendItem, SERIES, Sparkline, VolumeChart } from "@/components/charts";
 import ResetDemoButton from "@/components/ResetDemoButton";
+
+/** The vivid end of each tone, for the thin status rule on a feed row. */
+const TONE_VAR: Record<string, string> = {
+  ok: "ok-vivid",
+  warn: "warn-vivid",
+  bad: "bad-vivid",
+  accent: "accent",
+  neutral: "line-strong",
+};
 
 export default function OverviewPage({
   runs,
@@ -176,11 +190,11 @@ export default function OverviewPage({
             <Skeleton className="h-[132px]" />
           ) : (
             <Panel flush>
-              <div className="grid grid-cols-1 divide-line sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+              <div className="grid grid-cols-1 divide-line sm:grid-cols-2 sm:divide-x lg:grid-cols-4 [&>*+*]:border-t sm:[&>*+*]:border-t-0 lg:[&>*]:border-t-0">
                 <Stat
                   label="Straight through"
                   value={formatPercent(t.straightThroughRate)}
-                  caption={`${t.approved} of ${t.runs} with no human touch`}
+                  caption={`${t.approved} of ${t.runs} untouched`}
                   icon={<IconArrowUp size={12} />}
                   tone="ok"
                   hint="Share of all invoices the rules approved on their own. Runs a person accepted are excluded — a success, but not automation."
@@ -200,6 +214,23 @@ export default function OverviewPage({
                   caption="Extraction through decision"
                   icon={<IconClock size={12} />}
                   hint="Mean of the summed stage timings the pipeline recorded per run."
+                />
+                {/* Completes the outcome picture: the hero above counts what
+                    is HELD, "Straight through" counts what cleared, and this
+                    counts what a hard rule stopped outright. Without it the
+                    strip reported two of the three verdicts the process can
+                    reach. */}
+                <Stat
+                  label="Rejected outright"
+                  value={String(t.rejected)}
+                  caption={
+                    t.runs > 0 ? `${formatPercent(t.rejected / t.runs)} of volume` : "None yet"
+                  }
+                  icon={<IconX size={12} />}
+                  tone={t.rejected > 0 ? "bad" : undefined}
+                  hint="Invoices a hard rule stopped — a duplicate, an unapproved vendor, a document that is not an invoice, or a currency-code error. These never reach a reviewer."
+                  spark={days.map((d) => d.rejected)}
+                  sparkTone="var(--bad-vivid)"
                 />
               </div>
             </Panel>
@@ -250,33 +281,30 @@ export default function OverviewPage({
                   // Ranked by frequency, and coloured by whether the rule is a
                   // hard stop (rejects) or a hold (needs a person).
                   const blocking = /duplicate|vendor not approved/i.test(r.reason);
+                  const pct = (r.count / reasons[0].count) * 100;
                   return (
                     <li key={r.reason}>
                       <button
                         onClick={() => onNavigate("invoices")}
-                        className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-hover"
+                        title={r.reason}
+                        // The magnitude bar is drawn BEHIND the row, not under
+                        // the label. A hairline beneath text reads as an
+                        // underline, and a column of them made this ranked
+                        // list look like a list of hyperlinks.
+                        className="rank-row flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-hover"
                       >
+                        <span
+                          aria-hidden
+                          className="rank-fill"
+                          style={{
+                            width: `${pct}%`,
+                            background: blocking ? "var(--bad-vivid)" : "var(--warn-vivid)",
+                          }}
+                        />
                         <span className="tnum w-3 shrink-0 text-[11px] text-faint">{i + 1}</span>
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-baseline justify-between gap-2">
-                            <span className="truncate text-[12.5px]" title={r.reason}>
-                              {r.reason}
-                            </span>
-                            <span className="tnum shrink-0 text-[13px] font-semibold">
-                              {r.count}
-                            </span>
-                          </span>
-                          <span className="mt-1.5 block">
-                            <Meter
-                              value={r.count}
-                              max={reasons[0].count}
-                              tone={blocking ? "bad" : "warn"}
-                              height={3}
-                              ariaLabel={`${r.count} occurrences`}
-                            />
-                          </span>
-                        </span>
-                        <Badge tone={blocking ? "bad" : "warn"}>
+                        <span className="min-w-0 flex-1 truncate text-[12.5px]">{r.reason}</span>
+                        <span className="tnum shrink-0 text-[13px] font-semibold">{r.count}</span>
+                        <Badge tone={blocking ? "bad" : "warn"} className="shrink-0">
                           {blocking ? "Blocks" : "Holds"}
                         </Badge>
                       </button>
@@ -308,60 +336,50 @@ export default function OverviewPage({
                 ))}
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[520px] border-collapse">
-                  <thead>
-                    <tr>
-                      <th className="t-caption border-b border-line px-4 py-2 text-left">PO</th>
-                      <th className="t-caption border-b border-line px-3 py-2 text-left">Vendor</th>
-                      <th className="t-caption border-b border-line px-3 py-2 text-right">
-                        Consumed
-                      </th>
-                      <th className="t-caption border-b border-line px-3 py-2 text-right">
-                        Remaining
-                      </th>
-                      <th className="t-caption w-[124px] border-b border-line px-4 py-2 text-left">
-                        Utilisation
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-line">
-                    {pos.map(({ po, consumed, remaining, pct, over }) => {
-                      const tone = over ? "bad" : pct >= 99.5 ? "warn" : "ok";
-                      return (
-                        <tr key={po.po_number} className="transition-colors hover:bg-hover">
-                          <td className="tnum px-4 py-2 text-[12.5px] font-medium">
-                            {po.po_number}
-                          </td>
-                          <td className="max-w-[150px] truncate px-3 py-2 text-[12.5px] text-muted">
-                            {po.vendor}
-                          </td>
-                          <td className="tnum px-3 py-2 text-right text-[12.5px]">
-                            {money(consumed)}
-                          </td>
-                          <td className="tnum px-3 py-2 text-right text-[12.5px] font-medium">
-                            {money(remaining)}
-                          </td>
-                          <td className="px-4 py-2">
-                            <div className="flex items-center gap-2">
-                              <Meter
-                                value={consumed}
-                                max={po.amount}
-                                tone={tone}
-                                height={4}
-                                ariaLabel={`${pct.toFixed(0)}% consumed`}
-                              />
-                              <span className="tnum w-8 shrink-0 text-right text-[11px] text-faint">
-                                {pct.toFixed(0)}%
-                              </span>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <DataTable minWidth={520}>
+                <thead>
+                  <tr>
+                    <TH>PO</TH>
+                    <TH>Vendor</TH>
+                    <TH align="right">Consumed</TH>
+                    <TH align="right">Remaining</TH>
+                    <TH className="w-[132px]">Utilisation</TH>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pos.map(({ po, consumed, remaining, pct, over }) => {
+                    const tone = over ? "bad" : pct >= 99.5 ? "warn" : "ok";
+                    return (
+                      <tr key={po.po_number}>
+                        <TD className="tnum text-[12.5px] font-medium">{po.po_number}</TD>
+                        <TD className="max-w-[150px] truncate text-[12.5px] text-muted">
+                          {po.vendor}
+                        </TD>
+                        <TD align="right" className="text-[12.5px] text-muted">
+                          {money(consumed)}
+                        </TD>
+                        <TD align="right" className="text-[12.5px] font-semibold">
+                          {money(remaining)}
+                        </TD>
+                        <TD>
+                          <div className="flex items-center gap-2">
+                            <Meter
+                              value={consumed}
+                              max={po.amount}
+                              tone={tone}
+                              height={4}
+                              ariaLabel={`${pct.toFixed(0)}% consumed`}
+                            />
+                            <span className="tnum w-8 shrink-0 text-right text-[11px] text-faint">
+                              {pct.toFixed(0)}%
+                            </span>
+                          </div>
+                        </TD>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </DataTable>
             )}
           </Panel>
 
@@ -399,22 +417,36 @@ export default function OverviewPage({
                   <li key={r.id}>
                     <button
                       onClick={() => onNavigate("invoices")}
-                      className="flex w-full items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-hover"
+                      title={r.filename}
+                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-hover"
                     >
+                      <span
+                        aria-hidden
+                        className="h-6 w-[3px] shrink-0 rounded-full"
+                        style={{ background: `var(--${TONE_VAR[toneFor(r.status)]})` }}
+                      />
                       <span className="min-w-0 flex-1">
+                        {/* Vendor and invoice number are how an AP clerk names
+                            an invoice. The upload FILENAME is an artefact of
+                            how it arrived — kept as the row's tooltip, not as
+                            its headline. */}
                         <span className="block truncate text-[12.5px] font-medium">
-                          {r.filename}
+                          {r.vendor_name || "Unknown vendor"}
                         </span>
-                        <span className="t-meta block truncate text-[11px]">
-                          {r.vendor_name || "unknown vendor"}
+                        <span className="t-meta tnum block truncate text-[11px]">
+                          {r.invoice_number || "no invoice number"}
                           {r.po_number ? ` · ${r.po_number}` : ""}
                         </span>
                       </span>
-                      <span className="tnum shrink-0 text-[12.5px] font-medium">
+                      <span className="tnum shrink-0 text-[12.5px] font-semibold">
                         {amount(r.total, r.audit?.invoice?.currency || "USD")}
                       </span>
                       <StatusBadge status={r.status} />
-                      <span className="tnum t-meta w-11 shrink-0 text-right text-[11px]">
+                      {/* Wide enough for a 12-hour clock ("12:42 AM"). At
+                          w-11 it wrapped onto two lines in any locale that
+                          formats time that way, which pushed every feed row
+                          out of alignment. */}
+                      <span className="tnum t-meta w-16 shrink-0 text-right text-[11px] whitespace-nowrap">
                         {whenCompact(r.created_at)}
                       </span>
                     </button>
@@ -444,7 +476,7 @@ function Stat({
   value: string;
   caption: string;
   icon?: React.ReactNode;
-  tone?: "ok";
+  tone?: "ok" | "bad";
   hint?: string;
   spark?: number[];
   sparkTone?: string;
@@ -453,7 +485,9 @@ function Stat({
     <div className="flex flex-col justify-between p-4">
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5">
-          <span className={tone === "ok" ? "text-ok" : "text-faint"}>{icon}</span>
+          <span className={tone === "ok" ? "text-ok" : tone === "bad" ? "text-bad" : "text-faint"}>
+            {icon}
+          </span>
           <span className="t-caption">{label}</span>
         </span>
         {hint && (
@@ -473,9 +507,13 @@ function Stat({
           <div className="t-metric tnum">{value}</div>
           <p className="t-meta mt-1 text-[11px] leading-snug">{caption}</p>
         </div>
+        {/* The sparkline is supporting detail, and it is the first thing to
+            go when the cell narrows: at four cells across a laptop viewport it
+            was overlapping the caption it sits beside. Shown only from 2xl,
+            where the cells are wide enough to carry both. */}
         {spark && spark.some((v) => v > 0) && (
-          <div className="hidden shrink-0 xl:block">
-            <Sparkline values={spark} tone={sparkTone ?? "var(--accent)"} width={64} />
+          <div className="hidden shrink-0 2xl:block">
+            <Sparkline values={spark} tone={sparkTone ?? "var(--accent)"} width={56} />
           </div>
         )}
       </div>

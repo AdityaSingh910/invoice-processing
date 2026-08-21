@@ -15,7 +15,7 @@
  */
 import { amount, money } from "@/lib/format";
 import type { Allocation, Audit, PoMatch } from "@/lib/types";
-import { Badge, Callout, KeyValues } from "@/components/ui";
+import { Badge, Callout, DataTable, KeyValues, TD, TH } from "@/components/ui";
 import { IconAlert, IconCheck, IconX } from "@/components/ui/icons";
 
 /** Every PO this invoice charges. One entry for an ordinary invoice. */
@@ -172,38 +172,28 @@ export function MatchTable({ pm, audit }: { pm: PoMatch; audit?: Audit }) {
   });
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[520px] border-collapse text-[12.5px]">
-        <thead>
-          <tr>
-            <th scope="col" className="t-caption border-b border-line px-2 py-2 text-left">
-              Field
-            </th>
-            <th scope="col" className="t-caption border-b border-line px-2 py-2 text-left">
-              On the invoice
-            </th>
-            <th scope="col" className="t-caption border-b border-line px-2 py-2 text-left">
-              On the purchase order
-            </th>
-            <th scope="col" className="t-caption border-b border-line px-2 py-2 text-right">
-              Result
-            </th>
+    <DataTable minWidth={560}>
+      <thead>
+        <tr>
+          <TH>Field</TH>
+          <TH>On the invoice</TH>
+          <TH>On the purchase order</TH>
+          <TH align="right">Result</TH>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.field} className={r.state === "mismatch" ? "bg-bad-quiet" : undefined}>
+            <TD className="text-[12.5px] font-medium whitespace-nowrap">{r.field}</TD>
+            <TD className="text-[12.5px]">{r.invoice}</TD>
+            <TD className="text-[12.5px] text-muted">{r.po}</TD>
+            <TD className="text-right">
+              <StateBadge state={r.state} label={r.label} />
+            </TD>
           </tr>
-        </thead>
-        <tbody className="divide-line">
-          {rows.map((r) => (
-            <tr key={r.field} className={r.state === "mismatch" ? "bg-bad-quiet" : ""}>
-              <td className="px-2 py-2 font-medium whitespace-nowrap">{r.field}</td>
-              <td className="px-2 py-2">{r.invoice}</td>
-              <td className="px-2 py-2 text-muted">{r.po}</td>
-              <td className="px-2 py-2 text-right">
-                <StateBadge state={r.state} label={r.label} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+        ))}
+      </tbody>
+    </DataTable>
   );
 }
 
@@ -259,6 +249,41 @@ function PoBudgetSplit({ pm }: { pm: PoMatch }) {
         {allocations.map((a) => (
           <AllocationBar key={a.po_number} a={a} />
         ))}
+      </div>
+
+      {/* The explicit ledger a reviewer scans first: what was allocated,
+          against the invoice total, and whether it balances to zero. Every
+          figure here is the same one the bars above already show — this is
+          a summary line, not a second calculation. */}
+      <div className="mt-4 border-t border-line-strong pt-3">
+        <div className="ledger-row">
+          <span className="text-muted">Total allocated</span>
+          <span className="tnum font-medium">
+            {money(allocations.reduce((sum, a) => sum + (a.amount || 0), 0))}
+          </span>
+        </div>
+        <div className="ledger-row">
+          <span className="text-muted">Invoice total</span>
+          <span className="tnum font-medium">{money(pm.invoice_total)}</span>
+        </div>
+        <div className="ledger-row total">
+          <span>Variance</span>
+          <span
+            className="tnum"
+            style={{
+              color:
+                Math.abs(
+                  allocations.reduce((sum, a) => sum + (a.amount || 0), 0) - (pm.invoice_total || 0)
+                ) > 0.01
+                  ? "var(--bad)"
+                  : "var(--ok)",
+            }}
+          >
+            {money(
+              allocations.reduce((sum, a) => sum + (a.amount || 0), 0) - (pm.invoice_total || 0)
+            )}
+          </span>
+        </div>
       </div>
     </div>
   );

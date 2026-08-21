@@ -148,6 +148,12 @@ export default function StageList({
 }) {
   const seen = new Map(stages.map((s) => [s.name, s]));
   const next = STAGE_ORDER.find((n) => !seen.has(n));
+  // Nothing has been submitted yet, so this list is a PLAN rather than a
+  // progress report. Nine rows each reading "Waiting" is nine repetitions of
+  // one fact; at rest the stage names alone say what is about to happen, and
+  // they are shown at full contrast because none of them has failed to do
+  // anything yet.
+  const idle = !running && stages.length === 0;
 
   return (
     <ol className="list-none">
@@ -160,19 +166,26 @@ export default function StageList({
         return (
           <li
             key={name}
-            className={`relative flex gap-3 transition-opacity ${last ? "" : "pb-3.5"} ${
-              active ? "" : "opacity-40"
-            }`}
+            className={`relative flex gap-3 transition-opacity ${
+              last ? "" : idle ? "pb-2.5" : "pb-3.5"
+            } ${active || idle ? "" : "opacity-40"}`}
           >
             {!last && (
               <span className="absolute top-5 bottom-0 left-[9px] w-px bg-line" aria-hidden />
             )}
-            <span className="relative z-10 mt-0.5 grid h-[19px] w-[19px] shrink-0 place-items-center rounded-full border border-line bg-surface text-faint">
+            <span
+              className={`relative z-10 mt-0.5 grid h-[19px] w-[19px] shrink-0 place-items-center
+                rounded-full border bg-surface ${
+                  idle ? "border-line-strong text-muted" : "border-line text-faint"
+                }`}
+            >
               {active ? <Spinner size={9} /> : <span className="tnum text-[9.5px]">{i + 1}</span>}
             </span>
             <div className="min-w-0 flex-1">
-              <span className="text-[12.5px] font-medium">{STAGE_LABEL[name] ?? name}</span>
-              <p className="t-meta mt-0.5">{active ? "Running…" : "Waiting"}</p>
+              <span className={`text-[12.5px] font-medium ${idle ? "text-secondary" : ""}`}>
+                {STAGE_LABEL[name] ?? name}
+              </span>
+              {!idle && <p className="t-meta mt-0.5">{active ? "Running…" : "Waiting"}</p>}
             </div>
           </li>
         );

@@ -11,13 +11,14 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "@/lib/api";
-import { amount, money, when } from "@/lib/format";
+import { amount, when, whenCompact } from "@/lib/format";
 import type { RunRecord, Verdict } from "@/lib/types";
 import type { Async } from "@/lib/useData";
 import { PageBody, PageHeader } from "@/components/layout/AppShell";
 import {
   Badge,
   Button,
+  DataTable,
   EmptyState,
   ErrorState,
   Panel,
@@ -25,7 +26,10 @@ import {
   Segmented,
   Select,
   SkeletonRows,
+  SortTH,
   StatusBadge,
+  TD,
+  TH,
   Tooltip,
 } from "@/components/ui";
 import {
@@ -35,9 +39,7 @@ import {
   IconRefresh,
   IconUser,
 } from "@/components/ui/icons";
-import Modal from "@/components/ui/Modal";
-import RunDetail from "@/components/invoice/RunDetail";
-import { VerdictHeader } from "@/components/invoice/Panels";
+import ReviewWorkspace from "@/components/invoice/ReviewWorkspace";
 
 export type Filter = "ALL" | Verdict | "EXCEPTIONS";
 type SortKey = "created_at" | "total" | "vendor_name" | "status";
@@ -128,6 +130,14 @@ export default function InvoicesPage({
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const visible = filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
 
+  // Previous/Next in the workspace walk the same filtered, sorted order the
+  // table is showing — across page boundaries, not just within one page.
+  const openIndex = openId === null ? -1 : filtered.findIndex((r) => r.id === openId);
+  const goTo = (i: number) => {
+    if (i < 0 || i >= filtered.length) return;
+    setOpenId(filtered[i].id);
+  };
+
   function toggleSort(key: SortKey) {
     if (sort === key) setAsc((a) => !a);
     else {
@@ -135,36 +145,6 @@ export default function InvoicesPage({
       setAsc(key === "vendor_name");   // names read A–Z, figures high-first
     }
   }
-
-  const SortHead = ({
-    k,
-    label,
-    align = "left",
-    className = "",
-  }: {
-    k: SortKey;
-    label: string;
-    align?: "left" | "right";
-    className?: string;
-  }) => (
-    <th
-      scope="col"
-      className={`t-caption border-b border-line px-3 py-2 ${
-        align === "right" ? "text-right" : "text-left"
-      } ${className}`}
-    >
-      <button
-        onClick={() => toggleSort(k)}
-        aria-label={`Sort by ${label}`}
-        className={`inline-flex items-center gap-1 transition-colors hover:text-secondary ${
-          align === "right" ? "flex-row-reverse" : ""
-        }`}
-      >
-        {label}
-        <span className={sort === k ? "text-accent" : "opacity-0"}>{asc ? "↑" : "↓"}</span>
-      </button>
-    </th>
-  );
 
   return (
     <>
@@ -202,15 +182,20 @@ export default function InvoicesPage({
             onChange={(e) => setQuery(e.currentTarget.value)}
             aria-label="Search invoices"
           />
+          {/* Redundant with the sortable column headers, and deliberately
+              so: the headers are a pointer affordance, this works on a narrow
+              screen where the table is scrolled horizontally and the header
+              for the column you want is off-screen. */}
           <Select
+            className="ml-auto"
             value={sort}
             onChange={(e) => setSort(e.currentTarget.value as SortKey)}
-            aria-label="Sort by"
+            aria-label="Sort invoices by"
           >
-            <option value="created_at">Newest first</option>
-            <option value="total">Amount</option>
-            <option value="vendor_name">Vendor</option>
-            <option value="status">Status</option>
+            <option value="created_at">Sort: newest</option>
+            <option value="total">Sort: amount</option>
+            <option value="vendor_name">Sort: vendor</option>
+            <option value="status">Sort: status</option>
           </Select>
         </div>
 
@@ -244,108 +229,150 @@ export default function InvoicesPage({
             />
           ) : (
             <>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[840px] border-collapse">
-                  <thead>
-                    <tr>
-                      <th
-                        scope="col"
-                        className="t-caption w-12 border-b border-line px-3 py-2 text-left"
-                      >
-                        ID
-                      </th>
-                      <th scope="col" className="t-caption border-b border-line px-3 py-2 text-left">
-                        Invoice
-                      </th>
-                      <SortHead k="vendor_name" label="Vendor" />
-                      <SortHead k="total" label="Amount" align="right" />
-                      <th scope="col" className="t-caption border-b border-line px-3 py-2 text-left">
-                        PO
-                      </th>
-                      <SortHead k="status" label="Status" />
-                      <SortHead k="created_at" label="Processed" />
-                    </tr>
-                  </thead>
-                  <tbody className="divide-line">
-                    {visible.map((r) => (
-                      <tr
-                        key={r.id}
-                        tabIndex={0}
-                        onClick={() => setOpenId(r.id)}
-                        onKeyDown={(e) => e.key === "Enter" && setOpenId(r.id)}
-                        className="group cursor-pointer transition-colors hover:bg-hover focus:bg-hover focus:outline-none"
-                      >
-                        <td className="tnum px-3 py-2 text-[11.5px] text-faint">{r.id}</td>
-                        <td className="px-3 py-2">
-                          <div className="max-w-[260px] truncate text-[12.5px] font-medium">
-                            {r.filename}
-                          </div>
-                          {r.invoice_number && (
-                            <div className="tnum t-meta text-[11px]">{r.invoice_number}</div>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-[12.5px] text-muted">
-                          <span className="block max-w-[170px] truncate">
-                            {r.vendor_name || "—"}
-                          </span>
-                        </td>
-                        <td className="tnum px-3 py-2 text-right text-[12.5px] font-semibold whitespace-nowrap">
-                          {/* Falls back to USD, matching the extractor's own
-                              default -- a run with no stored audit trail must
-                              not lose its currency SYMBOL, just its precision
-                              about which currency it actually was. */}
-                          {amount(r.total, r.audit?.invoice?.currency || "USD")}
-                        </td>
-                        <td className="tnum px-3 py-2 text-[12px] text-muted">
-                          {r.po_number || "—"}
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center gap-1.5">
-                            <StatusBadge status={r.status} />
-                            {r.human_decision && (
-                              <Tooltip
-                                label={`${String(r.final_decision || "")
-                                  .replace(/_/g, " ")
-                                  .toLowerCase()} by ${r.reviewed_by || "a reviewer"}`}
-                              >
-                                <Badge tone="neutral" icon={<IconUser size={9} />}>
-                                  human
-                                </Badge>
-                              </Tooltip>
-                            )}
-                          </div>
-                        </td>
-                        <td className="t-meta px-3 py-2 text-[11.5px] whitespace-nowrap">
-                          {when(r.created_at)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <DataTable minWidth={880}>
+                <thead>
+                  <tr>
+                    <TH className="w-[52px]">Run</TH>
+                    <SortTH
+                      label="Vendor"
+                      active={sort === "vendor_name"}
+                      ascending={asc}
+                      onSort={() => toggleSort("vendor_name")}
+                    />
+                    <TH>Invoice</TH>
+                    <SortTH
+                      label="Amount"
+                      align="right"
+                      active={sort === "total"}
+                      ascending={asc}
+                      onSort={() => toggleSort("total")}
+                    />
+                    <TH>Purchase order</TH>
+                    <SortTH
+                      label="Status"
+                      active={sort === "status"}
+                      ascending={asc}
+                      onSort={() => toggleSort("status")}
+                    />
+                    <SortTH
+                      label="Processed"
+                      align="right"
+                      active={sort === "created_at"}
+                      ascending={asc}
+                      onSort={() => toggleSort("created_at")}
+                    />
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((r) => (
+                    <tr
+                      key={r.id}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`Open ${r.invoice_number || r.filename}`}
+                      onClick={() => setOpenId(r.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setOpenId(r.id);
+                        }
+                      }}
+                      className="interactive"
+                    >
+                      <TD className="tnum text-[11.5px] text-faint">{r.id}</TD>
 
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-3 py-2">
+                      {/* Vendor leads. An AP clerk looks for "who is billing
+                          me", then "which invoice" — the upload filename is an
+                          artefact of transport and belongs underneath, not in
+                          the identity column where it was before. */}
+                      <TD>
+                        <div className="max-w-[190px] truncate text-[12.5px] font-medium">
+                          {r.vendor_name || "Unknown vendor"}
+                        </div>
+                        <div
+                          className="t-meta max-w-[190px] truncate text-[11px]"
+                          title={r.filename}
+                        >
+                          {r.filename}
+                        </div>
+                      </TD>
+
+                      <TD className="tnum text-[12.5px]">
+                        {r.invoice_number || <span className="text-faint">—</span>}
+                      </TD>
+
+                      <TD align="right" className="text-[12.5px] font-semibold">
+                        {/* Falls back to USD, matching the extractor's own
+                            default -- a run with no stored audit trail must
+                            not lose its currency SYMBOL, just its precision
+                            about which currency it actually was. */}
+                        {amount(r.total, r.audit?.invoice?.currency || "USD")}
+                      </TD>
+
+                      <TD className="tnum text-[12px] text-muted">
+                        {r.po_number || <span className="text-faint">—</span>}
+                      </TD>
+
+                      <TD>
+                        <div className="flex items-center gap-1.5">
+                          <StatusBadge status={r.status} />
+                          {r.human_decision && (
+                            <Tooltip
+                              label={`${String(r.final_decision || "")
+                                .replace(/_/g, " ")
+                                .toLowerCase()} by ${r.reviewed_by || "a reviewer"}`}
+                            >
+                              <Badge tone="neutral" icon={<IconUser size={9} />}>
+                                human
+                              </Badge>
+                            </Tooltip>
+                          )}
+                        </div>
+                      </TD>
+
+                      <TD align="right">
+                        {/* The full timestamp is the tooltip. A register column
+                            showing "21/08/2026, 00:42:23" on every row spends
+                            its width on a year and a seconds field nobody is
+                            scanning for. */}
+                        <Tooltip label={when(r.created_at)} side="top">
+                          <span className="tnum t-meta text-[11.5px]">
+                            {whenCompact(r.created_at)}
+                          </span>
+                        </Tooltip>
+                      </TD>
+                    </tr>
+                  ))}
+                </tbody>
+              </DataTable>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-sunken px-4 py-2.5">
                 <p className="t-meta text-[11.5px]">
-                  <span className="tnum font-medium text-secondary">
+                  Showing{" "}
+                  <span className="tnum font-semibold text-secondary">
                     {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, filtered.length)}
                   </span>{" "}
-                  of <span className="tnum font-medium text-secondary">{filtered.length}</span>
+                  of <span className="tnum font-semibold text-secondary">{filtered.length}</span>
+                  {filtered.length !== rows.length && (
+                    <span className="text-faint"> (filtered from {rows.length})</span>
+                  )}
                 </p>
                 {pages > 1 && (
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1.5">
                     <Button
-                      variant="ghost"
+                      variant="secondary"
                       size="xs"
                       disabled={page === 0}
                       onClick={() => setPage((p) => p - 1)}
                       aria-label="Previous page"
                       icon={<IconChevronLeft size={14} />}
                     />
-                    <span className="tnum text-[11.5px] text-muted">
-                      {page + 1} / {pages}
+                    <span className="tnum px-1 text-[11.5px] text-muted">
+                      Page <span className="font-semibold text-secondary">{page + 1}</span> of{" "}
+                      {pages}
                     </span>
                     <Button
-                      variant="ghost"
+                      variant="secondary"
                       size="xs"
                       disabled={page >= pages - 1}
                       onClick={() => setPage((p) => p + 1)}
@@ -360,42 +387,39 @@ export default function InvoicesPage({
         </Panel>
       </PageBody>
 
-      <Modal
-        open={openId !== null}
-        onClose={() => setOpenId(null)}
-        title={detail?.filename ?? "Invoice"}
-        description={
-          detail
-            ? `Run #${detail.id} · ${detail.vendor_name || "unknown vendor"} · ${when(detail.created_at)}`
-            : undefined
-        }
-      >
-        {detailError ? (
-          <ErrorState description={detailError} />
-        ) : !detail ? (
-          <SkeletonRows rows={7} cols={3} />
-        ) : (
-          <div className="flex flex-col gap-4">
-            <VerdictHeader
-              status={detail.status}
-              filename={detail.filename}
-              runId={detail.id}
-              vendor={detail.vendor_name}
-              invoiceNumber={detail.invoice_number}
-              total={detail.total}
-              currency={detail.audit?.invoice?.currency}
-              compact
-            />
-            <RunDetail
-              run={detail}
-              onReviewed={() => {
-                runs.refresh();
-                setOpenId(null);
-              }}
-            />
-          </div>
-        )}
-      </Modal>
+      {openId !== null && detailError ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas p-6">
+          <Panel className="w-full max-w-sm">
+            <ErrorState description={detailError} onRetry={() => setOpenId(openId)} />
+            <div className="mt-2 flex justify-center">
+              <Button size="sm" onClick={() => setOpenId(null)}>
+                Back to invoices
+              </Button>
+            </div>
+          </Panel>
+        </div>
+      ) : openId !== null && !detail ? (
+        <div className="fixed inset-0 z-50 bg-canvas p-6">
+          <SkeletonRows rows={9} cols={4} />
+        </div>
+      ) : (
+        <ReviewWorkspace
+          // `detail` deliberately is NOT cleared the instant openId resets to
+          // null (see the fetch effect above) -- it would otherwise blank the
+          // workspace for a frame on close. Gating on openId here, rather than
+          // on `detail` alone, is what actually closes the overlay: passing
+          // stale `detail` through while openId is null would keep the
+          // full-screen overlay mounted and block the rest of the app.
+          run={openId !== null ? detail : null}
+          onClose={() => setOpenId(null)}
+          onReviewed={() => {
+            runs.refresh();
+            setOpenId(null);
+          }}
+          onPrev={openIndex > 0 ? () => goTo(openIndex - 1) : undefined}
+          onNext={openIndex >= 0 && openIndex < filtered.length - 1 ? () => goTo(openIndex + 1) : undefined}
+        />
+      )}
     </>
   );
 }

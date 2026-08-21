@@ -1,67 +1,162 @@
 "use client";
 
 /**
- * Application shell: a 216px rail on desktop, a slide-over drawer below lg.
+ * Application shell: a 236px rail on desktop, a slide-over drawer below lg.
  *
  * Navigation is client-side state rather than routes. The production build is a
  * static export served by FastAPI's StaticFiles mount, so real paths would need
  * the server to resolve deep links — a backend change for no user-visible gain
- * across four sections. Recorded here so it does not read as an oversight.
+ * across five sections. Recorded here so it does not read as an oversight.
  */
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import { Button, Tooltip } from "@/components/ui";
 import {
+  IconAnalytics,
   IconInvoice,
   IconLedger,
   IconMenu,
   IconMoon,
   IconOverview,
+  IconShield,
   IconSignOut,
   IconSun,
   IconUpload,
   IconX,
 } from "@/components/ui/icons";
 
-export type Section = "overview" | "process" | "invoices" | "reference";
+export type Section = "overview" | "analytics" | "process" | "invoices" | "reference";
 
-/** `exceptionsOnly` lets a caller (Overview's exception card) send the reviewer
- *  straight to the pre-filtered queue instead of the unfiltered register. */
-export type Navigate = (section: Section, opts?: { exceptionsOnly?: boolean }) => void;
+/**
+ * Which sidebar ROW is lit.
+ *
+ * Five sections but seven nav rows: Invoices and Review queue both open
+ * "invoices", Purchase orders and Approved vendors both open "reference". The
+ * section alone therefore cannot say which row the user is on, and lighting
+ * both rows of a pair — what this did before — reads as a rendering bug rather
+ * than as the deliberate ambiguity it was.
+ *
+ * The id is derived in page.tsx from the navigation options that were already
+ * being passed (`exceptionsOnly`, `referenceTab`), so no call site had to
+ * learn a new argument.
+ */
+export type NavId =
+  | "overview"
+  | "analytics"
+  | "process"
+  | "invoices"
+  | "review-queue"
+  | "purchase-orders"
+  | "approved-vendors";
+
+/** `exceptionsOnly` lets a caller (Overview's exception card, or the "Review
+ *  queue" nav item) send the reviewer straight to the pre-filtered queue
+ *  instead of the unfiltered register — the same filter InvoicesPage already
+ *  applies for the EXCEPTIONS segment, not a second implementation of it.
+ *  `referenceTab` does the same for Reference's two nav entries. */
+export type Navigate = (
+  section: Section,
+  opts?: { exceptionsOnly?: boolean; referenceTab?: "orders" | "vendors" }
+) => void;
+
+/** The row a section lands on when a caller names no finer destination. */
+export function navIdFor(
+  section: Section,
+  opts?: { exceptionsOnly?: boolean; referenceTab?: "orders" | "vendors" }
+): NavId {
+  if (section === "invoices") return opts?.exceptionsOnly ? "review-queue" : "invoices";
+  if (section === "reference")
+    return opts?.referenceTab === "vendors" ? "approved-vendors" : "purchase-orders";
+  return section;
+}
 
 const GROUPS: {
   label: string;
   items: {
+    id: NavId;
     key: Section;
     label: string;
+    /** One line under the label on the wide rail — what the section is for,
+     *  in the words an AP clerk would use. */
+    hint: string;
     icon: (p: { size?: number }) => React.ReactElement;
     scope?: string;
+    exceptionsOnly?: boolean;
+    referenceTab?: "orders" | "vendors";
+    badge?: boolean;
   }[];
 }[] = [
   {
-    label: "Monitor",
+    label: "Operations",
     items: [
-      { key: "overview", label: "Overview", icon: IconOverview },
-      { key: "invoices", label: "Invoices", icon: IconInvoice },
+      { id: "overview", key: "overview", label: "Overview", hint: "Performance", icon: IconOverview },
+      {
+        id: "process",
+        key: "process",
+        label: "Process invoice",
+        hint: "Upload and run",
+        icon: IconUpload,
+        scope: "invoice:process",
+      },
+      { id: "invoices", key: "invoices", label: "Invoices", hint: "Full register", icon: IconInvoice },
+      {
+        id: "review-queue",
+        key: "invoices",
+        label: "Review queue",
+        hint: "Waiting on you",
+        icon: IconShield,
+        exceptionsOnly: true,
+        badge: true,
+      },
     ],
   },
   {
-    label: "Operate",
+    label: "Reporting",
     items: [
-      { key: "process", label: "Process invoice", icon: IconUpload, scope: "invoice:process" },
-      { key: "reference", label: "Purchase orders", icon: IconLedger },
+      {
+        id: "analytics",
+        key: "analytics",
+        label: "Analytics",
+        hint: "KPIs and trends",
+        icon: IconAnalytics,
+      },
+    ],
+  },
+  {
+    label: "Reference",
+    items: [
+      {
+        id: "purchase-orders",
+        key: "reference",
+        label: "Purchase orders",
+        hint: "Budgets and balances",
+        icon: IconLedger,
+        referenceTab: "orders",
+      },
+      {
+        id: "approved-vendors",
+        key: "reference",
+        label: "Approved vendors",
+        hint: "Who may be paid",
+        icon: IconShield,
+        referenceTab: "vendors",
+      },
     ],
   },
 ];
 
 export default function AppShell({
   section,
+  activeId,
   onNavigate,
   badge,
   children,
 }: {
   section: Section;
+  /** Which nav ROW is current. See NavId — the section alone is ambiguous for
+   *  the two pairs of rows that share a destination. */
+  activeId: NavId;
   onNavigate: Navigate;
   badge?: number;
   children: React.ReactNode;
@@ -79,52 +174,71 @@ export default function AppShell({
   }, [drawer]);
 
   const nav = (
-    <nav className="flex flex-col gap-5" aria-label="Sections">
+    <nav className="flex flex-col gap-6" aria-label="Sections">
       {GROUPS.map((group) => {
         const items = group.items.filter((i) => !i.scope || can(i.scope));
         if (!items.length) return null;
 
         return (
           <div key={group.label}>
-            <p className="px-2 pb-1.5 text-[10.5px] font-semibold tracking-[0.06em] text-rail-faint uppercase">
+            <p className="px-2.5 pb-2 text-[10px] font-semibold tracking-[0.08em] text-rail-faint uppercase">
               {group.label}
             </p>
-            <div className="flex flex-col gap-px">
+            <div className="flex flex-col gap-0.5">
               {items.map((item) => {
-                const active = item.key === section;
+                const active = item.id === activeId;
                 const Icon = item.icon;
                 return (
                   <button
-                    key={item.key}
-                    onClick={() => onNavigate(item.key)}
+                    key={item.id}
+                    onClick={() =>
+                      onNavigate(item.key, {
+                        exceptionsOnly: item.exceptionsOnly,
+                        referenceTab: item.referenceTab,
+                      })
+                    }
                     aria-current={active ? "page" : undefined}
-                    // Active outranks hover on purpose: hover only lifts the
-                    // text, so the filled row always means "you are here".
+                    // The active row is filled AND rule-marked; hover only
+                    // tints. Two different treatments, so "where I am" never
+                    // has to be told apart from "where the pointer is".
                     className={`group relative flex items-center gap-2.5 rounded-[var(--radius-md)]
-                      py-1.5 pr-2 pl-2.5 text-[12.5px] transition-colors ${
+                      py-[7px] pr-2 pl-3 text-left transition-colors ${
                         active
-                          ? "bg-rail-active font-medium text-rail-fg"
-                          : "text-rail-muted hover:text-rail-fg"
+                          ? "bg-rail-active text-rail-fg"
+                          : "text-rail-muted hover:bg-rail-hover hover:text-rail-fg"
                       }`}
                   >
-                    {/* A 2px rule marks the active item instead of a filled
-                        block — legible at a glance, quiet at rest. */}
                     <span
                       aria-hidden
-                      className={`absolute top-1/2 left-0 h-4 w-[2.5px] -translate-y-1/2 rounded-full transition-opacity ${
-                        active ? "bg-rail-accent opacity-100" : "opacity-0"
-                      }`}
+                      className={`absolute top-1/2 left-0 h-[18px] w-[2.5px] -translate-y-1/2
+                        rounded-r-full bg-rail-accent transition-opacity ${
+                          active ? "opacity-100" : "opacity-0"
+                        }`}
                     />
                     <span
-                      className={active ? "text-rail-accent" : "text-rail-faint group-hover:text-rail-muted"}
+                      className={`shrink-0 transition-colors ${
+                        active ? "text-rail-accent" : "text-rail-faint group-hover:text-rail-muted"
+                      }`}
                     >
                       <Icon size={15} />
                     </span>
-                    <span className="flex-1 text-left">{item.label}</span>
-                    {item.key === "invoices" && !!badge && (
+
+                    <span className="min-w-0 flex-1 leading-tight">
+                      <span
+                        className={`block truncate text-[12.5px] ${active ? "font-semibold" : "font-medium"}`}
+                      >
+                        {item.label}
+                      </span>
+                      <span className="block truncate text-[10.5px] text-rail-faint">
+                        {item.hint}
+                      </span>
+                    </span>
+
+                    {item.badge && !!badge && (
                       <span
                         title={`${badge} awaiting review`}
-                        className="inline-flex items-center rounded-[var(--radius-sm)] bg-warn-vivid/15 px-1.5 py-0.5 text-[11px] font-semibold text-warn-vivid tnum"
+                        className="tnum inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center
+                          rounded-full bg-warn-vivid px-1 text-[10.5px] font-semibold text-white"
                       >
                         {badge}
                       </span>
@@ -145,22 +259,27 @@ export default function AppShell({
   const Brand = ({ dark }: { dark: boolean }) => (
     <div className="flex items-center gap-2.5">
       <span
-        className={`grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-md)] text-[11px] font-bold ${
-          dark ? "bg-rail-accent text-rail-accent-fg" : "bg-accent text-accent-fg"
-        }`}
+        className={`grid h-8 w-8 shrink-0 place-items-center rounded-[var(--radius-md)]
+          text-[11px] font-bold tracking-[-0.02em] shadow-[var(--shadow-xs)] ${
+            dark ? "bg-rail-accent text-rail-accent-fg" : "bg-accent text-accent-fg"
+          }`}
       >
         AP
       </span>
       <div className="min-w-0 leading-tight">
         <div
-          className={`truncate text-[12.5px] font-semibold tracking-[-0.01em] ${
+          className={`truncate text-[13px] font-semibold tracking-[-0.015em] ${
             dark ? "text-rail-fg" : "text-fg"
           }`}
         >
           Invoice Processing
         </div>
-        <div className={`truncate text-[11px] ${dark ? "text-rail-muted" : "t-meta"}`}>
-          Accounts payable
+        <div
+          className={`truncate text-[10.5px] tracking-[0.01em] ${
+            dark ? "text-rail-faint" : "text-faint"
+          }`}
+        >
+          Accounts payable automation
         </div>
       </div>
     </div>
@@ -176,42 +295,42 @@ export default function AppShell({
           : "Read only";
 
   const account = user && (
-    <div className="flex items-center gap-2 border-t border-rail-line px-3 py-2.5">
-      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-rail-hover text-[10px] font-semibold text-rail-muted uppercase">
+    <div className="flex items-center gap-2.5 border-t border-rail-line px-3 py-3">
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-rail-hover text-[10px] font-semibold text-rail-fg uppercase">
         {user.username.slice(0, 2)}
       </span>
       <div className="min-w-0 flex-1 leading-tight">
-        <div className="truncate text-[12px] font-medium text-rail-fg">{user.username}</div>
+        <div className="truncate text-[12px] font-semibold text-rail-fg">{user.username}</div>
         <div className="truncate text-[10.5px] text-rail-faint">{roleOf()}</div>
       </div>
       <Tooltip label={theme === "dark" ? "Switch to light" : "Switch to dark"}>
         <button
           onClick={toggleTheme}
           aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-          className="grid h-6 w-6 shrink-0 place-items-center rounded-[var(--radius-sm)] text-rail-faint transition-colors hover:bg-rail-hover hover:text-rail-fg"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-sm)] text-rail-muted transition-colors hover:bg-rail-hover hover:text-rail-fg"
         >
-          {theme === "dark" ? <IconSun size={13} /> : <IconMoon size={13} />}
+          {theme === "dark" ? <IconSun size={14} /> : <IconMoon size={14} />}
         </button>
       </Tooltip>
       <Tooltip label="Sign out">
         <button
           onClick={() => signOut()}
           aria-label="Sign out"
-          className="grid h-6 w-6 shrink-0 place-items-center rounded-[var(--radius-sm)] text-rail-faint transition-colors hover:bg-rail-hover hover:text-rail-fg"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-sm)] text-rail-muted transition-colors hover:bg-rail-hover hover:text-rail-fg"
         >
-          <IconSignOut size={13} />
+          <IconSignOut size={14} />
         </button>
       </Tooltip>
     </div>
   );
 
   return (
-    <div className="min-h-screen lg:grid lg:grid-cols-[216px_minmax(0,1fr)]">
+    <div className="min-h-screen lg:grid lg:grid-cols-[236px_minmax(0,1fr)]">
       <aside className="sticky top-0 hidden h-screen flex-col border-r border-rail-line bg-rail lg:flex">
-        <div className="px-3 py-3.5">
+        <div className="border-b border-rail-line px-3.5 py-3.5">
           <Brand dark />
         </div>
-        <div className="flex-1 overflow-y-auto px-2 py-2">{nav}</div>
+        <div className="flex-1 overflow-y-auto px-2.5 py-3.5">{nav}</div>
         {account}
       </aside>
 
@@ -238,9 +357,9 @@ export default function AppShell({
             role="dialog"
             aria-modal="true"
             aria-label="Navigation"
-            className="slide-in absolute inset-y-0 left-0 flex w-60 flex-col border-r border-rail-line bg-rail shadow-[var(--shadow-lg)]"
+            className="slide-in absolute inset-y-0 left-0 flex w-[264px] flex-col border-r border-rail-line bg-rail shadow-[var(--shadow-lg)]"
           >
-            <div className="flex items-center justify-between gap-2 px-3 py-3.5">
+            <div className="flex items-center justify-between gap-2 border-b border-rail-line px-3.5 py-3.5">
               <Brand dark />
               <button
                 onClick={() => setDrawer(false)}
@@ -250,7 +369,7 @@ export default function AppShell({
                 <IconX size={14} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto px-2 py-2">{nav}</div>
+            <div className="flex-1 overflow-y-auto px-2.5 py-3.5">{nav}</div>
             {account}
           </div>
         </div>
@@ -283,8 +402,8 @@ export function PageHeader({
   actions?: React.ReactNode;
 }) {
   return (
-    <div className="sticky top-0 z-20 mb-4 border-b border-line bg-canvas/85 px-4 py-3 backdrop-blur-md sm:px-6">
-      <div className="mx-auto flex max-w-[1320px] flex-wrap items-center justify-between gap-3">
+    <div className="sticky top-0 z-20 mb-5 border-b border-line bg-canvas/85 px-4 py-3.5 backdrop-blur-md sm:px-7">
+      <div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div className="min-w-0">
           <h1 className="t-page">{title}</h1>
           {description && <p className="t-meta mt-0.5">{description}</p>}
@@ -295,11 +414,17 @@ export function PageHeader({
   );
 }
 
-/** Consistent page width and vertical rhythm for every section. */
+/**
+ * Consistent page width and vertical rhythm for every section.
+ *
+ * The gap is the product's one vertical spacing decision: every page stacks
+ * panels at the same interval, which is most of what makes four separately
+ * built screens read as one application.
+ */
 export function PageBody({ children }: { children: React.ReactNode }) {
   return (
-    <div className="px-4 pb-8 sm:px-6">
-      <div className="mx-auto flex max-w-[1320px] flex-col gap-4">{children}</div>
+    <div className="px-4 pb-10 sm:px-7">
+      <div className="mx-auto flex max-w-[1400px] flex-col gap-5">{children}</div>
     </div>
   );
 }

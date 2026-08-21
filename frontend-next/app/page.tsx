@@ -17,7 +17,13 @@ import { useAuth } from "@/lib/auth";
 import { useReference, useRuns } from "@/lib/useData";
 import { totals } from "@/lib/metrics";
 import LoginGate from "@/components/LoginGate";
-import AppShell, { type Navigate, type Section } from "@/components/layout/AppShell";
+import AppShell, {
+  navIdFor,
+  type NavId,
+  type Navigate,
+  type Section,
+} from "@/components/layout/AppShell";
+import AnalyticsPage from "@/components/pages/AnalyticsPage";
 import OverviewPage from "@/components/pages/OverviewPage";
 import ProcessPage from "@/components/pages/ProcessPage";
 import InvoicesPage from "@/components/pages/InvoicesPage";
@@ -28,14 +34,24 @@ export default function Home() {
   const { user, ready } = useAuth();
   const [section, setSection] = useState<Section>("overview");
   // Set only by a navigation that promised a filtered view (Overview's "Open
-  // review queue"); consumed once by InvoicesPage's own initial state, so it
-  // does not fight the reviewer's own filter choice on the way back.
+  // review queue", or the sidebar's own "Review queue" item); consumed once
+  // by InvoicesPage's own initial state, so it does not fight the reviewer's
+  // own filter choice on the way back.
   const [invoicesFilter, setInvoicesFilter] = useState<"EXCEPTIONS" | undefined>(undefined);
+  // Same idea for Reference's two nav entries (Purchase orders / Approved
+  // vendors), which both open the one page with a different tab preselected.
+  const [referenceTab, setReferenceTab] = useState<"orders" | "vendors" | undefined>(undefined);
+  // Which sidebar ROW is lit. Seven rows share five sections, so the section
+  // alone cannot say — see NavId in AppShell. Derived from the same options
+  // the caller already passes, so navigate()'s signature is unchanged.
+  const [navId, setNavId] = useState<NavId>("overview");
   // Bumped when a run finishes or a review lands, so every view refetches.
   const [reloadKey, setReloadKey] = useState(0);
 
   const navigate: Navigate = (s, opts) => {
     setInvoicesFilter(opts?.exceptionsOnly ? "EXCEPTIONS" : undefined);
+    setReferenceTab(opts?.referenceTab);
+    setNavId(navIdFor(s, opts));
     setSection(s);
   };
 
@@ -61,13 +77,19 @@ export default function Home() {
   const refresh = () => setReloadKey((k) => k + 1);
 
   return (
-    <AppShell section={section} onNavigate={navigate} badge={openExceptions}>
+    <AppShell section={section} activeId={navId} onNavigate={navigate} badge={openExceptions}>
       {section === "overview" && (
         <OverviewPage runs={runs} reference={reference} onNavigate={navigate} />
       )}
+      {/* Analytics fetches its own data: the figures are computed by the
+          server per reporting window, so there is nothing here to hand down
+          and nothing that would go stale if there were. */}
+      {section === "analytics" && <AnalyticsPage />}
       {section === "process" && <ProcessPage runs={runs} onRan={refresh} />}
       {section === "invoices" && <InvoicesPage runs={runs} initialFilter={invoicesFilter} />}
-      {section === "reference" && <ReferencePage reference={reference} runs={runs} />}
+      {section === "reference" && (
+        <ReferencePage reference={reference} runs={runs} initialTab={referenceTab} />
+      )}
     </AppShell>
   );
 }

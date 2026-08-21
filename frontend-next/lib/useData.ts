@@ -79,3 +79,25 @@ export const useRuns = (reloadKey = 0, enabled = true) =>
 
 export const useReference = (enabled = true) =>
   useResource<Reference>("/api/reference", enabled, 0);
+
+/* ------------------------------------------------------------- analytics
+ * Phase H. One hook per endpoint, all sharing `useResource` above, so an
+ * analytics panel reports loading and failure exactly the way every other
+ * screen already does.
+ *
+ * The range is part of the PATH rather than a separate argument, which means
+ * changing it changes `path` and `useResource`'s effect re-fires on its own --
+ * no extra dependency to remember and no stale window left on screen under a
+ * new label.
+ */
+export type RangeKey = "today" | "7d" | "30d" | "month" | "all";
+
+const analyticsPath = (name: string, range: RangeKey) =>
+  `/api/analytics/${name}?range=${encodeURIComponent(range)}`;
+
+export const useAnalytics = <T,>(
+  name: string,
+  range: RangeKey,
+  enabled = true,
+  reloadKey = 0
+) => useResource<T>(analyticsPath(name, range), enabled, reloadKey);

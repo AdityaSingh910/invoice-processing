@@ -184,3 +184,14 @@ export const IconEmpty = (p: IconProps) => (
     <path d="M5.5 8h5" />
   </Svg>
 );
+
+/** Analytics: three bars of different heights. Distinct at 15px from
+ *  IconOverview, which is the one it sits next to in the rail. */
+export const IconAnalytics = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2 13.5h12" />
+    <path d="M4.5 11V8" />
+    <path d="M8 11V4.5" />
+    <path d="M11.5 11V6.5" />
+  </Svg>
+);

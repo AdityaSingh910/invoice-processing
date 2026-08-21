@@ -18,29 +18,31 @@
 
 :root {
   /* --- canvas → elevated surfaces: warm, not cool-gray --------------------- */
-  --canvas: #f8f8f6;
+  --canvas: #faf9f7;
   --surface: #ffffff;
   --raised: #ffffff;
-  --sunken: #f3f3f1;
-  --hover: #eeeeec;
+  --sunken: #f4f3f0;
+  --hover: #f6f5f2;
+  --active: #eeede9;
 
   /* --- lines: two weights, both quiet ------------------------------------ */
-  --line: #e7e6e2;
-  --line-strong: #d6d5cf;
+  --line: #e8e7e2;
+  --line-soft: #f0efeb;
+  --line-strong: #d8d6d0;
 
   /* --- text: four steps -------------------------------------------------- */
-  --fg: #18181b;
-  --fg-secondary: #52525b;
-  --fg-muted: #71717a;
-  --fg-faint: #98989f;
+  --fg: #16161a;
+  --fg-secondary: #4a4a53;
+  --fg-muted: #6e6e78;
+  --fg-faint: #9b9ba3;
 
   /* --- one interactive accent -------------------------------------------- */
   --accent: #1d5fd8;
-  --accent-hover: #164ab3;
+  --accent-hover: #1850b8;
   --accent-fg: #ffffff;
-  --accent-quiet: #eaf1fd;
-  --accent-line: #bcd4f7;
-  --ring: rgba(29, 95, 216, 0.35);
+  --accent-quiet: #eef3fd;
+  --accent-line: #c3d8f8;
+  --ring: rgba(29, 95, 216, 0.28);
 
   /* --- the sidebar rail: a distinct light surface, separated from the canvas
      by a border rather than a colour shift -- the "clean, lighter sidebar"
@@ -56,25 +58,30 @@
   --rail-accent-fg: #ffffff;
 
   /* --- semantic: meaning only, never decoration -------------------------- */
-  --ok: #067a4d;
-  --ok-quiet: #e9f8f0;
-  --ok-line: #b4e6cd;
-  --ok-vivid: #10b981;
+  --ok: #0a7a4e;
+  --ok-quiet: #eef8f2;
+  --ok-line: #bfe5d2;
+  --ok-vivid: #12a566;
 
-  --warn: #a35f06;
-  --warn-quiet: #fdf5e7;
-  --warn-line: #f5dcae;
-  --warn-vivid: #f59e0b;
+  --warn: #9a5b06;
+  --warn-quiet: #fdf6e9;
+  --warn-line: #f2ddb2;
+  --warn-vivid: #e39209;
 
-  --bad: #bb2634;
-  --bad-quiet: #fdecee;
-  --bad-line: #f7c8cd;
-  --bad-vivid: #ef4444;
+  --bad: #b32734;
+  --bad-quiet: #fdeef0;
+  --bad-line: #f5cbd0;
+  --bad-vivid: #e04452;
 
-  --shadow-xs: 0 1px 2px rgba(24, 24, 27, 0.04);
-  --shadow-sm: 0 1px 3px rgba(24, 24, 27, 0.06), 0 1px 2px rgba(24, 24, 27, 0.04);
-  --shadow-md: 0 8px 24px -8px rgba(24, 24, 27, 0.1), 0 2px 6px rgba(24, 24, 27, 0.04);
-  --shadow-lg: 0 24px 56px -16px rgba(24, 24, 27, 0.16), 0 6px 16px rgba(24, 24, 27, 0.06);
+  --shadow-xs: 0 1px 2px rgba(22, 22, 26, 0.05);
+  --shadow-sm: 0 1px 3px rgba(22, 22, 26, 0.07), 0 1px 2px rgba(22, 22, 26, 0.04);
+  --shadow-md: 0 10px 28px -10px rgba(22, 22, 26, 0.14), 0 2px 6px rgba(22, 22, 26, 0.05);
+  --shadow-lg: 0 28px 60px -18px rgba(22, 22, 26, 0.2), 0 6px 16px rgba(22, 22, 26, 0.07);
+
+  /* --- document viewer chrome — the invoice page itself always renders true
+     white/ink, independent of the app theme, because it is a record, not UI. */
+  --doc-paper: #ffffff;
+  --doc-ink: #22222a;
 }
 
 /* ===========================================================================
@@ -90,54 +97,64 @@
    one accent, three semantic colours, no glow.
    =========================================================================== */
 :root[data-theme="dark"] {
-  --canvas: #131311;
-  --surface: #1b1b18;
-  --raised: #202019;
-  --sunken: #0f0f0d;
-  --hover: #262620;
+  --canvas: #0c0c0b;
+  --surface: #141413;
+  --raised: #1a1a18;
+  --sunken: #0a0a09;
+  --hover: #1c1c1a;
+  --active: #232320;
 
-  --line: #2c2c26;
-  --line-strong: #3a3a32;
+  --line: #262624;
+  --line-soft: #1e1e1c;
+  --line-strong: #37372f;
 
-  --fg: #f2f1ec;
-  --fg-secondary: #b8b6ad;
-  --fg-muted: #8f8d84;
-  --fg-faint: #64635b;
+  --fg: #f4f3ef;
+  --fg-secondary: #b7b5ad;
+  --fg-muted: #8b8981;
+  --fg-faint: #615f59;
 
-  --accent: #5b93ff;
-  --accent-hover: #7ba7ff;
-  --accent-fg: #0c1220;
-  --accent-quiet: #182642;
-  --accent-line: #2d4a80;
-  --ring: rgba(91, 147, 255, 0.4);
+  --accent: #5f95ff;
+  --accent-hover: #7fabff;
+  --accent-fg: #08101f;
+  --accent-quiet: #141f36;
+  --accent-line: #2a4374;
+  --ring: rgba(95, 149, 255, 0.32);
 
-  --rail-bg: #18180f;
-  --rail-hover: #232319;
-  --rail-active: #1e2c4a;
-  --rail-line: #2c2c26;
+  --rail-bg: #121211;
+  --rail-hover: #1e1e1c;
+  --rail-active: #1c2a46;
+  --rail-line: #242422;
   --rail-fg: #f2f1ec;
   --rail-muted: #8f8d84;
   --rail-faint: #5c5b52;
   --rail-accent: #7ba7ff;
   --rail-accent-fg: #0c1220;
 
-  --ok: #3ddc9a;
-  --ok-quiet: #10281f;
-  --ok-line: #1e4a37;
-  --ok-vivid: #10b981;
+  --ok: #41d494;
+  --ok-quiet: #0d2419;
+  --ok-line: #1c4531;
+  --ok-vivid: #26b877;
 
-  --warn: #fbbf4d;
-  --warn-quiet: #33260c;
-  --warn-line: #5c4318;
+  --warn: #f0b34c;
+  --warn-quiet: #2b2109;
+  --warn-line: #4e3c13;
+  --warn-vivid: #d99413;
 
-  --bad: #f88a8a;
-  --bad-quiet: #3a1618;
-  --bad-line: #602328;
+  --bad: #f38b8b;
+  --bad-quiet: #2f1416;
+  --bad-line: #552024;
+  --bad-vivid: #d64c4c;
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 8px 24px -8px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 24px 56px -16px rgba(0, 0, 0, 0.6), 0 6px 16px rgba(0, 0, 0, 0.4);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 10px 28px -10px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 28px 60px -18px rgba(0, 0, 0, 0.7), 0 6px 16px rgba(0, 0, 0, 0.45);
+
+  /* The document itself keeps its true white/ink even in dark mode -- it is
+     the source record, not app chrome, and darkening it would misrepresent
+     what the vendor actually sent. */
+  --doc-paper: #232320;
+  --doc-ink: #d9d7cf;
 }
 
 @theme inline {
@@ -146,8 +163,10 @@
   --color-raised: var(--raised);
   --color-sunken: var(--sunken);
   --color-hover: var(--hover);
+  --color-active: var(--active);
 
   --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
   --color-line-strong: var(--line-strong);
 
   --color-fg: var(--fg);
@@ -192,6 +211,9 @@
   --radius-sm: 5px;
   --radius-md: 7px;
   --radius-lg: 10px;
+
+  --color-doc-paper: var(--doc-paper);
+  --color-doc-ink: var(--doc-ink);
 }
 
 @layer base {
@@ -230,6 +252,15 @@
   th,
   input[type="search"] {
     font-variant-numeric: tabular-nums;
+  }
+
+  /* The OS-drawn dropdown arrow is the one piece of chrome on the page that
+     ignores this stylesheet. Stripped here; `Select` draws its own chevron in
+     a currentColor SVG, so it tracks the theme like every other icon. */
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: none;
   }
 
   :focus-visible {
@@ -341,6 +372,188 @@
   }
   .divide-line > * + * {
     border-top: 1px solid var(--line);
+  }
+
+  /* ------------------------------------------------------- allocation ledger
+     A summary line under a proportional allocation bar: Allocated / Invoice
+     total / Variance, in the words a reviewer scans first. Numbers only --
+     the bar above it already carries the visual proportion. */
+  .ledger-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 0;
+    border-top: 1px solid var(--line-soft);
+    font-size: 12.5px;
+  }
+  .ledger-row:first-child {
+    border-top: 0;
+  }
+  .ledger-row.total {
+    border-top: 1px solid var(--line-strong);
+    padding-top: 9px;
+    margin-top: 2px;
+    font-weight: 600;
+  }
+
+  /* -------------------------------------------------- confidence indicator
+     A neutral chip by default; amber only when the RULE ENGINE (never a
+     threshold re-derived here) flagged the field. */
+  .conf-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-family: var(--font-mono), ui-monospace, monospace;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+  .conf-chip .bar {
+    width: 26px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--line);
+    overflow: hidden;
+    flex: none;
+  }
+  .conf-chip .bar i {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: currentColor;
+  }
+  .conf-chip.low {
+    color: var(--warn);
+    font-weight: 600;
+  }
+
+  /* ------------------------------------------------------------ data table
+     One table style for the whole product, so the register, the PO ledger and
+     the three-way match cannot drift apart. Structure is hairlines plus a
+     hover lift -- no zebra striping, which at this density fights the tabular
+     figures for attention.
+
+     `.dt` is applied to the <table>; everything below is descendant styling so
+     a page writes plain <th>/<td> and still gets the product's table. */
+  table.dt {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  table.dt > thead > tr > th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+  table.dt > tbody > tr > td {
+    padding: 9px 12px;
+    border-top: 1px solid var(--line-soft);
+    vertical-align: middle;
+  }
+  table.dt > tbody > tr:first-child > td {
+    border-top: 0;
+  }
+  table.dt > tbody > tr {
+    transition: background-color 0.1s ease;
+  }
+  table.dt > tbody > tr.interactive {
+    cursor: pointer;
+  }
+  table.dt > tbody > tr.interactive:hover,
+  table.dt > tbody > tr.interactive:focus-visible {
+    background: var(--hover);
+    outline: none;
+  }
+  /* A 2px accent edge on the focused/hovered row, drawn on the first cell so
+     it does not shift the row's layout the way a real border would. */
+  table.dt > tbody > tr.interactive:focus-visible > td:first-child {
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  table.dt .num {
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono), ui-monospace, monospace;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  /* --------------------------------------------------------- ranked row bar
+     A magnitude bar drawn BEHIND a label rather than under it. Underneath, a
+     thin rule reads as an underline -- it made the ranked "why invoices stop"
+     list look like a column of hyperlinks. Behind, at low opacity, it reads as
+     what it is: a proportion. */
+  .rank-row {
+    position: relative;
+    isolation: isolate;
+  }
+  .rank-row > .rank-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: -1;
+    opacity: 0.13;
+    /* Faded at its trailing edge. A flat block ending on a hard vertical line
+       reads as a selection highlight that stops mid-row; a gradient reads as a
+       quantity running out, which is what it is. */
+    -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 40%, transparent 100%);
+    mask-image: linear-gradient(90deg, #000 0%, #000 40%, transparent 100%);
+    transition: width 0.4s ease-out;
+  }
+
+  /* -------------------------------------------------------- pipeline flow
+     A vertical timeline for the nine processing stages -- completed / running
+     / waiting / failed each get a distinct node treatment, matching the
+     Claude Design "live processing" screen. */
+  .flow-node {
+    width: 20px;
+    height: 20px;
+    border-radius: 999px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    border: 1.5px solid var(--line-strong);
+    background: var(--surface);
+    color: var(--fg-faint);
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 9.5px;
+    font-weight: 600;
+    position: relative;
+    z-index: 1;
+  }
+  .flow-line {
+    width: 1.5px;
+    flex: 1;
+    background: var(--line);
+    min-height: 10px;
+  }
+
+  /* ---------------------------------------------------------- document view
+     The invoice page itself renders true white/ink independent of the app
+     theme -- it is a source record, not app chrome. */
+  .doc-page {
+    background: var(--doc-paper);
+    color: var(--doc-ink);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow-md);
+  }
+  mark.doc-hl {
+    background: color-mix(in srgb, var(--warn-vivid) 30%, transparent);
+    outline: 1px solid var(--warn-line);
+    border-radius: 2px;
+    padding: 0 1px;
+    color: inherit;
+  }
+  mark.doc-hl.on {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    outline: 1.5px solid var(--accent);
   }
 }
 

@@ -14,7 +14,7 @@ import type {
   ReactNode,
   SelectHTMLAttributes,
 } from "react";
-import { IconAlert, IconEmpty, IconSearch } from "./icons";
+import { IconAlert, IconChevronDown, IconEmpty, IconSearch } from "./icons";
 
 /* ------------------------------------------------------------------ button */
 
@@ -55,10 +55,19 @@ export function Button({
       {...rest}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
+      // A genuinely disabled button is drawn as a flat neutral chip rather than
+      // as a faded copy of itself: a 40%-opacity primary still reads as a live
+      // blue call to action, which is exactly the control the user is being
+      // told they cannot press yet.
+      //
+      // A LOADING button keeps its own variant. It is not unavailable, it is
+      // working, and greying it out mid-request looks like the click failed.
       className={`inline-flex shrink-0 items-center justify-center font-medium whitespace-nowrap
         transition-[background-color,border-color,color,box-shadow,transform] duration-100
-        active:translate-y-px disabled:pointer-events-none disabled:opacity-40
-        ${VARIANT[variant]} ${SIZE[size]} ${className}`}
+        active:translate-y-px disabled:pointer-events-none
+        ${VARIANT[variant]} ${SIZE[size]}
+        ${disabled && !loading ? "!border-line !bg-sunken !text-faint !shadow-none" : ""}
+        ${loading ? "cursor-progress" : ""} ${className}`}
     >
       {loading ? <Spinner size={size === "md" ? 13 : 11} /> : icon}
       {children}
@@ -244,15 +253,29 @@ export function SearchInput({ className = "", ...rest }: InputHTMLAttributes<HTM
   );
 }
 
+/**
+ * A native <select> keeps the platform's keyboard behaviour and its option
+ * list — both of which a div-based menu has to reimplement badly — but the
+ * OS-drawn arrow is the one piece of chrome that ignores the design system.
+ * `appearance: none` (globals.css) strips it; this draws the replacement in
+ * currentColor, so it tracks light/dark like every other icon.
+ */
 export function Select({
   className = "",
   children,
   ...rest
 }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
-    <select {...rest} className={`${FIELD} h-8 cursor-pointer pr-7 pl-2.5 ${className}`}>
-      {children}
-    </select>
+    <div className={`relative inline-flex shrink-0 ${className}`}>
+      <select {...rest} className={`${FIELD} h-8 w-full cursor-pointer pr-7 pl-2.5`}>
+        {children}
+      </select>
+      <IconChevronDown
+        size={13}
+        aria-hidden
+        className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-faint"
+      />
+    </div>
   );
 }
 
@@ -295,7 +318,12 @@ export function Segmented<T extends string>({
     <div
       role="tablist"
       aria-label={ariaLabel}
-      className="inline-flex items-center gap-0.5 rounded-[var(--radius-md)] border border-line bg-sunken p-0.5"
+      // `self-start` matters: as a direct child of a flex column (the
+      // Reference page) `inline-flex` alone is still stretched to the full
+      // container width by the default `align-items: stretch`, which turned a
+      // compact tab group into a full-bleed bar.
+      className="inline-flex w-fit shrink-0 items-center gap-0.5 self-start rounded-[var(--radius-md)]
+        border border-line bg-sunken p-0.5"
     >
       {options.map((o) => {
         const active = o.value === value;
@@ -479,6 +507,38 @@ export function Tooltip({
 
 /* ------------------------------------------------------------------ table */
 
+/**
+ * The product's one table.
+ *
+ * Every list of records — the invoice register, the PO ledger, the three-way
+ * match — renders through this, so column rhythm, header treatment, hairlines
+ * and row hover are decided once. Before this each page hand-rolled its own
+ * `<th className="t-caption border-b …">`, and they had already drifted: three
+ * different header paddings and two different row heights across four screens.
+ *
+ * Horizontal overflow is owned here too. A wide table must scroll inside its
+ * own panel rather than widening the page, which is what put a horizontal
+ * scrollbar on the whole document at tablet width.
+ */
+export function DataTable({
+  children,
+  minWidth,
+  className = "",
+}: {
+  children: ReactNode;
+  /** Below this the table scrolls instead of crushing its columns. */
+  minWidth?: number;
+  className?: string;
+}) {
+  return (
+    <div className={`w-full overflow-x-auto ${className}`}>
+      <table className="dt" style={minWidth ? { minWidth } : undefined}>
+        {children}
+      </table>
+    </div>
+  );
+}
+
 export function TH({
   children,
   align = "left",
@@ -489,11 +549,64 @@ export function TH({
     <th
       scope="col"
       {...rest}
-      className={`t-caption border-b border-line px-3 py-2 ${
-        align === "right" ? "text-right" : "text-left"
-      } ${className}`}
+      className={`${align === "right" ? "text-right" : "text-left"} ${className}`}
     >
       {children}
+    </th>
+  );
+}
+
+/**
+ * A sortable column header.
+ *
+ * The direction caret is always rendered, at low opacity when the column is
+ * not the active sort, so the header row does not reflow by a few pixels the
+ * moment someone sorts by it — and so the column reads as sortable before it
+ * is clicked. The previous version set `opacity-0`, which hid the affordance
+ * entirely: nothing on the screen said the columns could be sorted at all.
+ */
+export function SortTH({
+  label,
+  active,
+  ascending,
+  onSort,
+  align = "left",
+  className = "",
+}: {
+  label: string;
+  active: boolean;
+  ascending: boolean;
+  onSort: () => void;
+  align?: "left" | "right";
+  className?: string;
+}) {
+  return (
+    <th
+      scope="col"
+      aria-sort={active ? (ascending ? "ascending" : "descending") : "none"}
+      className={`${align === "right" ? "text-right" : "text-left"} ${className}`}
+    >
+      <button
+        type="button"
+        onClick={onSort}
+        aria-label={`Sort by ${label}${active ? (ascending ? ", ascending" : ", descending") : ""}`}
+        // The caret always trails the label, in both alignments. Reversing
+        // it for right-aligned columns put the marker before the word — the
+        // header read "\u25BC Amount", which parses as a bullet, not a sort
+        // direction.
+        className={`inline-flex items-center gap-1 rounded-[var(--radius-xs)] transition-colors
+          hover:text-fg ${active ? "text-fg" : ""}`}
+      >
+        {label}
+        <span
+          aria-hidden
+          className={`text-[9px] leading-none transition-opacity ${
+            active ? "text-accent opacity-100" : "opacity-30"
+          }`}
+        >
+          {active && ascending ? "▲" : "▼"}
+        </span>
+      </button>
     </th>
   );
 }
@@ -505,10 +618,7 @@ export function TD({
   ...rest
 }: React.TdHTMLAttributes<HTMLTableCellElement> & { align?: "left" | "right" }) {
   return (
-    <td
-      {...rest}
-      className={`px-3 py-2 align-middle ${align === "right" ? "text-right" : ""} ${className}`}
-    >
+    <td {...rest} className={`${align === "right" ? "num" : ""} ${className}`}>
       {children}
     </td>
   );

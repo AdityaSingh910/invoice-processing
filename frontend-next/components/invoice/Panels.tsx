@@ -66,6 +66,33 @@ export function ReasonList({ reasons }: { reasons: Reason[] }) {
 
 const REQUIRED: (keyof Extracted)[] = ["vendor_name", "invoice_number", "total"];
 
+/**
+ * Display names for the extracted fields.
+ *
+ * `rules.py` names fields in snake_case (`po_references`, `invoice_number`) and
+ * the reviewer brief renders whichever ones a failing check implicated. A
+ * generic underscore-strip plus CSS `capitalize` turned `po_references` into
+ * "Po References" — visible on any multi-PO run, which is the demo case. An
+ * initialism cannot be recovered by a text transform, so the names are stated.
+ */
+const FIELD_LABEL: Record<string, string> = {
+  vendor_name: "Vendor",
+  invoice_number: "Invoice number",
+  invoice_date: "Invoice date",
+  po_references: "PO references",
+  po_number: "Purchase order",
+  subtotal: "Subtotal",
+  tax: "Tax",
+  total: "Total",
+  currency: "Currency",
+  line_items: "Line items",
+};
+
+/** Falls back to a sentence-cased version of whatever the engine sent, so a
+ *  field added to rules.py later still reads acceptably without a UI change. */
+export const fieldLabel = (field: string): string =>
+  FIELD_LABEL[field] ?? field.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+
 const ROUTE: Record<
   string,
   { label: string; tone: "ok" | "warn" | "neutral"; note: string }
@@ -116,8 +143,8 @@ export function ExtractionSummary({ e }: { e: Extracted }) {
           icon={<IconAlert size={13} />}
           title={`${missing.length} required field${missing.length === 1 ? "" : "s"} missing`}
         >
-          {missing.map((m) => String(m).replace(/_/g, " ")).join(", ")} could not be read, so this
-          invoice cannot be approved automatically.
+          {missing.map((m) => fieldLabel(String(m)).toLowerCase()).join(", ")} could not be read,
+          so this invoice cannot be approved automatically.
         </Callout>
       )}
     </div>
@@ -139,6 +166,24 @@ const Missing = () => (
  * still shows its score; it just cannot go "bad", only "ok"/"warn", since
  * nothing here decided it was disqualifying.
  */
+/**
+ * How a confidence score is coloured, in one place.
+ *
+ * "Bad" means the RULE ENGINE listed this field in `audit.low_confidence_fields`
+ * — i.e. this score is part of why the run was held. It is never re-derived from
+ * a threshold in the browser, so the UI's read of "low" cannot drift from the
+ * one `decide()` used. Everything else is coloured by the score alone and can
+ * only reach "ok" or "warn".
+ */
+function confidenceTone(
+  field: string,
+  confidence: number,
+  lowConfidenceFields?: Audit["low_confidence_fields"]
+): "ok" | "warn" | "bad" {
+  if ((lowConfidenceFields || []).some((f) => f.field === field)) return "bad";
+  return confidence >= 0.85 ? "ok" : "warn";
+}
+
 function ProvenanceBadge({
   field,
   p,
@@ -149,8 +194,7 @@ function ProvenanceBadge({
   lowConfidenceFields?: Audit["low_confidence_fields"];
 }) {
   if (!p || p.confidence == null) return null;
-  const flagged = (lowConfidenceFields || []).some((f) => f.field === field);
-  const tone: "ok" | "warn" | "bad" = flagged ? "bad" : p.confidence >= 0.85 ? "ok" : "warn";
+  const tone = confidenceTone(field, p.confidence, lowConfidenceFields);
   const pct = Math.round(p.confidence * 100);
 
   const tooltipLines = [
@@ -184,17 +228,17 @@ export function ExtractedFields({ e, audit }: { e: Extracted; audit?: Audit }) {
   return (
     <KeyValues
       rows={[
-        ["Vendor", withBadge("vendor_name", val(e.vendor_name))],
-        ["Invoice number", withBadge("invoice_number", val(e.invoice_number))],
-        ["Invoice date", withBadge("invoice_date", e.invoice_date || "—")],
-        ["PO references", (e.po_references || []).join(", ") || "—"],
+        [fieldLabel("vendor_name"), withBadge("vendor_name", val(e.vendor_name))],
+        [fieldLabel("invoice_number"), withBadge("invoice_number", val(e.invoice_number))],
+        [fieldLabel("invoice_date"), withBadge("invoice_date", e.invoice_date || "—")],
+        [fieldLabel("po_references"), (e.po_references || []).join(", ") || "—"],
         [
-          "Subtotal",
+          fieldLabel("subtotal"),
           withBadge("subtotal", <span key="s" className="tnum">{amount(e.subtotal, e.currency)}</span>),
         ],
-        ["Tax", withBadge("tax", <span key="t" className="tnum">{amount(e.tax, e.currency)}</span>)],
+        [fieldLabel("tax"), withBadge("tax", <span key="t" className="tnum">{amount(e.tax, e.currency)}</span>)],
         [
-          "Total",
+          fieldLabel("total"),
           withBadge(
             "total",
             e.total != null ? (
@@ -206,8 +250,8 @@ export function ExtractedFields({ e, audit }: { e: Extracted; audit?: Audit }) {
             )
           ),
         ],
-        ["Line items", (e.line_items || []).length || "—"],
-        ["Currency", withBadge("currency", e.currency || "—")],
+        [fieldLabel("line_items"), (e.line_items || []).length || "—"],
+        [fieldLabel("currency"), withBadge("currency", e.currency || "—")],
       ]}
     />
   );
@@ -215,6 +259,8 @@ export function ExtractedFields({ e, audit }: { e: Extracted; audit?: Audit }) {
 
 /* ------------------------------------------------------------------ verdict */
 
+/** Tone and copy for each verdict. Consumed by `VerdictBanner` in
+ *  ReviewWorkspace.tsx, which is now the one place a verdict is stated. */
 export const VERDICT: Record<
   string,
   { headline: string; blurb: string; tone: "ok" | "warn" | "bad" }
@@ -235,93 +281,6 @@ export const VERDICT: Record<
     tone: "bad",
   },
 };
-
-/**
- * The verdict, stated once, at the top. Everything below it on the page is
- * evidence for this line.
- */
-export function VerdictHeader({
-  status,
-  filename,
-  runId,
-  vendor,
-  invoiceNumber,
-  total,
-  currency,
-  remaining,
-  poCurrency,
-  compact = false,
-}: {
-  status: string;
-  filename: string;
-  runId?: number;
-  vendor?: string | null;
-  invoiceNumber?: string | null;
-  total?: number | null;
-  /** The invoice's own currency. Defaults to USD, matching the extractor's
-   *  own fallback when a document carries no currency signal at all. */
-  currency?: string | null;
-  remaining?: number | null;
-  /** The matched PO's currency -- may differ from `currency` when a
-   *  conversion applied. Falls back to `currency` so an ordinary same-currency
-   *  invoice needs no second prop. */
-  poCurrency?: string | null;
-  compact?: boolean;
-}) {
-  const v = VERDICT[status] ?? { headline: status, blurb: "", tone: "neutral" as const };
-  const Icon = v.tone === "ok" ? IconCheck : v.tone === "bad" ? IconX : IconAlert;
-
-  return (
-    <div
-      data-testid="verdict-bar"
-      className="panel flex flex-wrap items-center justify-between gap-5 p-4"
-      style={{ borderLeft: `2px solid var(--${v.tone}-vivid)` }}
-    >
-      <div className="flex min-w-0 items-start gap-3">
-        <span
-          className="mt-px grid h-7 w-7 shrink-0 place-items-center rounded-full"
-          style={{ background: `var(--${v.tone}-quiet)`, color: `var(--${v.tone})` }}
-        >
-          <Icon size={14} />
-        </span>
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2
-              data-testid="verdict-status"
-              className="t-metric-sm"
-              style={{ color: `var(--${v.tone})` }}
-            >
-              {v.headline}
-            </h2>
-            {runId !== undefined && <span className="tnum t-meta text-[11px]">run #{runId}</span>}
-          </div>
-          {!compact && v.blurb && <p className="t-meta mt-1 max-w-lg">{v.blurb}</p>}
-          <p className="t-meta mt-1 truncate text-[11px]">
-            <span className="font-medium text-secondary">{filename}</span>
-            {vendor ? ` · ${vendor}` : ""}
-            {invoiceNumber ? ` · ${invoiceNumber}` : ""}
-          </p>
-        </div>
-      </div>
-
-      <div className="flex gap-5">
-        <Figure label="Invoice total" value={amount(total, currency || "USD")} />
-        {remaining !== null && remaining !== undefined && (
-          <Figure label="PO remaining" value={amount(remaining, poCurrency || currency || "USD")} />
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Figure({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="text-right">
-      <div className="t-metric-sm tnum">{value}</div>
-      <div className="t-caption mt-1">{label}</div>
-    </div>
-  );
-}
 
 /* --------------------------------------------------------------- reviewer */
 
@@ -368,11 +327,17 @@ export function ReviewerBrief({ audit, extracted }: { audit?: Audit; extracted?:
                   className="rounded-[var(--radius-sm)] border border-line bg-sunken px-2.5 py-2"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[12.5px] font-medium capitalize">
-                      {f.replace(/_/g, " ")}
-                    </span>
+                    <span className="text-[12.5px] font-medium">{fieldLabel(f)}</span>
                     {p?.confidence != null && (
-                      <Badge tone={p.confidence >= 0.65 ? "warn" : "bad"}>
+                      // Coloured by the same rule as everywhere else. It used
+                      // to read `confidence >= 0.65 ? "warn" : "bad"`, which
+                      // painted a field extracted at 100% confidence amber
+                      // purely because a DIFFERENT rule (an unstated multi-PO
+                      // split) put it on this list — telling the reviewer to
+                      // distrust the one number that was read perfectly.
+                      <Badge
+                        tone={confidenceTone(f, p.confidence, audit.low_confidence_fields)}
+                      >
                         {Math.round(p.confidence * 100)}% confidence
                       </Badge>
                     )}

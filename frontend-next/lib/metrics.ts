@@ -235,3 +235,83 @@ export function compactMoney(v: number): string {
   if (abs >= 10_000) return `$${(v / 1000).toFixed(1)}k`;
   return `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
+
+/* ------------------------------------------------------------- analytics
+ * Phase H presentation helpers.
+ *
+ * These format numbers the SERVER computed. Nothing here derives a KPI --
+ * every rate, average and count on the analytics screen is calculated in
+ * backend/analytics.py against the rows, so the browser cannot produce a
+ * figure that disagrees with the one an auditor would get from the database.
+ * (Contrast `totals()` above, which is the Overview page's own client-side
+ * summary of the runs it already holds.)
+ */
+
+/** Seconds as a duration a person reads at a glance. Null stays "—": the
+ *  backend returns null when nothing could be measured, and rendering that as
+ *  "0s" would claim a measurement that was never taken. */
+export function formatSeconds(s: number | null | undefined): string {
+  if (s === null || s === undefined || Number.isNaN(s)) return "—";
+  if (s < 1) return "<1s";
+  if (s < 60) return `${Math.round(s)}s`;
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  if (s < 86400) return `${(s / 3600).toFixed(1)}h`;
+  return `${(s / 86400).toFixed(1)}d`;
+}
+
+/** Whole numbers with separators; "—" for a missing one, never "0". */
+export function formatCount(n: number | null | undefined): string {
+  if (n === null || n === undefined || Number.isNaN(n)) return "—";
+  return n.toLocaleString();
+}
+
+/**
+ * How a KPI should be presented, given how much data is behind it.
+ *
+ * Three states, deliberately not two:
+ *   "ok"           there is enough behind the figure to show it
+ *   "insufficient" a real rate over a sample too small to read as one
+ *   "unavailable"  the denominator is zero, so no rate exists at all
+ *
+ * The middle state is the one that matters. "100% automated" over two invoices
+ * is arithmetically true and operationally meaningless, and a dashboard that
+ * renders it identically to 100% over two thousand is misleading whether or
+ * not any individual number is wrong.
+ */
+export type KpiState = "ok" | "insufficient" | "unavailable";
+
+export const MIN_MEANINGFUL_SAMPLE = 5;
+
+export function kpiState(kpi: { value: number | null; denominator: number } | null | undefined): KpiState {
+  if (!kpi || kpi.value === null || kpi.denominator === 0) return "unavailable";
+  return kpi.denominator < MIN_MEANINGFUL_SAMPLE ? "insufficient" : "ok";
+}
+
+/** Map an analytics trend bucket onto the shape VolumeChart already draws, so
+ *  the server-computed series reuses the existing chart rather than a second
+ *  one that could style the same colours differently. */
+export function bucketsToDays(
+  buckets: {
+    day: string;
+    runs: number;
+    approved: number;
+    needs_review: number;
+    rejected: number;
+  }[]
+): DayBucket[] {
+  return buckets.map((b) => ({
+    day: b.day,
+    // Parsed as UTC (the server buckets by UTC day and says so), then shown in
+    // the reader's locale for the label only -- the bucket itself is never
+    // re-bucketed client-side.
+    label: new Date(`${b.day}T00:00:00Z`).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    }),
+    approved: b.approved,
+    needsReview: b.needs_review,
+    rejected: b.rejected,
+    total: b.runs,
+  }));
+}

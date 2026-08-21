@@ -9,7 +9,7 @@
  * beside its limit, derived exactly as the backend derives it: only APPROVED
  * runs consume budget.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { money } from "@/lib/format";
 import { poUsage } from "@/lib/metrics";
 import type { Reference, RunRecord } from "@/lib/types";
@@ -18,6 +18,7 @@ import { PageBody, PageHeader } from "@/components/layout/AppShell";
 import {
   Badge,
   Button,
+  DataTable,
   EmptyState,
   ErrorState,
   Meter,
@@ -27,6 +28,8 @@ import {
   Segmented,
   SkeletonRows,
   StatusBadge,
+  TD,
+  TH,
 } from "@/components/ui";
 import { IconLedger, IconShield } from "@/components/ui/icons";
 
@@ -35,11 +38,19 @@ type Tab = "orders" | "vendors";
 export default function ReferencePage({
   reference,
   runs,
+  initialTab,
 }: {
   reference: Async<Reference>;
   runs: Async<RunRecord[]>;
+  /** Set once, from how the page was navigated to — the sidebar's "Approved
+   *  vendors" entry lands here with that tab preselected rather than making
+   *  the user reselect it. */
+  initialTab?: Tab;
 }) {
-  const [tab, setTab] = useState<Tab>("orders");
+  const [tab, setTab] = useState<Tab>(initialTab ?? "orders");
+  useEffect(() => {
+    if (initialTab) setTab(initialTab);
+  }, [initialTab]);
   const [query, setQuery] = useState("");
 
   const usage = useMemo(
@@ -89,7 +100,11 @@ export default function ReferencePage({
             {!loading && (
               <Panel flush>
                 <div className="grid grid-cols-1 divide-line sm:grid-cols-3 sm:divide-x sm:divide-y-0">
-                  <Summary label="Total authorised" value={money(authorised)} />
+                  <Summary
+                    label="Total authorised"
+                    value={money(authorised)}
+                    caption={`Across ${usage.length} purchase orders`}
+                  />
                   <Summary
                     label="Committed"
                     value={money(committed)}
@@ -99,7 +114,12 @@ export default function ReferencePage({
                         : undefined
                     }
                   />
-                  <Summary label="Available" value={money(authorised - committed)} />
+                  <Summary
+                    label="Available"
+                    value={money(authorised - committed)}
+                    caption="Still open to invoice against"
+                    tone="ok"
+                  />
                 </div>
               </Panel>
             )}
@@ -137,64 +157,73 @@ export default function ReferencePage({
                     }
                   />
                 ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[760px] border-collapse">
-                      <thead>
-                        <tr>
-                          <Th>PO number</Th>
-                          <Th>Vendor</Th>
-                          <Th align="right">Authorised</Th>
-                          <Th align="right">Consumed</Th>
-                          <Th align="right">Remaining</Th>
-                          <Th className="w-[150px]">Utilisation</Th>
-                          <Th>Status</Th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-line">
-                        {pos.map(({ po, consumed, remaining, pct, over }) => {
-                          const tone = over ? "bad" : pct >= 99.5 ? "warn" : "ok";
-                          return (
-                            <tr key={po.po_number} className="transition-colors hover:bg-hover">
-                              <td className="tnum px-3 py-2 text-[12.5px] font-medium">
-                                {po.po_number}
-                              </td>
-                              <td className="px-3 py-2 text-[12.5px] text-muted">{po.vendor}</td>
-                              <td className="tnum px-3 py-2 text-right text-[12.5px]">
-                                {money(po.amount)}
-                              </td>
-                              <td className="tnum px-3 py-2 text-right text-[12.5px]">
-                                {money(consumed)}
-                              </td>
-                              <td className="tnum px-3 py-2 text-right text-[12.5px] font-semibold">
-                                {money(remaining)}
-                              </td>
-                              <td className="px-3 py-2">
-                                <div className="flex items-center gap-2">
-                                  <Meter
-                                    value={consumed}
-                                    max={po.amount}
-                                    tone={tone}
-                                    height={4}
-                                    ariaLabel={`${pct.toFixed(0)} percent consumed`}
-                                  />
-                                  <span className="tnum w-8 shrink-0 text-right text-[11px] text-faint">
-                                    {pct.toFixed(0)}%
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="px-3 py-2">
-                                <div className="flex items-center gap-1.5">
-                                  <StatusBadge status={po.status} />
-                                  {over && <Badge tone="bad">over</Badge>}
-                                  {!over && pct >= 99.5 && <Badge tone="warn">exhausted</Badge>}
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                  <DataTable minWidth={800}>
+                    <thead>
+                      <tr>
+                        <TH>PO number</TH>
+                        <TH>Vendor</TH>
+                        <TH align="right">Authorised</TH>
+                        <TH align="right">Consumed</TH>
+                        <TH align="right">Remaining</TH>
+                        <TH className="w-[150px]">Utilisation</TH>
+                        <TH>Status</TH>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pos.map(({ po, consumed, remaining, pct, over }) => {
+                        const tone = over ? "bad" : pct >= 99.5 ? "warn" : "ok";
+                        return (
+                          <tr key={po.po_number}>
+                            <TD className="tnum text-[12.5px] font-medium">{po.po_number}</TD>
+                            <TD className="text-[12.5px]">{po.vendor}</TD>
+                            <TD align="right" className="text-[12.5px] text-muted">
+                              {money(po.amount)}
+                            </TD>
+                            <TD align="right" className="text-[12.5px] text-muted">
+                              {money(consumed)}
+                            </TD>
+                            <TD align="right" className="text-[12.5px] font-semibold">
+                              {money(remaining)}
+                            </TD>
+                            <TD>
+                              <div className="flex items-center gap-2">
+                                <Meter
+                                  value={consumed}
+                                  max={po.amount}
+                                  tone={tone}
+                                  height={4}
+                                  ariaLabel={`${pct.toFixed(0)} percent consumed`}
+                                />
+                                <span className="tnum w-8 shrink-0 text-right text-[11px] text-faint">
+                                  {pct.toFixed(0)}%
+                                </span>
+                              </div>
+                            </TD>
+                            <TD>
+                              {/* One badge, not two. "open" and "exhausted"
+                                  side by side describe different things (the
+                                  PO's own status vs. what invoices have drawn
+                                  against it) and read as contradictory. The
+                                  drawn-down state is the more actionable of
+                                  the two, so it wins the badge and the PO's
+                                  own status becomes its tooltip. */}
+                              {over ? (
+                                <Badge tone="bad" dot title={`PO status: ${po.status}`}>
+                                  over-consumed
+                                </Badge>
+                              ) : pct >= 99.5 ? (
+                                <Badge tone="warn" dot title={`PO status: ${po.status}`}>
+                                  exhausted
+                                </Badge>
+                              ) : (
+                                <StatusBadge status={po.status} />
+                              )}
+                            </TD>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </DataTable>
                 )}
               </Panel>
             ) : (
@@ -213,30 +242,28 @@ export default function ReferencePage({
                     description="Try a different search term."
                   />
                 ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[420px] border-collapse">
-                      <thead>
-                        <tr>
-                          <Th>Vendor</Th>
-                          <Th>Vendor ID</Th>
-                          <Th>Status</Th>
+                  <DataTable minWidth={420}>
+                    <thead>
+                      <tr>
+                        <TH>Vendor</TH>
+                        <TH>Vendor ID</TH>
+                        <TH>Status</TH>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {vendors.map((v) => (
+                        <tr key={v.vendor_id}>
+                          <TD className="text-[12.5px] font-medium">{v.vendor_name}</TD>
+                          <TD className="tnum text-[12px] text-muted">{v.vendor_id}</TD>
+                          <TD>
+                            <Badge tone={v.status === "approved" ? "ok" : "neutral"} dot>
+                              {v.status}
+                            </Badge>
+                          </TD>
                         </tr>
-                      </thead>
-                      <tbody className="divide-line">
-                        {vendors.map((v) => (
-                          <tr key={v.vendor_id} className="transition-colors hover:bg-hover">
-                            <td className="px-3 py-2 text-[12.5px] font-medium">{v.vendor_name}</td>
-                            <td className="tnum px-3 py-2 text-[12px] text-muted">{v.vendor_id}</td>
-                            <td className="px-3 py-2">
-                              <Badge tone={v.status === "approved" ? "ok" : "neutral"} dot>
-                                {v.status}
-                              </Badge>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                      ))}
+                    </tbody>
+                  </DataTable>
                 )}
               </Panel>
             )}
@@ -247,41 +274,34 @@ export default function ReferencePage({
   );
 }
 
-function Th({
-  children,
-  align = "left",
-  className = "",
-}: {
-  children: React.ReactNode;
-  align?: "left" | "right";
-  className?: string;
-}) {
-  return (
-    <th
-      scope="col"
-      className={`t-caption border-b border-line px-3 py-2 ${
-        align === "right" ? "text-right" : "text-left"
-      } ${className}`}
-    >
-      {children}
-    </th>
-  );
-}
-
+/**
+ * One figure in the ledger summary strip.
+ *
+ * Set at `t-metric-sm` rather than `t-metric`: three six-figure amounts at the
+ * larger size filled the strip edge to edge and made the reference screen shout
+ * louder than the dashboard, which is the screen that actually has news on it.
+ */
 function Summary({
   label,
   value,
   caption,
+  tone,
 }: {
   label: string;
   value: string;
   caption?: string;
+  tone?: "ok";
 }) {
   return (
     <div className="p-4">
       <p className="t-caption">{label}</p>
-      <p className="t-metric tnum mt-2">{value}</p>
-      {caption && <p className="t-meta mt-1 text-[11px]">{caption}</p>}
+      <p
+        className="t-metric-sm tnum mt-1.5"
+        style={tone === "ok" ? { color: "var(--ok)" } : undefined}
+      >
+        {value}
+      </p>
+      <p className="t-meta mt-1 text-[11px]">{caption ?? "\u00A0"}</p>
     </div>
   );
 }
