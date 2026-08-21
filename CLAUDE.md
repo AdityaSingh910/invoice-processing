@@ -2017,6 +2017,7 @@ never the code that was verified, and both would be replaced immediately after.
 ### 13.4 Commits
 
 ```
+cd4a348 Record why the Phase H frontend is complete but uncommitted
 4e76ef3 Record the Phase H commit hash in the handoff notes
 9bdbeeb Answer how well the process is actually working, from the rows already on file (Phase H)
 8dfc286 Go and fetch the invoices, instead of waiting to be handed one (Phase G)
@@ -2027,7 +2028,7 @@ d351869 Verify what an incoming email can actually prove about its own origin (P
 147c0ce Migrate persistence from SQLite to PostgreSQL
 ```
 
-Branch `main`, **9 commits ahead of `origin/main`, not yet pushed** (push only
+Branch `main`, **10 commits ahead of `origin/main`, not yet pushed** (push only
 if explicitly asked).
 
 **[README.md](README.md)** is kept in sync with the code and is the other
@@ -2038,7 +2039,7 @@ the code, verify against the code directly rather than trusting either.
 
 1. Read this file, then `README.md`.
 2. `git status` and `git log --oneline -10` — expect a working tree holding the
-   redesign **and** the Phase H frontend (§11), and `4e76ef3` at the tip.
+   redesign **and** the Phase H frontend (§11), and `cd4a348` at the tip.
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
 4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **848 passed, 4
    failed**, the 4 being the known `test_extraction_routing.py` cases, which
