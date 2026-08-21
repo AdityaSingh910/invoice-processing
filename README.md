@@ -19,15 +19,16 @@ suite is green.**
 |---|---|
 | Pipeline | Working, 9 stages, streamed live to the browser |
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
-| UI | **Next.js 15 + React 19 + Tailwind v4**, six sections, light-first enterprise design with an explicit dark-mode toggle |
+| UI | **Next.js 15 + React 19 + Tailwind v4**, six sections, light-first enterprise design with an explicit dark-mode toggle — plus a separate **supplier portal** shell for external clients |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **1,212 passing** deterministically, 26 files, no live API calls |
+| Automated tests | **1,386 passing** deterministically, 27 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
 | Assistant | Ask about invoices, review status, vendors and POs in plain English — **read-only, answers built from the app's own records** — see [Assistant](#assistant) |
 | Security hardening | Account deactivation that revokes live tokens, per-account brute-force limits, reporting/export limits, CSP and security headers — see [Security hardening](#security-hardening) |
+| Supplier portal | A vendor signs in and sees **their own** invoices, purchase orders and documents — and can send an invoice. Isolation is enforced in SQL against the authenticated account; a client role holds no internal scope at all — see [Supplier portal](#supplier-portal) |
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
 | Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine |
 | KPIs and analytics | Automation / task-success / review KPIs, per-stage bottlenecks, review latency, vendor + PO + email funnels — **all derived at read time, no stored counters** |
@@ -199,9 +200,17 @@ accounts ship in `data/users.json`:
 | `analyst` | `demo-analyst` | the above + process invoices |
 | `reviewer` | `demo-reviewer` | the above + accept / reject held invoices |
 | `admin` | `demo-admin` | the above + override any run's status |
+| `acme` | `demo-acme` | **supplier portal** — Acme's own invoices and POs, and may send one |
+| `globex` | `demo-globex` | **supplier portal** — Globex's own records, view only |
 
-These are demo credentials and are flagged as such in the file. A production
-start refuses to boot while they exist — see [Running in production](#running-in-production).
+The last two are EXTERNAL accounts. They sign in here through the same token
+endpoint — there is no separate client login — and land in the
+[supplier portal](#supplier-portal) rather than in the application above. They
+hold no `invoice:*` scope at all, so every internal endpoint refuses them.
+
+These are demo credentials and all six are flagged as such in the file. A
+production start refuses to boot while they exist — see
+[Running in production](#running-in-production).
 
 > Set `AUTH_SECRET` in `.env` before a demo. Without it a fresh signing key is
 > generated per process, so every server restart silently invalidates the token
@@ -259,6 +268,12 @@ invoice cannot rebuild.
   stage log and audit trail, plus PO consumption across all POs. A `human` chip
   marks runs a person ruled on.
 - **Reference tab** — the purchase orders and approved vendors being checked against.
+
+**Signing in as a supplier** (`acme` / `demo-acme`, or `globex` /
+`demo-globex`) opens something else entirely: the **supplier portal**, a
+separate shell showing only that company's own invoices, its own purchase
+orders and its own documents. Same sign-in screen, same token endpoint,
+different product — see [Supplier portal](#supplier-portal).
 
 ---
 
@@ -1241,6 +1256,100 @@ GET  /api/sample-invoices/{name} one sample PDF                    [invoice:read
 
 ---
 
+## Supplier portal
+
+Everything above was built for people **inside** the company, and the
+authorization model says so: this is a shared AP queue with no per-user invoice
+ownership, so `invoice:read` reads every run, every document and every activity
+row. That is the product, not an oversight — the whole point of the review
+queue is that several employees work the same invoices.
+
+The portal adds the first caller for whom that is completely wrong. A supplier
+asking *"where is my invoice"* must see their own records and nothing else.
+
+**The one decision the design rests on: a client role carries no `invoice:*`
+scope, and no internal role carries any `portal:*` scope.** So every one of the
+43 internal routes refuses an external caller because of what their token does
+not contain — not because forty-odd endpoints each remembered to filter. A
+parametrised test enumerates every route from the app itself and asserts it.
+
+```
+portal:read     read your own company's invoices, documents and purchase orders
+portal:submit   send an invoice through the portal
+
+client          -> portal:read + portal:submit
+client_readonly -> portal:read
+```
+
+**The client's identity is resolved from the live user store on every request
+and is never read from the token.** A validly-signed token claiming to
+represent a different company is not rejected — that claim is simply never
+consulted. This is the same lesson the security hardening pass learned about
+JWTs being snapshots, applied to the one surface facing outside the company:
+re-point an account at a different vendor and it takes effect on the next call,
+not in eight hours.
+
+**What a client sees**
+
+```
+runs.client_id = <this client>
+  OR (runs.client_id IS NULL AND runs.vendor_name = <one of their vendors>)
+```
+
+The first clause owns invoices they sent through the portal. The second owns
+invoices that reached AP another way — an employee's upload, or email ingestion
+— matched by vendor identity through the same `normalize_vendor_name()` the
+rule engine uses, so "ACME OFFICE SUPPLIES, INC" is the same supplier.
+
+The `client_id IS NULL` guard on the second clause is the interesting part.
+Without it, an invoice submitted by one client while naming a *different*
+vendor on the document would show up in that other company's portal — so a
+stranger could put a document in front of anyone by uploading it in their name.
+
+Filtering happens in SQL before any row is read, and another client's invoice
+id returns **404, identical to a nonexistent one** — a 403 would confirm the
+invoice exists, which is a fact about another company's business.
+
+**What a client never sees:** the audit trail, the pipeline stages, extraction
+routes or confidence scores, who reviewed it, what they wrote, who uploaded it,
+where the document is stored, or any purchase order not raised to them. The
+explanation they read is looked up by **rule name** from a frozen table, so no
+internal sentence — which would quote another run's id, a reviewer's name or a
+PO balance — is ever echoed. A rule with no entry falls through to a
+deliberately vague sentence rather than leaking the real one.
+
+**Sending an invoice** drives the same nine-stage pipeline a browser upload
+does, with `source="CLIENT_PORTAL"` — same rules, same audit trail, same
+ledger, same review queue. It is deliberately *not* streamed, because the SSE
+frames name internal stages and carry their detail. It has its own per-minute
+limit and its own **per-client** daily budget, so an outside party can spend
+its own allowance without touching the scarce vision quota the internal
+pipeline needs.
+
+**And an invoice a client submits naming somebody else's company can never
+auto-approve.** That risk did not exist while only employees could upload —
+"the document names a vendor" and "we know who sent it" used to be the same
+question. The mismatch is caught in the same transaction and by the same
+mechanism that already downgrades an over-budget approval, so no purchase order
+is ever charged and there is no window in which the run is briefly approved.
+
+```
+GET  /api/portal/me                        who you are, which suppliers you cover  [portal:read]
+GET  /api/portal/invoices                  your invoices                           [portal:read]
+GET  /api/portal/invoices/{id}             one of them, with its history           [portal:read]
+GET  /api/portal/invoices/{id}/document          metadata                          [portal:read]
+GET  /api/portal/invoices/{id}/document/download the PDF                           [portal:read]
+GET  /api/portal/purchase-orders           your orders and what is left            [portal:read]
+POST /api/portal/invoices                  send an invoice                       [portal:submit]
+```
+
+174 tests cover it, including isolation in both directions, IDOR through every
+input a caller controls, deactivation, every shape of misconfigured account,
+and no-leak greps over every response body. `CLAUDE.md` §7g is the authority,
+including the limitations.
+
+---
+
 ## Running in production
 
 Set `APP_ENV=production` and the app refuses to start on any of the following,
@@ -1347,14 +1456,15 @@ availability, so the badge can briefly contradict the run beside it.
 **Two differently-lettered phase tracks exist — do not conflate them.** The
 numbered table above is the original case-study track (0–7). A separate
 **lettered deployment-prep track (A–M)** turned the case study into a
-deployable multi-user platform: **A–I and K are complete, committed and
-pushed** (Phase K, the security hardening pass, at `2b0f97e`; Phase I at
-`248009e`; Phase H at `9bdbeeb` and `96b3f92`). **Phase K2, the read-only
-assistant, is implemented and tested** but still in the working tree rather
-than a commit. K and K2 were both taken before Phase J deliberately: J opens
-the application to people outside the company, and the right order is to fix
-and finish what is already reachable before widening who can reach it.
-**Phase J — client access / client portal — is next and has not been started.**
+deployable multi-user platform: **A–I, K, K2 and J are all complete and
+committed** (Phase I at `248009e`; Phase K, the security hardening pass, at
+`2b0f97e`; Phase K2, the read-only assistant, at `86f4421`; Phase J, the
+supplier portal, in its own commit after `2514355`). K and K2 were both taken
+before Phase J deliberately: J opens the application to people outside the
+company, and the right order is to fix and finish what is already reachable
+before widening who can reach it — an ordering that paid off, since the portal
+leans directly on Phase K's live account re-check and its rate-limiter pattern.
+**Phases L (multilingual) and M (deployment hardening) have not been started.**
 `CLAUDE.md` is the authority on that track.
 
 **The most valuable thing left** was Phase 2's confidence gate — done, closing
@@ -1396,6 +1506,11 @@ backend/
   chat.py         The read-only assistant. Deterministic Python picks which
                   records a question needs; the model only phrases the answer,
                   never chooses the query and never sees the database
+  portal.py       The supplier portal's view of the same rows. Reads only --
+                  one visibility predicate applied in SQL before anything is
+                  fetched, and projections that hand-list every field that
+                  leaves. A client is never shown a sentence this application
+                  wrote about its own internals
   documents.py    Document storage abstraction: local disk or S3-compatible
   email_security.py   Incoming-message verification: DKIM (verified here),
                   SPF/DMARC evidence, alignment, deterministic classification
@@ -1418,19 +1533,23 @@ frontend-next/    The UI. Next.js 15 + React 19 + Tailwind v4, TypeScript
     layout/       App shell — sidebar, page chrome, responsive drawer
     pages/        Overview, Analytics, Assistant, Process invoice, Invoices,
                   Purchase orders
+    portal/       The SUPPLIER shell and its three screens. A separate shell,
+                  not the internal app with rows hidden -- an external client
+                  never mounts AppShell at all
     invoice/      Run detail: stages, three-way match, audit trail, review
     ui/           Primitives — button, badge, panel, modal, toast, icons
   lib/            API client, auth context, theme (dark-mode toggle), metrics,
                   formatting, types
 frontend/         The original vanilla UI, kept as a no-build fallback
-data/             Seed POs + vendors + demo users (tracked); app.db is vestigial
+data/             Seed POs + vendors + demo users incl. two demo SUPPLIER
+                  accounts (tracked); app.db is vestigial
                   (pre-Postgres SQLite file, unused by any code now);
                   documents/ holds uploaded PDFs (local backend, gitignored)
 sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
 docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            26 files, 1,224 tests, both providers mocked
+tests/            27 files, 1,398 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

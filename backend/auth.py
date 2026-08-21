@@ -49,6 +49,33 @@ SCOPES = {
     "invoice:process": "Upload and process invoices (consumes extraction quota)",
     "invoice:review": "Accept or reject invoices held for human review",
     "invoice:admin": "Override the status of any run, including reversals",
+    # --------------------------------------------------------------------
+    # The client portal (Phase J).
+    #
+    # WHY THESE ARE NEW SCOPES RATHER THAN A REUSE OF invoice:read.
+    #
+    # Phases H, I and K2 each added endpoints and each deliberately declined
+    # to add a scope, for a reason recorded in all three: a new scope needs a
+    # ROLE to carry it, which means editing every deployment's user store for
+    # the sake of one screen. That objection does not apply here, because
+    # Phase J is adding an external role no matter what -- the user store has
+    # to change either way.
+    #
+    # And the alternative is worse than untidy. `invoice:read` is the scope
+    # that reads EVERY run, EVERY document and EVERY activity row, because
+    # this is a shared AP queue with no per-user invoice ownership by design
+    # (see the Phase K audit). Handing that to an external vendor and then
+    # filtering it back down at each of forty-odd endpoints would make
+    # isolation a property of forty separate code paths, any one of which
+    # could be added later and forgotten.
+    #
+    # A client role carrying NO invoice:* scope closes every existing
+    # internal route structurally, on day one, with no per-endpoint change --
+    # which is the same "the scope is the boundary" property the rest of this
+    # API already relies on, pointed at a new kind of caller.
+    # --------------------------------------------------------------------
+    "portal:read": "Read your own company's invoices, documents and purchase orders",
+    "portal:submit": "Submit an invoice through the client portal",
 }
 
 ROLE_SCOPES = {
@@ -59,7 +86,30 @@ ROLE_SCOPES = {
     # an analyst having the first does not imply the second.
     "reviewer": ["invoice:read", "invoice:process", "invoice:review"],
     "admin": ["invoice:read", "invoice:process", "invoice:review", "invoice:admin"],
+
+    # EXTERNAL ROLES (Phase J). Note what is NOT here: no client role carries
+    # any invoice:* scope, and no internal role -- admin included -- carries
+    # any portal:* scope. The two directions are separate assertions and both
+    # are tested.
+    #
+    # `admin` is excluded from the portal on purpose rather than by oversight.
+    # A portal response is one client's own view of its own records, resolved
+    # from that account's vendor binding; an internal administrator has no
+    # binding, so there is nothing coherent for those endpoints to show them.
+    # Everything the portal displays, an admin can already read in full
+    # through the internal API.
+    "client": ["portal:read", "portal:submit"],
+    # A client account that may look but not send -- a vendor's accounts
+    # department wanting visibility without the ability to raise an invoice.
+    # Its existence is what makes portal:submit a boundary worth testing
+    # rather than a scope every client trivially holds.
+    "client_readonly": ["portal:read"],
 }
+
+# The scopes that mean "this caller is an external client". Used to decide
+# whether an account needs a client binding at all, and by the portal
+# dependency to refuse an internal principal.
+PORTAL_SCOPES = ("portal:read", "portal:submit")
 
 
 def scopes_for_roles(roles) -> List[str]:
@@ -431,3 +481,85 @@ def current_principal(security_scopes: SecurityScopes,
                 headers={"WWW-Authenticate": header},
             )
     return principal
+
+
+# --------------------------------------------------------------------------
+# External client accounts (Phase J)
+#
+# A client account is an ordinary record in the same user store every internal
+# account lives in, with two extra fields:
+#
+#     {"username": "acme", "roles": ["client"], "client_id": "C-ACME",
+#      "vendor_ids": ["V-001"], "password_hash": "..."}
+#
+# WHY THE BINDING IS NOT IN THE TOKEN, AND NEVER WILL BE.
+#
+# It would be easy to stamp client_id into the JWT at sign-in and read it back
+# on each request -- and it would reintroduce, on the one surface facing
+# outside the company, exactly the problem Phase K spent its HIGH finding
+# fixing. A token is a snapshot: a binding minted into one is believed until
+# it expires, so re-pointing an account at a different vendor, or removing its
+# access to a vendor it no longer represents, would not take effect for the
+# rest of the token's eight-hour life. Resolving it from the live store on
+# every request means a change lands on the very next call, and it means no
+# claim a caller can present has any bearing on what they are shown.
+#
+# `load_users()` is already read per request by `apply_account_state`, so this
+# costs nothing further, and it needs no clients table -- for the same reason
+# there is no users table.
+# --------------------------------------------------------------------------
+
+def is_client_account(user: dict) -> bool:
+    """Whether this record's roles make it an external client account."""
+    granted = set(scopes_for_roles((user or {}).get("roles")))
+    return any(s in granted for s in PORTAL_SCOPES)
+
+
+def client_binding(username: str) -> Optional[dict]:
+    """The live client binding for a username, or None.
+
+    Returns None -- meaning "this caller is not a bound external client" --
+    for an internal account, for an unknown username, and for a client-role
+    account whose record is INCOMPLETE. That last case is the one worth being
+    explicit about: a `client` role with no `client_id`, or with no
+    `vendor_ids`, is refused rather than defaulted to anything.
+
+    There is no safe default available. Defaulting client_id to the username
+    would silently bind an account to a client that may not exist; defaulting
+    vendor_ids to "all" would hand an external party every vendor's invoices,
+    which is the precise failure this whole phase exists to prevent. A
+    misconfigured client account must therefore see NOTHING, not everything --
+    the same fail-closed posture `is_disabled()` takes on an unparseable
+    record.
+    """
+    user = load_users().get((username or "").strip())
+    if not isinstance(user, dict) or not is_client_account(user):
+        return None
+    if is_disabled(user):
+        return None
+
+    client_id = str(user.get("client_id") or "").strip()
+    if not client_id:
+        return None
+
+    raw = user.get("vendor_ids")
+    if isinstance(raw, str):            # a single id, written without the list
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return None
+    vendor_ids = []
+    for v in raw:
+        v = str(v or "").strip()
+        if v and v not in vendor_ids:
+            vendor_ids.append(v)
+    if not vendor_ids:
+        return None
+
+    return {
+        "client_id": client_id,
+        # Display only. Falls back to the id rather than to the username: a
+        # username is a login, not a company, and showing one where the other
+        # belongs is how an internal identifier ends up on a vendor's screen.
+        "client_name": str(user.get("client_name") or "").strip() or client_id,
+        "vendor_ids": vendor_ids,
+    }

@@ -106,8 +106,20 @@ def test_development_never_reports_configuration_problems(monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_the_shipped_user_store_is_marked_as_demo():
-    """The flag is what the production check keys off, so it has to be there."""
-    assert auth.demo_usernames() == ["admin", "analyst", "reviewer", "viewer"]
+    """The flag is what the production check keys off, so it has to be there.
+
+    Spelled out in full rather than counted, so that adding an account to
+    data/users.json without the flag fails HERE -- at the one test whose job
+    is to notice -- rather than in production, where the symptom is a
+    published password quietly accepted.
+
+    `acme` and `globex` are the Phase J supplier accounts. They are external
+    client logins rather than employee ones, and they carry the same flag for
+    exactly the same reason: their passwords are in this repository and on the
+    sign-in screen.
+    """
+    assert auth.demo_usernames() == ["acme", "admin", "analyst", "globex",
+                                     "reviewer", "viewer"]
 
 
 def test_production_refuses_to_start_with_demo_credentials(monkeypatch, prod):

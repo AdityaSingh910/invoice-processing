@@ -14,7 +14,7 @@
  * itself, so they are same-origin; in dev, next.config.mjs proxies /api to the
  * backend. Either way there is no base URL to get wrong.
  */
-import type { Identity, RunEvent } from "./types";
+import type { Identity, PortalSubmission, RunEvent } from "./types";
 
 export const TOKEN_KEY = "ip.token";
 
@@ -156,4 +156,50 @@ export async function streamRun(
       }
     }
   }
+}
+
+/* ------------------------------------------------------- client portal (J) */
+
+/**
+ * Submit an invoice as an external client.
+ *
+ * Deliberately NOT `streamRun`. The internal upload streams SSE stage frames
+ * so an employee can watch the pipeline work; those frames name internal
+ * stages and carry their detail lines, so the portal endpoint returns a
+ * finished result instead. There is nothing to stream here, which is why this
+ * is an ordinary POST.
+ */
+export async function submitPortalInvoice(file: File): Promise<PortalSubmission> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await apiFetch("/api/portal/invoices", { method: "POST", body: fd });
+  if (!res.ok) {
+    // The server's own message is worth showing here: a daily-limit or
+    // rate-limit refusal tells the supplier something they can act on, and a
+    // generic "upload failed" would send them retrying into the same wall.
+    let detail = "";
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail || "";
+    } catch {
+      /* a non-JSON body is not worth a second failure */
+    }
+    throw new ApiError(detail || `the invoice could not be submitted (HTTP ${res.status})`,
+                       res.status);
+  }
+  return (await res.json()) as PortalSubmission;
+}
+
+/**
+ * The stored PDF, fetched WITH the bearer token and handed to the browser as a
+ * blob URL.
+ *
+ * The token travels in a header rather than in a URL, which is the same reason
+ * the internal document preview works this way: a URL ends up in history, in
+ * the Referer and in any log in front of the app, and a bearer token has no
+ * business in any of them.
+ */
+export async function portalDocumentUrl(invoiceId: number): Promise<string> {
+  const res = await apiFetch(`/api/portal/invoices/${invoiceId}/document/download?inline=1`);
+  if (!res.ok) throw new ApiError(`document unavailable (HTTP ${res.status})`, res.status);
+  return URL.createObjectURL(await res.blob());
 }

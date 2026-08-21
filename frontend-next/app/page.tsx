@@ -28,11 +28,12 @@ import AssistantPage from "@/components/pages/AssistantPage";
 import OverviewPage from "@/components/pages/OverviewPage";
 import ProcessPage from "@/components/pages/ProcessPage";
 import InvoicesPage from "@/components/pages/InvoicesPage";
+import PortalApp from "@/components/portal/PortalApp";
 import ReferencePage from "@/components/pages/ReferencePage";
 import { Spinner } from "@/components/ui";
 
 export default function Home() {
-  const { user, ready } = useAuth();
+  const { user, ready, can } = useAuth();
   const [section, setSection] = useState<Section>("overview");
   // Set only by a navigation that promised a filtered view (Overview's "Open
   // review queue", or the sidebar's own "Review queue" item); consumed once
@@ -56,10 +57,17 @@ export default function Home() {
     setSection(s);
   };
 
-  // Gated on `user`: fetching before the token exists 401s and would sign the
-  // user out at the moment they sign in.
-  const runs = useRuns(reloadKey, !!user);
-  const reference = useReference(!!user);
+  // An external client (Phase J). Identified by what the token carries rather
+  // than by a role name, because scopes are what the server enforces and a
+  // deployment may name its roles anything.
+  const isPortalClient = can("portal:read") && !can("invoice:read");
+
+  // Gated on `user` AND on this not being a client: the internal endpoints
+  // 403 for a client token, and firing them here would fill the console with
+  // failures for a screen that never renders.
+  const internal = !!user && !isPortalClient;
+  const runs = useRuns(reloadKey, internal);
+  const reference = useReference(internal);
 
   if (!ready) {
     return (
@@ -73,6 +81,21 @@ export default function Home() {
   }
 
   if (!user) return <LoginGate />;
+
+  // EXTERNAL CLIENTS GET A DIFFERENT APPLICATION, not this one with rows
+  // hidden (Phase J).
+  //
+  // The branch is total on purpose. A supplier never mounts AppShell, so
+  // there is no internal navigation to hide, no section a stale piece of
+  // state could reach, and no shared nav array an internal feature could be
+  // added to and appear on a vendor's screen. It is checked here rather than
+  // inside the shell because a shell that had to know about both audiences is
+  // exactly the thing that eventually shows one of them the other's.
+  //
+  // Not a security control either way -- the portal endpoints resolve the
+  // caller server-side and the internal ones refuse a client token outright.
+  // This decides which product the person is looking at.
+  if (isPortalClient) return <PortalApp />;
 
   const openExceptions = runs.data ? totals(runs.data).openExceptions : 0;
   const refresh = () => setReloadKey((k) => k + 1);

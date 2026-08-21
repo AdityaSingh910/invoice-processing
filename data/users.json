@@ -30,5 +30,31 @@
     ],
     "password_hash": "pbkdf2_sha256$390000$sd5CugqFDuBlqqyEv+3mNw==$2FfjVelP4U+LaVhmpqGKR7j/jKlRMEg84F78rpDzOR0=",
     "demo": true
+  },
+  {
+    "username": "acme",
+    "roles": [
+      "client"
+    ],
+    "client_id": "C-ACME",
+    "client_name": "Acme Office Supplies",
+    "vendor_ids": [
+      "V-001"
+    ],
+    "password_hash": "pbkdf2_sha256$390000$qSDC/w20FOqBBPSMkoBQXA==$SNbjZPedg1bC27PSrFiNNzEOWK7nr6Rlf013G3xmRLY=",
+    "demo": true
+  },
+  {
+    "username": "globex",
+    "roles": [
+      "client_readonly"
+    ],
+    "client_id": "C-GLOBEX",
+    "client_name": "Globex Logistics",
+    "vendor_ids": [
+      "V-002"
+    ],
+    "password_hash": "pbkdf2_sha256$390000$SbFMOJKYlkOw0JB99VgBZg==$i7xRODW8mACRxMRZLhMpuz+gvgB7gKdpS9XGiyhwbjA=",
+    "demo": true
   }
 ]

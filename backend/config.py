@@ -305,6 +305,22 @@ RATE_LIMIT_REPORTING_PER_MINUTE = int(
 RATE_LIMIT_CHAT_PER_MINUTE = int(
     os.environ.get("RATE_LIMIT_CHAT_PER_MINUTE", "30") or 30)
 
+# --------------------------------------------------------------------------
+# The client portal (Phase J)
+#
+# These two limits guard the only surface in this application that external
+# parties can reach, which is the whole reason they exist separately from the
+# internal ones. A vendor reading their own invoice list is cheap, so the read
+# ceiling is generous and bounds automation rather than use -- the same
+# reasoning RATE_LIMIT_REPORTING_PER_MINUTE records. Submission is not cheap:
+# it drives the full extraction pipeline, so its per-minute ceiling is low and
+# the daily budget below is the slower breaker behind it.
+# --------------------------------------------------------------------------
+RATE_LIMIT_PORTAL_PER_MINUTE = int(
+    os.environ.get("RATE_LIMIT_PORTAL_PER_MINUTE", "60") or 60)
+RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE = int(
+    os.environ.get("RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE", "5") or 5)
+
 # Whether X-Forwarded-For may be believed when identifying a caller. Off by
 # default: the header is client-controlled, so trusting it on a directly-exposed
 # app lets anyone reset their own rate-limit counter by inventing one. Turn it on
@@ -394,6 +410,20 @@ DAILY_QUOTA_TEXT = int(os.environ.get("DAILY_QUOTA_TEXT", "500") or 500)
 # new door. Chat can starve itself; it cannot starve the pipeline.
 DAILY_QUOTA_CHAT = int(os.environ.get("DAILY_QUOTA_CHAT", "300") or 300)
 
+# Phase J. How many invoices ONE client may submit through the portal in a UTC
+# day. Counted per client, not across all of them, so one vendor cannot spend
+# every other vendor's allowance.
+#
+# This is the property the assistant's separate budget established (see the
+# comment above DAILY_QUOTA_CHAT), applied to the door Phase J opens to people
+# outside the company: portal submissions draw on the SHARED extraction budget
+# once they reach the pipeline, so without a ceiling of their own an external
+# party could exhaust the vision quota -- the one route with no fallback -- and
+# leave the internal pipeline unable to read a scanned invoice. A client can
+# spend its own allowance; it cannot spend the pipeline's.
+DAILY_QUOTA_PORTAL_SUBMISSIONS = int(
+    os.environ.get("DAILY_QUOTA_PORTAL_SUBMISSIONS", "25") or 25)
+
 # --------------------------------------------------------------------------
 # Document storage (Phase C)
 #
@@ -416,11 +446,14 @@ DOCUMENT_S3_PREFIX_ENV = "DOCUMENT_S3_PREFIX"
 DOCUMENT_S3_REGION_ENV = "DOCUMENT_S3_REGION"
 DOCUMENT_S3_ENDPOINT_ENV = "DOCUMENT_S3_ENDPOINT_URL"  # for S3-compatible, non-AWS hosts
 
-# The only source this process can currently produce a document from is a
-# browser upload. EMAIL is recognised here so the schema and the storage
-# abstraction do not need to change when ingestion (Phase J) adds a second
-# producer -- nothing in this phase writes a document with that source yet.
-DOCUMENT_SOURCES = ("MANUAL_UPLOAD", "EMAIL")
+# Where a stored document came from. All three are now written by real code
+# paths: MANUAL_UPLOAD by an employee at the browser, EMAIL by Phase G's
+# ingestion poller, and CLIENT_PORTAL by Phase J's vendor submission endpoint.
+# (The comment that used to sit here predicted email ingestion as "Phase J";
+# that was written before the lettered tracks existed. Phase G is the
+# ingestion path and Phase J is the client portal -- corrected here now that
+# this line is being touched for a real reason.)
+DOCUMENT_SOURCES = ("MANUAL_UPLOAD", "EMAIL", "CLIENT_PORTAL")
 
 
 def document_store_backend() -> str:
@@ -723,6 +756,8 @@ def refresh_env_settings():
     global RATE_LIMIT_IP_PER_MINUTE, RATE_LIMIT_LOGIN_PER_MINUTE
     global RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE, RATE_LIMIT_REPORTING_PER_MINUTE
     global RATE_LIMIT_CHAT_PER_MINUTE
+    global RATE_LIMIT_PORTAL_PER_MINUTE, RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE
+    global DAILY_QUOTA_PORTAL_SUBMISSIONS
     global TRUST_PROXY_HEADERS, AUTH_ISSUER, AUTH_TOKEN_TTL_MINUTES
     global SECURITY_HEADERS_ENABLED, HSTS_MAX_AGE_SECONDS, CONTENT_SECURITY_POLICY
 
@@ -744,6 +779,9 @@ def refresh_env_settings():
     RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE = _int("RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE", 15)
     RATE_LIMIT_REPORTING_PER_MINUTE = _int("RATE_LIMIT_REPORTING_PER_MINUTE", 120)
     RATE_LIMIT_CHAT_PER_MINUTE = _int("RATE_LIMIT_CHAT_PER_MINUTE", 30)
+    RATE_LIMIT_PORTAL_PER_MINUTE = _int("RATE_LIMIT_PORTAL_PER_MINUTE", 60)
+    RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE = _int("RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE", 5)
+    DAILY_QUOTA_PORTAL_SUBMISSIONS = _int("DAILY_QUOTA_PORTAL_SUBMISSIONS", 25)
     TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "").strip() in (
         "1", "true", "True")
     AUTH_ISSUER = os.environ.get("AUTH_ISSUER", "invoice-processing")

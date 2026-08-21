@@ -577,3 +577,75 @@ export type ChatSuggestions = {
   available: boolean;
   note: string;
 };
+
+/* ------------------------------------------------------- client portal (J) */
+
+/**
+ * The vocabulary a SUPPLIER reads, which is deliberately not the internal one.
+ * `NEEDS_REVIEW` means nothing to a vendor, and `REJECTED` reads as an
+ * accusation when the cause is usually a duplicate or an order already billed
+ * in full. The server maps one to the other; nothing here re-derives it.
+ */
+export type ClientState = "RECEIVED" | "IN_REVIEW" | "APPROVED" | "DECLINED";
+
+export interface PortalIdentity {
+  client_id: string;
+  client_name: string;
+  /** The supplier names this account covers. Vendor IDs are our procurement
+   *  reference and are deliberately not sent. */
+  vendors: string[];
+  /** Plain-language problems with the account's supplier link. Present so a
+   *  misconfiguration reads as "your account is not set up" rather than as
+   *  missing invoices. */
+  notices: string[];
+}
+
+export interface PortalInvoice {
+  invoice_id: number;
+  invoice_number: string | null;
+  vendor_name: string | null;
+  total: number | null;
+  currency: string | null;
+  received_at: string | null;
+  filename: string | null;
+  state: ClientState;
+  state_headline: string;
+  /** Why it is where it is, in sentences the server chose from a frozen table.
+   *  Empty for an approved invoice. */
+  state_detail: string[];
+  purchase_orders: string[];
+  has_document: boolean;
+  submitted_through_portal: boolean;
+  /** Detail responses only. */
+  timeline?: { at: string; event: string }[];
+}
+
+export interface PortalInvoiceList {
+  client: PortalIdentity;
+  invoices: PortalInvoice[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface PortalPurchaseOrder {
+  po_number: string;
+  vendor: string;
+  description: string | null;
+  issued_date: string | null;
+  status: string | null;
+  currency: string | null;
+  amount: number | null;
+  billed: number;
+  remaining: number;
+}
+
+export interface PortalOrders {
+  client: PortalIdentity;
+  purchase_orders: PortalPurchaseOrder[];
+}
+
+export interface PortalSubmission {
+  submitted: boolean;
+  invoice: PortalInvoice;
+}

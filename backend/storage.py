@@ -674,6 +674,22 @@ def init_db(reset_runs: bool = False):
             )
             _ensure_columns(conn, "runs", {
                 "audit_json": "TEXT",
+                # WHICH EXTERNAL CLIENT SUBMITTED THIS INVOICE (Phase J), or
+                # NULL if it did not arrive through the client portal at all.
+                #
+                # NULL on every run that predates the portal, and on every
+                # internal upload and email ingestion afterwards, and that is
+                # a meaningful value rather than missing data: it says "this
+                # invoice was not sent to us by a vendor logging in", which is
+                # true of all of them.
+                #
+                # It is not a duplicate of `vendor_name`. `vendor_name` is
+                # what the extractor READ off the document; this is who was
+                # AUTHENTICATED when it was sent. They can disagree -- which
+                # is the whole reason the column exists, since the portal's
+                # visibility rule has to be able to keep an invoice submitted
+                # in another vendor's name away from that other vendor.
+                "client_id": "TEXT",
                 # The review columns are separate from `status` on purpose. `status` is
                 # what the LEDGER reads -- consumption sums APPROVED runs -- so a human
                 # approval has to land there for the money to move. But the automated
@@ -1062,6 +1078,14 @@ def init_db(reset_runs: bool = False):
             # invoice_activity indexes are on run_id and created_at only.
             cur.execute("CREATE INDEX IF NOT EXISTS idx_activity_actor ON invoice_activity(actor)")
 
+            # CLIENT PORTAL (Phase J). ONE index, and the same reasoning as
+            # the two blocks above: the portal is a QUERY over `runs` (see
+            # portal.py), not a per-client copy of anything, so the only thing
+            # it needs from the schema is for the column its visibility
+            # predicate filters on to be indexed. Every portal query starts
+            # with this column.
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_client_id ON runs(client_id)")
+
             # LOGS (Phase I). ONE index, for the same reason as the block
             # above: the log is a QUERY over invoice_activity and
             # email_activity (see logs.py), not a third table, so all it needs
@@ -1317,8 +1341,19 @@ def find_duplicate(vendor_name, invoice_number, total):
         conn.close()
 
 
+# The name a portal vendor-identity hold is recorded under in
+# audit_json.rules_failed. A NAMED constant because three separate places have
+# to agree on the exact string: the audit fix-up in save_run_checked() below
+# writes it, analytics groups hold reasons by it (see analytics.py's hold-reason
+# breakdown), and portal.py translates it into the sentence a client is shown.
+# Three hand-typed copies of one string is how those three quietly stop
+# agreeing.
+PORTAL_VENDOR_IDENTITY_RULE = "Portal vendor identity"
+
+
 def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: list,
-                     reasons: list, tolerance_for=None, audit=None, uploaded_by=None):
+                     reasons: list, tolerance_for=None, audit=None, uploaded_by=None,
+                     client_id=None, client_vendor_mismatch=False):
     """Persist a run, re-verifying the PO balance under a row lock first.
 
     The pipeline computes its verdict outside any transaction -- it has to, since
@@ -1334,15 +1369,72 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
     commits second sees the first and is held for a human. Invoices against
     DIFFERENT POs never contend for this lock at all.
 
+    PHASE J adds a SECOND reason this function may downgrade an APPROVED run,
+    and it is deliberately implemented here rather than anywhere else.
+    `client_vendor_mismatch` says the caller was an authenticated external
+    client submitting through the portal, and the vendor the extractor read
+    off the document is NOT one this client represents.
+
+    That combination has to be stopped before the ledger sees it. Until Phase
+    J only employees could upload, so "the document names a vendor" and "we
+    know who sent it" were the same question; opening submission to outside
+    parties separates them, and an invoice a stranger filed in someone else's
+    name must never auto-approve against that someone else's purchase order.
+
+    It is handled at this exact point because the machinery is already here
+    and already correct: this is the one place that holds the PO rows locked,
+    has the decision in hand, and has not yet inserted. Downgrading here means
+    no allocation is ever counted (consumption joins to status='APPROVED', so
+    a run inserted as NEEDS_REVIEW consumes nothing), there is no window in
+    which the run is briefly approved, and no second status-transition path is
+    invented. `automated_decision` still records what the rules concluded --
+    it is written from `status` below, after both downgrades, exactly as the
+    balance re-check has always worked.
+
     Returns (run_id, final_status, extra_reason_or_None).
     """
     po_number = po_match.get("po_number")
     total = extracted.get("total")
     extra = None
+    # Distinguishes the two downgrade causes for the audit fix-up further
+    # down, which rewrites the PO-balance rule specifically and must not
+    # attribute a vendor-identity hold to it.
+    downgraded_on_balance = False
     allocations = allocations_from_match(po_match, total)
 
     with write_txn() as conn:
         with conn.cursor() as cur:
+            # A portal submission whose document names a vendor this client
+            # does not represent is held for a person, whatever the rules
+            # concluded about the document itself.
+            #
+            # CHECKED BEFORE THE BALANCE LOOP, NOT AFTER, and the order is a
+            # decision rather than an accident. An invoice that trips both
+            # should be described by THIS reason: "we are not sure who sent
+            # this" is a more serious thing for a reviewer to be told than "it
+            # is slightly over budget", and the balance figure is meaningless
+            # until the first question is settled. Running the balance
+            # re-check first would have quietly won the tie, because it
+            # downgrades the status this branch then tests.
+            #
+            # Nothing is lost by skipping the balance re-check on a run this
+            # holds: that check exists to stop an APPROVED run overspending a
+            # PO, and consumption joins to status='APPROVED', so a run
+            # inserted as NEEDS_REVIEW consumes nothing to begin with.
+            if client_vendor_mismatch and status == "APPROVED":
+                status = "NEEDS_REVIEW"
+                extra = {
+                    "text": (
+                        "Submitted through the client portal by client "
+                        + repr(client_id) + ", but the document names vendor "
+                        + repr(extracted.get("vendor_name")) + ", which that client "
+                        "does not represent. Held for a person to confirm who this "
+                        "invoice is actually from before any purchase order is charged."
+                    ),
+                    "level": "fail",
+                }
+                reasons = list(reasons) + [extra]
+
             # Re-check EVERY PO this invoice charges, not just the primary one. A
             # multi-PO invoice can be raced on any of them, and one that no longer
             # fits is enough to hold the whole invoice -- the allocations are a
@@ -1367,6 +1459,7 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
                         continue
 
                     status = "NEEDS_REVIEW"
+                    downgraded_on_balance = True
                     extra = {
                         "text": (
                             f"Balance changed while this invoice was being processed: "
@@ -1394,25 +1487,41 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
                 audit["automated_decision"] = status
                 audit["reason"] = extra["text"]
                 audit["reasons"] = list(audit.get("reasons") or []) + [extra]
-                audit["comparison"] = dict(audit.get("comparison") or {},
-                                           po_remaining=po_match.get("remaining_before"),
-                                           variance=po_match.get("diff"),
-                                           remaining_after=po_match.get("remaining_after"))
-                audit["rules"] = [
-                    dict(c, passed=False,
-                         detail="PO balance changed before commit; re-checked under a row lock",
-                         reason="Invoice total exceeds PO remaining amount.")
-                    if c.get("name") == "PO remaining check" else c
-                    for c in (audit.get("rules") or [])
-                ]
+                if downgraded_on_balance:
+                    audit["comparison"] = dict(audit.get("comparison") or {},
+                                               po_remaining=po_match.get("remaining_before"),
+                                               variance=po_match.get("diff"),
+                                               remaining_after=po_match.get("remaining_after"))
+                    audit["rules"] = [
+                        dict(c, passed=False,
+                             detail="PO balance changed before commit; re-checked under a row lock",
+                             reason="Invoice total exceeds PO remaining amount.")
+                        if c.get("name") == "PO remaining check" else c
+                        for c in (audit.get("rules") or [])
+                    ]
+                else:
+                    # A vendor-identity hold is not a failure of any rule
+                    # rules.decide() evaluated, so no existing rule is marked
+                    # failed for it. It is appended as its own named check
+                    # instead -- `rules_failed` is a fixed vocabulary that
+                    # analytics groups by (and that the portal translates from
+                    # for the client), so a hold with no name at all would be
+                    # a hold nothing downstream could account for.
+                    audit["rules"] = list(audit.get("rules") or []) + [{
+                        "name": PORTAL_VENDOR_IDENTITY_RULE,
+                        "passed": False,
+                        "detail": "Submitted by a client that does not represent "
+                                  "the vendor named on the document",
+                        "reason": extra["text"],
+                    }]
                 audit["rules_passed"] = [c["name"] for c in audit["rules"] if c["passed"]]
                 audit["rules_failed"] = [c["name"] for c in audit["rules"] if not c["passed"]]
 
             cur.execute(
                 """INSERT INTO runs (filename, status, created_at, vendor_name, invoice_number, total,
                    po_number, extracted_json, po_match_json, stages_json, reasons_json, audit_json,
-                   automated_decision, final_decision)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                   automated_decision, final_decision, client_id)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
                 (filename, status, datetime.now(timezone.utc).isoformat(),
                  extracted.get("vendor_name"), extracted.get("invoice_number"),
                  extracted.get("total"), po_number, json.dumps(extracted),
@@ -1420,7 +1529,13 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
                  json.dumps(audit) if audit is not None else None,
                  # The decision this process reached on its own, recorded once and
                  # never rewritten. `status` may later move; this must not.
-                 status, status),
+                 status, status,
+                 # Written in the SAME insert as the run, not by a follow-up
+                 # update. The portal's visibility rule reads this column, so
+                 # a run that existed for even a moment without it would be a
+                 # run briefly attributed to nobody -- and, for a submission
+                 # naming another vendor, briefly visible to that vendor.
+                 client_id),
             )
             run_id = cur.fetchone()["id"]
             # Inside the same transaction as the run row. A run that exists without
@@ -1695,7 +1810,7 @@ def runs_pending_on_po(po_number: str):
 
 
 def save_run(filename, status, extracted: dict, po_match: dict, stages: list, reasons: list,
-            uploaded_by=None):
+            uploaded_by=None, client_id=None):
     # write_txn(), not a bare get_conn(): the run row and its allocation rows
     # must land as one unit, or a failure between the two would leave a run
     # with no allocations -- an invoice charged to nothing, silently reading
@@ -1707,8 +1822,8 @@ def save_run(filename, status, extracted: dict, po_match: dict, stages: list, re
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO runs (filename, status, created_at, vendor_name, invoice_number, total,
-                   po_number, extracted_json, po_match_json, stages_json, reasons_json)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                   po_number, extracted_json, po_match_json, stages_json, reasons_json, client_id)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
                 (
                     filename,
                     status,
@@ -1721,6 +1836,11 @@ def save_run(filename, status, extracted: dict, po_match: dict, stages: list, re
                     json.dumps(po_match),
                     json.dumps(stages),
                     json.dumps(reasons),
+                    # Phase J. Set only when an external client submitted this
+                    # through the portal; NULL for every internal upload and
+                    # every email ingestion, which is how the portal tells the
+                    # two apart.
+                    client_id,
                 ),
             )
             run_id = cur.fetchone()["id"]

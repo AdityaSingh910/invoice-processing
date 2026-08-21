@@ -27,6 +27,8 @@ import email_security
 import extraction
 import logs
 import matching
+import portal
+import quota
 import ratelimit
 import rules
 import storage
@@ -286,7 +288,8 @@ def _persist_document(run_id, filename, pdf_bytes, uploaded_by, source):
 
 
 async def _abort_unreadable(filename, message, stages, stage, pdf_bytes=b"",
-                            uploaded_by=None, source="MANUAL_UPLOAD"):
+                            uploaded_by=None, source="MANUAL_UPLOAD",
+                            client_id=None):
     """Close out a run whose file could not be opened at all.
 
     The remaining checks are reported as skipped rather than silently dropped, so
@@ -308,7 +311,7 @@ async def _abort_unreadable(filename, message, stages, stage, pdf_bytes=b"",
     extracted = ExtractedInvoice(raw_text="", extraction_method="none").to_dict()
     po_match = matching.empty_match(None)
     run_id = storage.save_run(filename, status, extracted, po_match, stages, reasons,
-                              uploaded_by=uploaded_by)
+                              uploaded_by=uploaded_by, client_id=client_id)
     # An unreadable file is still a real upload worth keeping -- a reviewer
     # routing it for manual handling needs the original document, not just
     # the fact that nothing could be read from it.
@@ -321,7 +324,23 @@ async def _abort_unreadable(filename, message, stages, stage, pdf_bytes=b"",
 
 
 async def run_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str = None,
-                       source: str = "MANUAL_UPLOAD"):
+                       source: str = "MANUAL_UPLOAD", portal_client=None):
+    """The nine-stage pipeline, streamed as SSE frames.
+
+    `portal_client` is a `portal.ClientContext` when an external client
+    submitted this invoice through the client portal (Phase J), and None on
+    every other path. It changes NOTHING about how the invoice is read or
+    judged -- the same stages run, the same rules decide, the same ledger is
+    charged -- which is the whole point of there being one pipeline behind
+    three doors rather than a separate one for outside parties.
+
+    What it does change is two facts recorded at commit time: which client the
+    run is attributed to, and whether the vendor named on the document is one
+    that client actually represents. `storage.save_run_checked` acts on the
+    second (see its docstring), holding an otherwise-approvable invoice for a
+    person rather than charging a purchase order belonging to a company that
+    did not send it.
+    """
     stages = []
     # Timing measures real work only. The small asyncio.sleep pauses between stages
     # exist so a human can watch the run unfold; they are deliberately excluded so
@@ -340,6 +359,11 @@ async def run_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str = None,
         """Reset the stage clock after a pacing sleep so it isn't counted."""
         clock["t"] = time.perf_counter()
 
+    # Phase J. Resolved once here rather than at each use, so the value the
+    # run is committed with is the one this request authenticated as -- not a
+    # second lookup that could see a different account state part-way through.
+    client_id = portal_client.client_id if portal_client else None
+
     # 1. INGEST
     size_kb = round(len(pdf_bytes) / 1024, 1)
     yield sse("stage", {"stage": stage("INGEST", "ok", f"Received \"{filename}\" ({size_kb} KB).")})
@@ -354,7 +378,7 @@ async def run_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str = None,
         yield sse("stage", {"stage": stage("EXTRACT_TEXT", "fail", str(exc))})
         async for evt in _abort_unreadable(filename, str(exc), stages, stage,
                                            pdf_bytes=pdf_bytes, uploaded_by=uploaded_by,
-                                           source=source):
+                                           source=source, client_id=client_id):
             yield evt
         return
 
@@ -518,9 +542,17 @@ async def run_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str = None,
 
     # Commit under the ledger write lock, which re-verifies the PO balance and
     # downgrades a stale APPROVED rather than overspending the PO.
+    # The vendor-identity question is asked HERE, against the extracted vendor
+    # name, and answered by the client context rather than by anything in the
+    # request -- so a submitter cannot assert whose invoice this is. False for
+    # every non-portal run, because there is no client to disagree with.
+    client_vendor_mismatch = bool(
+        portal_client and not portal.represents_vendor(portal_client,
+                                                       extracted.get("vendor_name")))
     run_id, status, extra = storage.save_run_checked(
         filename, status, extracted, po_match, stages, reasons,
-        tolerance_for=matching.tolerance_for, audit=audit, uploaded_by=uploaded_by)
+        tolerance_for=matching.tolerance_for, audit=audit, uploaded_by=uploaded_by,
+        client_id=client_id, client_vendor_mismatch=client_vendor_mismatch)
     if extra:
         reasons = list(reasons) + [extra]
         # save_run_checked re-checked the balance under the write lock and
@@ -667,9 +699,12 @@ async def _guarded_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str):
     """
     try:
         # Every upload through this endpoint is, definitionally, a manual
-        # upload -- it is a human at a browser posting a file. EMAIL is a
-        # source this schema already recognises (config.DOCUMENT_SOURCES) for
-        # when Phase J's ingestion path exists, but nothing writes it yet.
+        # upload -- it is an employee at a browser posting a file. The other
+        # two sources config.DOCUMENT_SOURCES recognises are written
+        # elsewhere: EMAIL by Phase G's ingestion poller, and CLIENT_PORTAL by
+        # Phase J's submission endpoint. (The comment that stood here
+        # predicted email ingestion as "Phase J"; it predates the lettered
+        # tracks, and both paths now exist.)
         async for event in run_pipeline(filename, pdf_bytes, uploaded_by=uploaded_by,
                                         source="MANUAL_UPLOAD"):
             yield event
@@ -1798,6 +1833,250 @@ def get_sample_invoice(name: str,
             or not os.path.isfile(path)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sample not found")
     return FileResponse(path, media_type="application/pdf")
+
+
+# --------------------------------------------------------------------------
+# The client portal (Phase J)
+#
+# The only endpoints in this application an external party can reach. Every
+# one of them goes through `portal_context`, which is the single place a token
+# becomes a set of records -- there is no second way into portal.py, and no
+# endpoint here resolves visibility for itself.
+#
+# WHAT MAKES THE ISOLATION HOLD, IN ONE PARAGRAPH: the client identity and its
+# vendor binding are read from the LIVE user store on every request and never
+# from the token or from anything the caller sent; the visibility predicate is
+# applied in SQL before any row is read; and a run id in a path is only ever an
+# additional narrowing on top of it. So changing an id in a URL, a query
+# string or a body cannot widen what comes back -- it can only ask about a
+# record that then fails the predicate and reads as absent.
+# --------------------------------------------------------------------------
+
+def portal_context(
+    principal: auth.Principal = Depends(ratelimit.rate_limit_portal),
+) -> "portal.ClientContext":
+    """Authenticate, authorize, rate limit, then resolve WHO this client is.
+
+    The order is the same one `rate_limit_processing` established and matters
+    for the same reason: an unauthenticated flood is refused before it can
+    make this process do any work, and the per-user counter is keyed to a
+    verified identity rather than to something the caller supplied.
+
+    A PortalError becomes a 403 with the text portal.py wrote for a supplier
+    to read. 403 rather than 401 because the credentials were perfectly valid
+    -- the account is simply not set up to represent anyone, which is our
+    configuration problem and not something re-authenticating would fix.
+    """
+    try:
+        return portal.context_for(principal)
+    except portal.PortalError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+
+
+def _portal_run_or_404(ctx: "portal.ClientContext", invoice_id: int):
+    """One of this client's invoices, or 404.
+
+    404, NOT 403, for an invoice belonging to somebody else -- and identical
+    to the 404 a nonexistent id gets. A 403 here would confirm that the id
+    names a real invoice, which is a fact about another company's business and
+    exactly what someone walking the id space is trying to learn.
+    """
+    invoice = portal.get_invoice(ctx, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="No such invoice")
+    return invoice
+
+
+@app.get("/api/portal/me")
+def portal_me(ctx: "portal.ClientContext" = Depends(portal_context)):
+    """Who the portal has this caller down as, and which suppliers they cover.
+
+    Carries `notices` so a misconfigured supplier link is stated plainly
+    rather than presenting to the vendor as missing invoices.
+    """
+    return portal.client_identity(ctx)
+
+
+@app.get("/api/portal/invoices")
+def portal_invoices(limit: int = Query(portal.DEFAULT_PAGE, ge=1, le=portal.MAX_PAGE),
+                    offset: int = Query(0, ge=0),
+                    state: str = Query(None),
+                    ctx: "portal.ClientContext" = Depends(portal_context)):
+    """This client's invoices, newest first.
+
+    There is deliberately no `client`, `vendor` or `client_id` parameter. The
+    only narrowing a caller may ask for is by state and by page, because every
+    other axis is already fixed by who they are -- and a filter a caller
+    supplies on the dimension that decides what they may see is not a filter,
+    it is an authorization check performed by the person being checked.
+    """
+    try:
+        return portal.list_invoices(ctx, limit=limit, offset=offset, state=state)
+    except portal.PortalError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.get("/api/portal/invoices/{invoice_id}")
+def portal_invoice(invoice_id: int,
+                   ctx: "portal.ClientContext" = Depends(portal_context)):
+    """One of this client's invoices, with its client-visible timeline."""
+    return _portal_run_or_404(ctx, invoice_id)
+
+
+@app.get("/api/portal/invoices/{invoice_id}/document")
+def portal_invoice_document(invoice_id: int,
+                            ctx: "portal.ClientContext" = Depends(portal_context)):
+    """Metadata for the PDF this invoice was processed from.
+
+    A hand-listed subset of what the internal endpoint returns. `uploaded_by`
+    is absent as well as `storage_key` and `storage_backend`: for an invoice
+    that arrived by email or by an employee's upload, that field names one of
+    our people.
+    """
+    doc = portal.invoice_document_row(ctx, invoice_id)
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="No document is stored for this invoice")
+    # Attributed to the authenticated supplier login, not to NULL. A NULL
+    # actor means "the system did this" (§6.1 of the handoff notes), and a
+    # vendor opening their own invoice is neither the system nor anonymous --
+    # and the AP team is entitled to see, in the same activity history they
+    # already read, that the supplier has seen it.
+    storage.log_activity(invoice_id, "DOCUMENT_VIEWED", actor=ctx.username,
+                         note="Viewed through the client portal",
+                         metadata={"client_id": ctx.client_id, "portal": True})
+    return {
+        "invoice_id": doc["run_id"],
+        "filename": doc["original_filename"],
+        "mime_type": doc["mime_type"],
+        "size_bytes": doc["size_bytes"],
+        "sha256": doc["sha256"],
+        "received_at": doc["uploaded_at"],
+    }
+
+
+@app.get("/api/portal/invoices/{invoice_id}/document/download")
+def portal_invoice_document_download(invoice_id: int, inline: bool = False,
+                                     ctx: "portal.ClientContext" = Depends(portal_context)):
+    """The invoice PDF itself.
+
+    Visibility is resolved before the document row is looked up, let alone the
+    file read, so an unauthorised caller learns nothing about whether that id
+    has a document. The bytes come from Phase C's DocumentStore through the
+    same server-generated key the internal endpoint uses -- there is no
+    portal-specific storage path and no second key format to get wrong.
+    """
+    doc = portal.invoice_document_row(ctx, invoice_id)
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="No document is stored for this invoice")
+    try:
+        data = documents.get_store().read(doc["storage_key"])
+    except (FileNotFoundError, OSError, ValueError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Document content is no longer available")
+
+    storage.log_activity(invoice_id, "DOCUMENT_DOWNLOADED", actor=ctx.username,
+                         note="Downloaded through the client portal",
+                         metadata={"client_id": ctx.client_id, "portal": True,
+                                   "inline": inline})
+    filename = doc["original_filename"] or f"invoice-{invoice_id}.pdf"
+    disposition = "inline" if inline else "attachment"
+    return Response(
+        content=data,
+        media_type=doc["mime_type"] or "application/pdf",
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
+
+
+@app.get("/api/portal/purchase-orders")
+def portal_purchase_orders(ctx: "portal.ClientContext" = Depends(portal_context)):
+    """The purchase orders raised to this client, and what is left on each.
+
+    The `remaining` figure is the ledger's own -- derived from run_allocations
+    joined to APPROVED runs -- so a supplier and a buyer looking at the same
+    order read the same number rather than two figures maintained separately.
+    """
+    return portal.purchase_orders(ctx)
+
+
+@app.post("/api/portal/invoices")
+async def portal_submit_invoice(
+    file: UploadFile = File(...),
+    principal: auth.Principal = Depends(ratelimit.rate_limit_portal_submit),
+):
+    """Submit an invoice through the portal.
+
+    THE SAME PIPELINE, NOT A SECOND ONE. This drives `run_pipeline` -- every
+    stage, the same rules, the same confidence gate, the same PO matching, the
+    same allocation ledger, the same review routing -- with
+    `source="CLIENT_PORTAL"`, which `config.DOCUMENT_SOURCES` recognises
+    alongside the manual and email doors. An externally submitted invoice is
+    judged by exactly the process an internally uploaded one is.
+
+    DELIBERATELY NOT STREAMED, and that is the one visible difference from the
+    internal endpoint. The SSE frames name internal stages and carry their
+    detail lines -- extraction routes, vendor lookups, PO balances, tolerance
+    arithmetic -- so streaming them to an outside party would hand over the
+    running commentary this phase spends the rest of its effort not printing.
+    The generator is driven to completion here and only the client projection
+    is returned.
+
+    THE DAILY BUDGET IS CHECKED BEFORE ANY WORK HAPPENS. Extraction spends a
+    shared provider quota, and the vision route -- the only one that can read a
+    scan -- has a free tier of twenty requests a DAY. Reserving the client's
+    own allowance first means an external caller can exhaust what it was given
+    without ever reaching what the internal pipeline needs.
+    """
+    ctx = portal_context(principal)
+
+    if not quota.try_consume(quota.portal_key(ctx.client_id)):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(f"This account's daily submission limit of "
+                    f"{config.DAILY_QUOTA_PORTAL_SUBMISSIONS} invoices has been "
+                    f"reached. Please try again tomorrow."),
+            headers={"Retry-After": "3600"},
+        )
+
+    pdf_bytes = await _read_capped(file)
+    _validate_pdf(pdf_bytes)
+    filename = _safe_filename(file.filename)
+
+    final = None
+    try:
+        async for frame in run_pipeline(filename, pdf_bytes,
+                                        uploaded_by=principal.username,
+                                        source="CLIENT_PORTAL", portal_client=ctx):
+            # Only the closing frame is of any interest here; the stage frames
+            # are internal and are consumed and dropped.
+            if frame.startswith("data: "):
+                event = json.loads(frame[6:])
+                if event.get("type") == "final":
+                    final = event.get("result")
+    except Exception as exc:
+        print(f"[error] portal submission failed on {filename!r}: "
+              f"{exc.__class__.__name__}", file=sys.stderr)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Processing failed. The invoice was not submitted.")
+
+    if not final or not final.get("run_id"):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Processing failed. The invoice was not submitted.")
+
+    # Re-read through the portal's own visibility predicate rather than
+    # projecting the pipeline's in-memory result. Two things fall out of that:
+    # the client is shown what was actually COMMITTED (including a downgrade
+    # save_run_checked applied at commit time), and the response goes through
+    # the same isolation check as every other read -- so this endpoint cannot
+    # become the one place a client is handed a record the predicate would
+    # have refused.
+    submitted = portal.get_invoice(ctx, final["run_id"])
+    if submitted is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Processing failed. The invoice was not submitted.")
+    return {"submitted": True, "invoice": submitted}
 
 
 class _AppShell(StaticFiles):

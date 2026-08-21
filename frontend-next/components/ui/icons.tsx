@@ -204,3 +204,16 @@ export const IconChat = (p: IconProps) => (
     <path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H6l-3 2.5V4a1.5 1.5 0 0 1 1.5-1.5h7.5A1.5 1.5 0 0 1 13.5 4z" />
   </Svg>
 );
+
+/** The client portal (Phase J). A building, because the row it labels is the
+ *  supplier's own company rather than a document or a report — and because it
+ *  has to be distinguishable at 15px from IconInvoice and IconLedger, which
+ *  are both page-shaped. */
+export const IconBuilding = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2.5 14V3.5a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1V14" />
+    <path d="M9.5 6.5h3a1 1 0 0 1 1 1V14" />
+    <path d="M1 14h14" />
+    <path d="M5 5.5h2M5 8h2M5 10.5h2" />
+  </Svg>
+);

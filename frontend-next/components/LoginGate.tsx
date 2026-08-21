@@ -20,6 +20,18 @@ const DEMO = [
   { user: "analyst", pass: "demo-analyst", role: "Process invoices" },
   { user: "reviewer", pass: "demo-reviewer", role: "Process, accept, reject" },
   { user: "admin", pass: "demo-admin", role: "Full administrative access" },
+  // Phase J. Two SUPPLIER accounts, which sign in here exactly as an employee
+  // does -- there is no separate client login and no second token issuer -- and
+  // land in the supplier portal rather than in this application. Marked so an
+  // evaluator can tell before clicking that these two show a different product,
+  // not a narrower view of this one.
+  { user: "acme", pass: "demo-acme", role: "Supplier portal — Acme", external: true },
+  {
+    user: "globex",
+    pass: "demo-globex",
+    role: "Supplier portal — Globex, view only",
+    external: true,
+  },
 ];
 
 /** The nine stages, named as the pipeline names them. */
@@ -198,7 +210,10 @@ export default function LoginGate() {
                       <IconUser size={12} />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block text-[12.5px] font-medium">{d.user}</span>
+                      <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
+                        {d.user}
+                        {d.external && <Badge tone="accent">Supplier</Badge>}
+                      </span>
                       <span className="t-meta block text-[11px]">{d.role}</span>
                     </span>
                     {active ? (

@@ -23,14 +23,21 @@ to a human accept/reject queue that several employees can work
 collaboratively → every run and every review action is recorded in a
 dashboard and an activity history.
 
+**A second, much narrower audience exists as of Phase J:** an external
+supplier signs in to the same application and lands in a **different shell**
+showing only their own invoices, their own purchase orders and their own
+documents — enforced server-side by a scope no internal role holds and a
+vendor binding no token can assert (§7g).
+
 **Major components:**
 - **Backend** (`backend/`) — FastAPI, PostgreSQL, the 9-stage pipeline, the
   deterministic rule engine, OAuth2 auth, document storage, multi-user review
   collaboration, email trusted-source verification (§7a), email invoice
   ingestion (§7b), the derived-at-read-time KPI/analytics layer (§7c), and the
   log/filter/grouping/export query layer over the histories those phases
-  already write (§7d), hardened by the Phase K security pass (§7e), and the
-  read-only AP assistant (§7f).
+  already write (§7d), hardened by the Phase K security pass (§7e), the
+  read-only AP assistant (§7f), and the externally-reachable supplier portal
+  (§7g).
 - **Frontend** (`frontend-next/`) — Next.js 15 / React 19 / Tailwind v4,
   served as a static export by FastAPI. All phases fully committed.
 - **Frontend fallback** (`frontend/`) — the original vanilla HTML/JS UI,
@@ -38,7 +45,7 @@ dashboard and an activity history.
 - **`data/`** — seed POs, vendors, demo users (JSON, tracked in git,
   reloaded into Postgres on every startup) plus gitignored runtime state
   (`documents/`).
-- **`tests/`** — 1,224 tests, 26 files, real (schema-isolated) PostgreSQL, both
+- **`tests/`** — 1,398 tests, 27 files, real (schema-isolated) PostgreSQL, both
   LLM providers mocked. See §10.
 
 ---
@@ -68,7 +75,7 @@ history — do not conflate them:
 | G | Email invoice ingestion & extraction | ✅ Complete | `8dfc286` |
 | H | KPIs + analytics | ✅ Complete | `9bdbeeb` (backend) + `96b3f92` (frontend) |
 | I | Logs + filters + grouping + exports | ✅ Complete | `248009e` |
-| J | Client access / client portal | ⬜ **Next — not started** | — |
+| J | Client access / client portal | ✅ Complete | (this phase — §7g) |
 | K | Security hardening | ✅ Complete | `2b0f97e` |
 | K2 | Chatbot (read-only invoice/AP assistant) | ✅ Complete | `86f4421` |
 | L | Multilingual support | ⬜ Not started | — |
@@ -81,15 +88,23 @@ before widening who can reach it. The letter K was already spoken for by the
 chatbot in the original roadmap; that entry is listed as K2 above and is
 unchanged, unstarted, and not renamed anywhere else.
 
-**Do not start Phase J or any later phase without being explicitly asked.**
+**Do not start Phase L or M, or any later phase, without being explicitly
+asked.**
 This project has been built one verified phase at a time, each requested
 individually, each committed on its own before the next began. See §9 for
 what J–M are planned to cover — plan only, nothing implemented.
 
-**Do not redo A–I, K or K2.** All are complete, tested, and committed. A–I and
+**Do not redo A–K2, or J.** All are complete, tested, and committed. A–I and
 K were committed in their respective phases; K2 (the assistant) was committed
-in `86f4421`. See §7f for what K2 does. If something in A–I, K or K2 looks wrong,
+in `86f4421`; J (the supplier portal) has its own commit — see §13.1. See §7f
+for what K2 does and §7g for what J does. If something in them looks wrong,
 raise it — don't silently "fix" or rebuild it.
+
+**PHASE K WAS TAKEN BEFORE J ON PURPOSE, AND THAT ORDERING PAID OFF.** Phase J
+opens this application to people outside the company, and it leans directly on
+two things Phase K built: the live account re-check on every request (which is
+why a client binding is never read from a token, §7g.3) and the reporting-
+surface rate limiter pattern (which is why the portal has its own, §7g.8).
 
 ---
 
@@ -283,8 +298,14 @@ runs              id (PK, SERIAL), filename, status, created_at, vendor_name,
                   invoice_number, total, po_number, extracted_json,
                   po_match_json, stages_json, reasons_json, audit_json,
                   automated_decision, human_decision, final_decision,
-                  reviewed_by, reviewed_at, review_note
-                  — one row per processed invoice; the run history IS the ledger
+                  reviewed_by, reviewed_at, review_note, client_id
+                  — one row per processed invoice; the run history IS the ledger.
+                  `client_id` (Phase J) is the external client that SUBMITTED
+                  this invoice through the supplier portal, and NULL for every
+                  internal upload and email ingestion. It is not a duplicate of
+                  `vendor_name`: that is what the extractor READ off the
+                  document, this is who was AUTHENTICATED. They can disagree,
+                  which is the whole reason it exists (§7g.4)
 
 run_allocations   id (PK, SERIAL), run_id (FK → runs.id), po_number, amount,
                   seq
@@ -348,7 +369,9 @@ email_activity    id (PK, SERIAL), email_id (FK → email_messages.id),
 ```
 
 **Not database tables, despite looking like they should be:** users live in
-`data/users.json`, read directly by `auth.py` — there is no `users` table.
+`data/users.json`, read directly by `auth.py` — there is no `users` table, and
+for the same reason no `clients` table: an external client's identity and its
+vendor binding are two extra fields on that same user record (§7g.3).
 There is no `run_stage_logs` table either — a run's stage log is the
 `stages_json` column on `runs`.
 
@@ -358,7 +381,8 @@ Indexes: `run_allocations(po_number)`, `run_allocations(run_id)`,
 `review_claims(run_id, released_at)`, `runs(invoice_number)`, `runs(status)`,
 `email_messages(status)`, `email_messages(sha256)`, `email_messages(run_id)`,
 `email_messages(received_at)`, `email_activity(email_id)`,
-`email_activity(created_at)` (Phase I — §7d.1),
+`email_activity(created_at)` (Phase I — §7d.1), `runs(client_id)`
+(Phase J — §7g.11),
 **`UNIQUE email_messages(provider, provider_message_id)`** (Phase G's
 idempotency mechanism, §7b.5), `email_messages(ingest_status)`,
 `email_attachments(email_id)`, `email_attachments(run_id)`,
@@ -1088,19 +1112,22 @@ uvicorn workers is safe — see §7b.5.
    messages with a real generated key — an unsigned message is correctly
    quarantined by Phase F and never reaches the pipeline.
 
-**Two code comments are now out of date and were deliberately left alone**
-(they are comments only — no behaviour depends on them, and changing them
-would have put unrelated edits in the Phase G commit). Both predate the
-lettered phase tracks and refer to a "Phase J" that no longer means anything:
+**Two code comments were out of date and were deliberately left alone at the
+time** (they were comments only — no behaviour depended on them, and changing
+them would have put unrelated edits in the Phase G commit). Both predated the
+lettered phase tracks and referred to a "Phase J" that meant email ingestion:
 
-- `backend/config.py` (~line 291) — "when ingestion (Phase J) adds a second
-  producer"
-- `backend/main.py` (~line 547) — "for when Phase J's ingestion path exists,
-  but nothing writes it yet"
+- `backend/config.py` — "when ingestion (Phase J) adds a second producer"
+- `backend/main.py` — "for when Phase J's ingestion path exists, but nothing
+  writes it yet"
 
-Phase G *is* that ingestion path, and it **does** now write
-`source="EMAIL"`. Worth correcting the next time those files are touched for
-another reason.
+Phase G *is* that ingestion path and does write `source="EMAIL"`.
+**Both comments were corrected in Phase J**, which is the "next time those
+files are touched for another reason" this note was waiting for: Phase J edits
+`DOCUMENT_SOURCES` to add `CLIENT_PORTAL` and edits the manual-upload path
+beside the other comment, so the corrections landed where the lines were being
+changed anyway rather than as a separate tidying commit. There is now a real
+Phase J (§7g) and it is the client portal, not ingestion.
 
 ## 7c. KPIs & analytics (Phase H)
 
@@ -2376,6 +2403,490 @@ activity intent on the word "reviewed". Both are fixed and both have tests.
 
 ---
 
+## 7g. Client access / the supplier portal (Phase J)
+
+**Status: implemented, tested (174 tests), verified end to end.**
+
+The roadmap entry for J is one line — *"client access / client portal"* — so
+this section is the specification as well as the record. Everything below was
+derived from that phrase plus the conventions the rest of this codebase
+already sets.
+
+### 7g.1 The problem Phase J actually solves
+
+Every phase before this one was built for people **inside** the company, and
+the authorization model says so plainly. §7e.8 states it outright: there is no
+per-user invoice ownership, because this is a **shared** AP queue and the whole
+point of Phase D is that several employees work the same invoices.
+`invoice:read` reads every run, every document and every activity row, and that
+is the product rather than an oversight.
+
+Phase J adds the first caller for whom that is completely wrong. A supplier
+signing in to ask *"where is my invoice"* must see their own records and
+absolutely nothing else — not another vendor's invoice, not another vendor's
+purchase order, not the name of the employee reviewing theirs, not a reason
+sentence that happens to quote a different run's id.
+
+So the phase is not "add a filter". It is a second, much narrower view over the
+same rows, with its own authorization boundary, its own vocabulary and its own
+projections.
+
+### 7g.2 The one decision the whole design rests on
+
+**A client role carries NO `invoice:*` scope, and no internal role carries any
+`portal:*` scope.**
+
+That is the entire security argument, and it is worth stating why the obvious
+alternative was rejected. Reusing `invoice:read` for the portal and filtering
+it back down per endpoint would make isolation a property of **forty-odd
+separate code paths**, any one of which could be added by a later phase and
+forgotten. A client role holding none of those scopes is refused by every
+existing internal route **structurally, on day one, with no per-endpoint
+change** — which is the same "the scope is the boundary" property §7e.8 already
+records, pointed at a new kind of caller.
+
+**NOT ONE of the 43 internal routes was changed by this phase.** They refuse a
+client token because of what the token does not contain, not because any of
+them learned about clients. (That is a stronger statement than Phase K's "41
+of 43 stayed as they were" — that pass changed two; this one changed none.) A
+parametrised test enumerates every route from `app.routes` itself — not from a
+hand-written list a later phase would outgrow — and asserts a client token
+never gets a 200 from any of them.
+`/api/auth/me` is the single exception and is checked explicitly: it reports
+the caller their own username and scopes, and reads nothing about invoices.
+
+**Two new scopes were created, and Phases H, I and K2 each declined to create
+one.** Their reason (§7c.5) was that a new scope needs a **role** to carry it,
+which means editing every deployment's user store for the sake of one screen.
+That objection does not apply here: Phase J adds an external role no matter
+what, so the user store changes either way.
+
+```
+portal:read     read your own company's invoices, documents and purchase orders
+portal:submit   submit an invoice through the portal
+
+client          -> ["portal:read", "portal:submit"]
+client_readonly -> ["portal:read"]
+```
+
+`client_readonly` exists so that `portal:submit` is a boundary worth testing
+rather than a scope every client trivially holds — a supplier's accounts
+department wanting visibility without the authority to raise an invoice.
+
+**`admin` is deliberately excluded from the portal**, and that looks like an
+omission so it is stated: an administrator has no vendor binding, so there is
+nothing coherent for a per-client view to show them, and everything it would
+show they can already read in full through the internal API.
+
+### 7g.3 The client binding — live, never in the token
+
+A client account is an **ordinary record in the same user store every internal
+account lives in**, with two extra fields:
+
+```json
+{"username": "acme", "roles": ["client"], "client_id": "C-ACME",
+ "client_name": "Acme Office Supplies", "vendor_ids": ["V-001"]}
+```
+
+There is **no `clients` table** — for the same reason there is no `users` table
+(§4). `auth.load_users()` already reads the store on every call, so the binding
+costs nothing further.
+
+**It is resolved from the live store on every request and is never read from
+the token.** Stamping `client_id` into the JWT at sign-in would have
+reintroduced, on the one surface facing outside the company, exactly the
+problem Phase K spent its HIGH finding fixing (§7e.2): a token is a snapshot,
+so a binding minted into one is believed until it expires — eight hours by
+default. Re-pointing an account at a different vendor, or removing its access
+to one it no longer represents, would not take effect until then.
+
+Reading it live means a change lands on the very next call, **and it means no
+claim a caller can present has any bearing on what they are shown**. A
+validly-signed token asserting `client_id: "C-GLOBEX"` is not rejected — that
+claim is simply never consulted.
+
+**A misconfigured client account sees NOTHING, not everything.** A `client`
+role with no `client_id`, no `vendor_ids`, an empty list, or a `vendor_ids` of
+the wrong type is refused. There is no safe default available: defaulting the
+client id to the username would bind an account to a client that may not exist,
+and defaulting the vendors to "all" would hand an outside party every
+supplier's invoices, which is the precise failure this phase exists to prevent.
+Same fail-closed posture `is_disabled()` takes on an unparseable record (§7e.2).
+
+### 7g.4 The visibility predicate, and why it is two clauses
+
+```sql
+runs.client_id = <this client>
+  OR (runs.client_id IS NULL AND runs.vendor_name = ANY(<their vendor names>))
+```
+
+The first clause owns everything submitted through the portal. The second owns
+everything that reached AP another way — an employee's upload, or Phase G's
+email ingestion — which is **most of what a supplier actually wants to look
+at**, and which carries no client id because nobody was authenticated as that
+supplier when it arrived. A portal that only ever saw its own submissions would
+be useless to a vendor whose invoices arrive by email.
+
+**The `client_id IS NULL` guard on the second clause is not redundant, and
+removing it is the interesting bug.** Without it, an invoice submitted by client
+A while naming vendor B on the document would match B's vendor list and appear
+in **B's** portal — so a stranger could put a document in front of any company
+by uploading it in that company's name. With it, such a run is pinned to
+whoever was authenticated when it arrived and is visible to that account alone.
+Verified by mutation: dropping the guard breaks exactly that test (§7g.10).
+
+**Filtering happens in SQL, before any row is read.** There is no
+fetch-then-filter path in `backend/portal.py`, so a projection function is never
+handed a row the predicate did not already select — which means forgetting a
+check inside one cannot leak anything. A run id in a URL is only ever an
+**additional narrowing** on top of the predicate.
+
+**Another client's run id returns 404, identical to a nonexistent one** — same
+status, same body. A 403 would confirm that the id names a real invoice, which
+is a fact about another company's business and exactly what someone walking the
+id space is trying to learn. The mirror is tested too: the *other* client can
+see their own, so a portal that returned 404 for everything could not pass.
+
+### 7g.5 Vendor identity, and the ambiguity rule
+
+`runs.vendor_name` is whatever the extractor read off the document, and
+`storage.normalize_vendor_name()` is the **only** comparison anything in this
+codebase uses to decide whether two spellings are the same company. The portal
+reuses it rather than inventing a second one — two definitions of vendor
+identity, drifting apart, one of them deciding who sees whose invoices, is not
+a trade worth making.
+
+It has no SQL equivalent and cannot be inverted into a LIKE pattern, so the
+small set of **distinct** `runs.vendor_name` values is resolved in Python and
+the answer bound as parameters. **The cost is stated, not hidden:** that set is
+bounded by the number of real suppliers plus however many ways their names have
+been misspelled on documents, is served by the existing `idx_runs_vendor_name`,
+and is not bounded by the number of runs. At a volume where that stops being
+true the answer is a normalised vendor column written at insert time, and it is
+a self-contained change to one function.
+
+**THE AMBIGUITY RULE.** Normalisation can in principle map two *different*
+approved vendors onto the same form. `rules.vendor_check` already meets this
+case and already refuses to guess: more than one match is ambiguity, and it
+holds the invoice for a person. The portal inherits that decision and takes it
+further, because the stakes are higher — guessing wrong internally means one
+invoice is reviewed by hand, whereas guessing wrong here means showing one
+company another company's invoices.
+
+**So a colliding vendor is dropped from the client's binding entirely, and the
+invoice is shown to NOBODY rather than to both.** The condition is reported in
+`notices` rather than presenting as an unexplained absence. Both halves of the
+collision are tested.
+
+### 7g.6 What the portal deliberately does not disclose
+
+Every response is assembled field by field, the way `chat.py`'s retrievers are.
+The run query names its columns rather than `SELECT *`, because **not fetching**
+`stages_json`, `reasons_json`, `reviewed_by`, `review_note` and the
+human-decision columns is a stronger guarantee than remembering to drop them
+afterwards.
+
+Checked by seeding distinctive values and grepping every portal response:
+
+- **No invoice internals** — no `audit`, `stages`, `provenance`, `rules_failed`,
+  `extraction_method`, or confidence.
+- **No employee** — no `reviewed_by`, `review_note`, `uploaded_by`,
+  `current_claim`. `uploaded_by` matters: for an invoice that arrived by email
+  or by an employee's upload, that field names one of our people.
+- **No document location** — no `storage_key`, no `storage_backend`, the same
+  restriction §5 already observes.
+- **No other vendor's purchase orders.** A multi-PO invoice can name orders
+  raised to more than one supplier, so the numbers listed on an invoice are
+  **intersected** with this client's own orders.
+- **No internal decision vocabulary.** `NEEDS_REVIEW` means nothing to a
+  supplier, and `REJECTED` reads as an accusation when the cause is usually a
+  duplicate or an order already billed in full.
+
+**THE PROSE IS FROZEN, NOT FORWARDED — this is the part worth reading twice.**
+Internal reason sentences embed other runs' ids (*"matches run #7"*), reviewer
+usernames, PO balances and extraction routes, so **none of them is echoed**. The
+explanation a client reads is looked up from `portal.RULE_EXPLANATIONS`, keyed
+by **rule name** — `audit_json.rules_failed` is a fixed, hand-written vocabulary
+(which is why analytics can group by it, §7c.11), and that makes it the one part
+of that structure safe to translate from.
+
+**A rule with no entry falls through to a generic sentence**, and that is the
+important half of the design: a rule added later, by someone who has never read
+`portal.py`, produces a vague-but-true sentence rather than an internal one,
+because nothing there forwards a string it was not given. A malformed
+`audit_json` degrades the same way (`analytics._loads`'s guarded parse, §7c.2).
+
+**The timeline is an allowlist, not a denylist**, and the actor is always
+stripped. `REVIEW_CLAIMED`, `REVIEW_RELEASED`, `COMMENT_ADDED`,
+`DOCUMENT_VIEWED` and `DOCUMENT_DOWNLOADED` are all absent: *"Bob opened your
+invoice at 15:04, then put it back"* is internal. An event type a later phase
+adds does not appear on a supplier's screen until somebody decides what a
+supplier should be told about it.
+
+### 7g.7 Submission — one pipeline, a third door
+
+`POST /api/portal/invoices` drives **`main.run_pipeline`** — every stage, the
+same rules, the same confidence gate, the same PO matching, the same allocation
+ledger, the same review routing — with `source="CLIENT_PORTAL"`, which
+`config.DOCUMENT_SOURCES` now recognises alongside `MANUAL_UPLOAD` and `EMAIL`.
+An externally submitted invoice is judged by exactly the process an internally
+uploaded one is; a test asserts both produce identical stage lists and identical
+audit-trail keys. There is no second decision engine for outside parties.
+
+**It is deliberately NOT streamed**, and that is the one visible difference from
+the internal endpoint. The SSE frames name internal stages and carry their
+detail lines — extraction routes, vendor lookups, PO balances, tolerance
+arithmetic — so streaming them to an outside party would hand over the running
+commentary the rest of this phase spends its effort not printing. The generator
+is driven to completion and only the client projection is returned. A test
+greps the response for all nine stage names.
+
+**The response is re-read through the portal's own visibility predicate** rather
+than projected from the pipeline's in-memory result. Two things fall out of
+that: the client is shown what was actually **committed** (including a downgrade
+applied at commit time), and this endpoint cannot become the one place a client
+is handed a record the predicate would have refused.
+
+#### The vendor-identity guard
+
+Opening upload to external parties creates a risk that **did not exist while
+only employees could upload**. Until Phase J, "the document names a vendor" and
+"we know who sent it" were the same question. They are now separable, and an
+invoice a stranger filed in someone else's name must never auto-approve against
+that someone else's purchase order.
+
+Handled inside **`storage.save_run_checked()`**, in the same transaction and by
+the same mechanism that already downgrades an over-budget APPROVED run to
+NEEDS_REVIEW. That is the one place that holds the PO rows locked, has the
+decision in hand, and has not yet inserted — so:
+
+- **no allocation is ever counted** (consumption joins to `status='APPROVED'`,
+  and the run is inserted as `NEEDS_REVIEW`);
+- **there is no window** in which the run is briefly approved;
+- **no second status-transition path is invented.**
+
+`automated_decision` still records what the rules concluded — it is written from
+`status` at insert time, after whichever downgrade applied, exactly as the
+balance re-check has always worked.
+
+**It runs BEFORE the balance re-check, and that ordering is a decision.** An
+invoice tripping both should be described by the identity reason: "we are not
+sure who sent this" is more serious than "it is slightly over budget", and the
+balance figure means nothing until the first question is settled. Written the
+other way round — as it was at first — the balance branch quietly won the tie,
+because it downgrades the very status the identity branch tests. Nothing is
+lost by skipping the balance re-check on a run this holds: that check exists to
+stop an APPROVED run overspending a PO, and a run inserted as NEEDS_REVIEW
+consumes nothing to begin with.
+
+The hold is recorded under its own named rule,
+`storage.PORTAL_VENDOR_IDENTITY_RULE`, because `rules_failed` is the fixed
+vocabulary analytics groups by and the portal translates from; a hold with no
+name would be one nothing downstream could account for. The audit fix-up
+distinguishes the two downgrade causes, so a vendor-identity hold is **not**
+attributed to the PO-balance rule, which passed.
+
+**An unreadable vendor name counts as NOT represented.** "We could not tell
+whose invoice this is" must not read as "it is yours" on the one path where the
+sender is an outside party — and such an invoice is already held by the rules
+anyway.
+
+### 7g.8 Cost and limits
+
+| Bound | Value | Why |
+|---|---|---|
+| portal reads/min | `RATE_LIMIT_PORTAL_PER_MINUTE` (60) | bounds automation, not use |
+| submissions/min | `RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE` (5) | one submission drives the full pipeline |
+| submissions/day **per client** | `DAILY_QUOTA_PORTAL_SUBMISSIONS` (25) | the slower breaker |
+| rows per page | `portal.MAX_PAGE` (100) | no legitimate portal use for an unbounded scan |
+
+**The portal gets its own limiter rather than reusing the reporting one** — not
+because the queries are expensive, but because of **who** makes them. Every
+other limiter in `ratelimit.py` counts requests from people inside the company,
+on accounts an administrator provisioned and can watch. A shared counter would
+let one vendor's runaway integration script exhaust a budget an employee also
+draws on.
+
+**The daily budget is per client, not one shared key** (`portal:<client_id>`),
+so the first vendor through the door cannot spend every other vendor's
+allowance. It is a new `quota.py` key rather than a new table, exactly as K2's
+`CHAT` was. **It is reserved before any work happens**, because extraction spends
+a *shared* provider quota and the vision route — the only one that can read a
+scan — has a free tier of twenty requests per **day**. A client can spend its
+own allowance; it cannot reach what the internal pipeline needs. This is the
+property §7f.6 established, applied to the door that faces outside the company.
+
+Paging **refuses** an out-of-range page size rather than clamping it, the rule
+§7d.11 already set.
+
+### 7g.9 Frontend
+
+**A different shell, not the internal app with rows hidden.** `app/page.tsx`
+sends an account to `PortalApp` when its token carries `portal:read` and no
+`invoice:read`, and that branch is total: a supplier never mounts `AppShell`, so
+there is no internal navigation to hide, no section a stale piece of state could
+reach, and no shared nav array an internal feature could be added to and appear
+on a vendor's screen. Two audiences, two shells.
+
+Three sections, built from the existing primitives (`Panel`, `PanelHeader`,
+`DataTable`, `Badge`, `Button`, `Callout`, `EmptyState`, `Meter`, `Segmented`,
+`Spinner`) with one new icon — no new design language:
+
+```
+My invoices        status, the reason for it, the history, the document
+Purchase orders    what is left to bill against each order
+Send an invoice    upload a PDF                       [portal:submit]
+```
+
+**Nothing there is a security control.** Every figure and every sentence was
+chosen by the server, which filters in SQL against the authenticated principal
+before a row is read. The frontend does no filtering, because it is never sent
+another client's data to filter — which is the only arrangement in which a bug
+in the UI cannot become a disclosure.
+
+The **Purchase orders** screen is the one that answers a question *before* an
+invoice is sent rather than after. Billing over the remaining balance is a
+common reason an invoice is held (tolerance is one-sided on purpose, §3), so
+showing the balance is the cheapest way to prevent the hold rather than explain
+it afterwards.
+
+The document preview fetches the PDF **with** its `Authorization` header and
+renders a blob URL, which is why no token ever appears in a URL — the same
+reason the internal preview works that way (§7e.5), and the blob is revoked on
+unmount.
+
+Two demo supplier accounts are on the sign-in screen, badged **Supplier** so an
+evaluator can tell before clicking that they open a different product rather
+than a narrower view of this one.
+
+Files: **new** `components/portal/PortalApp.tsx`, `PortalInvoices.tsx`,
+`PortalOrders.tsx`, `PortalSubmit.tsx`; edits to `lib/types.ts`, `lib/api.ts`,
+`components/ui/icons.tsx` (one icon, appended), `components/LoginGate.tsx` and
+`app/page.tsx`.
+
+### 7g.10 Tests
+
+`tests/test_client_portal.py`, **174 tests**, driven over real HTTP through the
+real app wherever the claim is about authorization — calling `portal.py`'s
+functions directly proves nothing about whether the endpoint in front of them is
+guarded, and the guard is the entire feature.
+
+Two things about the fixtures are load-bearing: **client accounts come from a
+real user store on disk** (`AUTH_USERS_FILE`), because a binding is read from
+the store on every request and a test that faked one would be testing nothing
+that exists; and tokens are minted from **roles alone**, exactly as the real
+login endpoint mints them.
+
+Verified against passing vacuously by mutation — six mutations, each reverted
+and re-verified green:
+
+| Mutation | Broke | Correct? |
+|---|---|---|
+| drop the `client_id IS NULL` guard from the visibility clause | 1 (a portal submission leaking to the vendor it named) | ✅ |
+| resolve a colliding vendor name instead of refusing it | 1 (the ambiguity rule) | ✅ |
+| forward the internal reason sentence instead of the frozen lookup | 2 (reason echo, unmapped-rule fallback) | ✅ |
+| give the `client` role `invoice:read` as well | 30 (the whole internal-route sweep) | ✅ |
+| stop holding a portal invoice that names another vendor | 2 (auto-approve, named rule) | ✅ |
+| read the client binding from a token claim instead of the live store | 2 (forged claim, and one of the widening shapes) | ✅ |
+
+**THE SIXTH MUTATION CAUGHT A GENUINELY VACUOUS TEST, AND IT IS RECORDED RATHER
+THAN QUIETLY FIXED.** `test_a_forged_client_claim_in_the_token_is_ignored`
+originally built its "forged" token with `auth.create_access_token`, passing
+`client_id` and `vendor_ids` in — but that function copies only
+`sub`/`roles`/`scope`/`iss`/`iat`/`exp` into the payload, so **the forged claims
+never reached the token at all** and the test asserted nothing. It passed with
+the code mutated to trust a token claim. It now mints the JWT by hand, signed
+with the real secret, and a parametrised sibling covers six shapes of the same
+attack — including a token that awards itself `invoice:admin`, which Phase K's
+live re-check drops because the account's roles do not grant it. That is exactly
+what mutation testing is for.
+
+**One real N+1 was found by writing a test for it rather than by reading the
+code.** The invoice list needs this client's purchase orders to decide which PO
+numbers may be named on a row, which was a purchase-order query **per row**
+behind two layers of helper — a shape that looks completely correct at every
+individual call site. It is now memoised on the `ClientContext`, and the scope
+is the point: a context is built fresh from the live user store per request and
+thrown away with it, so nothing can go stale or outlive a change to the account
+behind it. Two tests hold that: one counts the calls, one re-points an account
+mid-test and asserts the next request follows.
+
+**And one ordering bug was found by reading the diff, not by a test — because
+no test could have failed.** The vendor-identity check was written *after* the
+PO-balance re-check inside `save_run_checked`, with a comment claiming that an
+invoice tripping both would be described by the identity reason. It would not
+have been: the balance branch downgrades the very status the identity branch
+tests, so it quietly won the tie, and the identity finding went unrecorded —
+the reviewer would have been told the invoice was slightly over budget and
+nothing at all about not knowing who sent it. Both orderings hold the invoice
+and neither charges a PO, so every existing assertion passed either way. The
+check now runs first, the comment says why, and
+`test_the_identity_hold_wins_when_the_balance_check_would_also_fire` pins it.
+
+### 7g.11 Database changes
+
+**One column and one index.**
+
+```
+runs.client_id TEXT     via _ensure_columns; NULL on every existing run
+idx_runs_client_id      runs(client_id) -- every portal query filters on it
+```
+
+`client_id` is **not** a duplicate of `vendor_name`: that is what the extractor
+**read**, this is who was **authenticated**. They can disagree, which is the
+whole reason the column exists (§7g.4).
+
+NULL on existing runs is a meaningful value rather than missing data — it says
+"this invoice was not sent to us by a supplier logging in", which is true of all
+of them.
+
+**No `clients` table, no portal session table, no per-client cache of anything**
+— asserted by a test that lists the schema's tables and requires none named for
+a client or a portal. Client identity lives in the user store (§7g.3) and
+everything else is derived at read time, which is now the **sixth** time this
+project has declined to store something derivable (§3, §6.2, §7c.1, §7d.1,
+§7f.5).
+
+### 7g.12 Known limitations
+
+1. **Vendor identity is a normalised NAME, not a key on the run.** Two approved
+   vendors whose names normalise identically are both dropped from every
+   binding, so their invoices are visible to no client at all until an operator
+   distinguishes them. Fail-closed and reported in `notices`, but it is a real
+   condition and not a theoretical one.
+2. **Two spellings of one vendor that do NOT normalise to the same form are two
+   different suppliers to this portal** — the same limitation, for the same
+   reason, as §7c.15's item 8 and §7d.12's item 6.
+3. **The vendor resolution reads the distinct vendor names on `runs` per
+   request** (§7g.5). Fine at this volume; the remedy at a larger one is a
+   normalised column, and it is a self-contained change to one function.
+4. **No self-service anything.** Accounts are provisioned in the user store by
+   an operator: no registration, no password reset, no client management UI, no
+   way for a supplier to change who they represent. Deliberate — Phase J is
+   access, not identity management, and the password grant is still the token
+   issuer (§7e.11 item 4).
+5. **A client cannot correspond with the AP team through the portal.** They can
+   see that an invoice is being checked; they cannot ask why, attach anything to
+   it, or reply. `invoice_activity` would support it and Phase D's comment
+   endpoint is `invoice:review`-scoped, so this is a decision not to widen the
+   surface, not a technical limit.
+6. **Portal submission is PDF only**, the same restriction §7b.12 item 4
+   records, for the same reason: the extraction pipeline reads PDFs.
+7. **Rate limits are per process** (§7e.8), so they multiply by worker count —
+   which now applies to an externally reachable surface, where it matters more
+   than it did.
+8. **The per-client daily budget bounds how much of the shared extraction quota
+   external parties can consume; it does not partition it.** A deployment with
+   many clients can still exhaust the vision quota between them. The ceiling is
+   per client because that is what stops one vendor spending everyone's
+   allowance; capping the aggregate as well would need a fourth budget key and
+   was not in this phase's scope.
+9. **No frontend test suite exists in this project** (§11.4), so the portal UI
+   is verified by `tsc --noEmit`, `npm run build` and driving the real app. The
+   backend behind it is covered by the 174 tests above.
+
+---
+
 ## 8. Authentication, authorization
 
 - **OAuth 2.0 resource-server pattern.** `Authorization: Bearer <JWT>`,
@@ -2384,8 +2895,13 @@ activity intent on the word "reviewed". Both are fixed and both have tests.
   hashing from the stdlib. Users live in `data/users.json` — no `users`
   table.
 - **Scopes** (`backend/auth.py`): `invoice:read`, `invoice:process`,
-  `invoice:review`, `invoice:admin`. Demo roles: `viewer` (read only),
-  `analyst` (+process), `reviewer` (+review), `admin` (+override any status).
+  `invoice:review`, `invoice:admin` for internal callers; `portal:read` and
+  `portal:submit` for external ones (Phase J). Demo roles: `viewer` (read
+  only), `analyst` (+process), `reviewer` (+review), `admin` (+override any
+  status), plus `client` and `client_readonly` for suppliers.
+  **No client role carries any `invoice:*` scope and no internal role carries
+  any `portal:*` scope** — that separation, not a per-endpoint filter, is what
+  keeps external callers out of all 43 internal routes (§7g.2).
 - **Rate limiting** — per user and per IP, sliding window
   (`backend/ratelimit.py`), default 20 processing requests/min/user,
   per-process (not shared across workers — a known scale limit if this ever
@@ -2513,23 +3029,49 @@ quietly dropped:
   person needs to answer a question, but every endpoint here is API-and-tests
   only, as Phases D–G were.
 
-### J, L, M
+### Phase J — Client access / the supplier portal (DONE)
 
-A client-facing portal, multilingual support, and a final deployment hardening
-pass — all unstarted, all deferred until asked for individually. (K2, the
-read-only AP assistant, is done — see §7f.)
+**Implemented, tested and verified — see [§7g](#7g-client-access--the-supplier-portal-phase-j)
+for what it does, and §7g.12 for what it deliberately does not.** This entry is
+a marker only; §7g is the authority.
+
+The roadmap entry it was built from was a single line — "client access / client
+portal" — so §7g is the specification as well as the record. Three things came
+out of that line as decisions rather than as defaults, and are recorded here
+rather than left implicit:
+
+- **Two new scopes were created**, breaking the run of three phases (H, I, K2)
+  that each declined to. Their reason was that a scope needs a role to carry it;
+  Phase J adds an external role regardless, so the objection does not apply, and
+  the alternative — giving suppliers `invoice:read` and filtering it back down —
+  would have made isolation a property of forty-odd endpoints (§7g.2).
+- **Submission was included**, which is the one expansion beyond a read-only
+  portal. It reuses `run_pipeline` unchanged as a third door beside manual
+  upload and email ingestion, and it is the reason for the single schema column,
+  the per-client daily budget and the vendor-identity guard (§7g.7).
+- **The only schema change is one column and one index.** No `clients` table, no
+  portal session table, no per-client cache — asserted by a test that lists the
+  schema's tables and requires none named for a client or a portal.
+
+### L, M
+
+Multilingual support and a final deployment hardening pass — both unstarted,
+both deferred until asked for individually.
 
 **Note on M.** Its brief was "final security + deployment hardening". Phase K
 has now done the security audit and remediation part; what remains for M is the
 deployment side — a real token issuer, TLS termination, secret management, and
 the operational items §7e.11 lists as out of scope (a token denylist, an
-authentication audit log, dependency scanning).
+authentication audit log, dependency scanning). **Phase J raises the stakes on
+several of those**: the application now has an externally reachable surface, so
+"rate limits are per process" and "the password grant is still the token issuer"
+matter more than they did when every caller was an employee (§7g.12).
 
 ---
 
 ## 10. Testing
 
-**1,224 tests, 26 files.** Both Groq and Gemini mocked at the HTTP transport
+**1,398 tests, 27 files.** Both Groq and Gemini mocked at the HTTP transport
 boundary — the suite needs no API key, no network, no quota, only a reachable
 PostgreSQL (`DATABASE_URL`). `test_samples.py` is the deliberate exception:
 it honours a live key and exercises the real routes end-to-end.
@@ -2545,6 +3087,7 @@ signature verified, an actual signature actually verified.
 
 | File | Tests | Covers |
 |---|---|---|
+| `test_client_portal.py` | 174 | Phase J: client authentication through the real password grant, both directions of the scope boundary (no client role holds an `invoice:*` scope, no internal role holds a `portal:*` one), a parametrised sweep of EVERY internal route enumerated from `app.routes`, isolation in both directions across the list, detail, document metadata, document bytes and purchase orders, IDOR through path, query string, body and forged token claims, the fail-closed handling of every incomplete binding, deactivation and demotion landing on the next request, the vendor-name collision rule, no-leak greps over every response, the frozen explanation table and its fallback, the client-visible timeline, submission (attribution, source, the same pipeline, no streamed stage names, both budgets, both limiters), the vendor-identity guard, and a read-only assertion against the module's parsed source |
 | `test_chat.py` | 87 | Phase K2: deterministic intent routing, retrieval against real records, the per-person authorization rule from both sides, prompt injection (fenced facts, defanged closing tag, line items that never arrive at all), secret-extraction and payment/correctness refusals, citations that cannot be fabricated, input and history validation, every provider failure degrading to the records, the separate daily budget, and two tests asserting the module is read-only against its parsed source |
 | `test_security_hardening.py` | 81 | Phase K: account deactivation and the live re-check (revocation, demotion, scope intersection), per-account login limiting, the reporting/export limiter across all thirteen endpoints, HTTP security headers incl. the SSE path and the production-only HSTS, CORS read per request, .env-bound settings, plus the boundaries the audit re-verified — no hash or secret in any response, no path or traceback in an error, storage-key traversal, hostile filter values, and the email quarantine gate |
 | `test_logs.py` | 204 | Phase I: retrieval and context joins, total ordering under identical timestamps, every filter and every combination, the reused date window, LIKE-metacharacter escaping, grouping and its per-person authorization, the two streams, event detail, the per-run stage view (order, unmeasured-is-null, refused filters, malformed blobs), both CSV exports (list-parity, formula neutralisation, truncation, no-leak greps), HTTP authorization, read-only-ness, and the one new index |
@@ -2574,6 +3117,42 @@ signature verified, an actual signature actually verified.
 
 (Counts verified via `pytest --collect-only -q` on the current tree — not
 copied from an old table.)
+
+**Verified state at the end of Phase J** (2026-08-21).
+`tests/test_client_portal.py` alone: **174 passed.**
+
+| Run | Result |
+|---|---|
+| Phase K2's recorded state, tree at `2514355` | 1,224 tests — 1,212 passed, 12 failed |
+| **After Phase J** | 1,398 tests — **1,386 passed, 12 failed** |
+
+1,386 − 1,212 = 174 = exactly the tests this phase added, and **the twelve
+failures are the same twelve by name**: ten in `test_extraction_routing.py`,
+`test_confidence.py`'s end-to-end case, and `test_samples.py`'s scanned
+sample. All are live-provider cases and Phase J touches no extraction code.
+
+Those 174 were checked against passing vacuously by mutation — six mutations,
+each breaking exactly the tests that should break, all reverted and
+re-verified green. The table is in §7g.10, along with the **genuinely vacuous
+test one of them caught** (a "forged token" that was never actually forged,
+because `create_access_token` does not copy arbitrary keys into the payload).
+
+**TWO REAL PROBLEMS WERE INTRODUCED BY THIS PHASE AND CAUGHT BY RUNNING THE
+FULL SUITE RATHER THAN THE NEW FILE.** Both are recorded rather than quietly
+fixed, because both were invisible when either file ran alone:
+
+- **A test fixture leaked `AUTH_USERS_FILE` into `os.environ`.**
+  `test_client_portal.py`'s `write_users()` set it directly as a convenience,
+  which monkeypatch cannot undo — so after that file ran, every later module in
+  the same process had it pointing at a deleted tmp directory, and two tests in
+  `test_production_safety.py` failed. The helper now writes the file and
+  nothing else; pointing the environment at it is the caller's job, through
+  `monkeypatch.setenv`.
+- **`test_the_shipped_user_store_is_marked_as_demo` asserted the exact list of
+  shipped accounts**, and Phase J added two. That test did its job: it is the
+  one place that notices an account added to `data/users.json` without the
+  `demo` flag, and the fix was to list the two new supplier accounts (which do
+  carry the flag) rather than to loosen the assertion.
 
 **Verified state at the end of Phase K2** (2026-08-21).
 `tests/test_chat.py` alone: **87 passed.**
@@ -2849,15 +3428,33 @@ something to "fix" without being asked.
 ## 11. Frontend state
 
 All frontend work is committed. The interface redesign, Phase H Analytics screen,
-and Phase K2 Assistant screen are all in the history.
+Phase K2 Assistant screen and Phase J supplier portal are all in the history.
 
 | What | Commit |
 |---|---|
 | Interface redesign (light-first, explicit dark-mode toggle, `RunDetail` split) | `96b3f92` |
 | Phase H Analytics screen | `96b3f92` |
 | Phase K2 Assistant screen | `86f4421` |
+| Phase J supplier portal | (this phase — §7g.9) |
 
-### 11.1 What the frontend is now
+### 11.0 There are TWO frontends in one bundle (Phase J)
+
+`app/page.tsx` branches on the signed-in identity: a principal carrying
+`portal:read` and **no** `invoice:read` renders `PortalApp` instead of
+`AppShell`, and never sees any of §11.1 at all.
+
+**The branch is total on purpose.** A supplier never mounts the internal shell,
+so there is no navigation to hide, no section a stale piece of state could
+reach, and no shared nav array an internal feature could be added to and appear
+on a vendor's screen. It is decided in `page.tsx` rather than inside the shell
+because a shell that had to know about both audiences is exactly the thing that
+eventually shows one of them the other's.
+
+It is not a security control either way — the portal endpoints resolve the
+caller server-side and the internal ones refuse a client token outright. It
+decides which PRODUCT the person is looking at. See §7g.9.
+
+### 11.1 What the INTERNAL frontend is
 
 A Next.js 15 / React 19 / Tailwind v4 static export, served by FastAPI from
 `frontend-next/out/`, in **six sections across eight nav rows**:
@@ -2884,6 +3481,11 @@ system.
 `RunDetail.tsx` was split into `DocumentPreview.tsx` + `ReviewWorkspace.tsx`,
 because previewing the source document and ruling on the invoice are two jobs a
 reviewer does side by side.
+
+The **supplier portal** (Phase J) is a separate shell with three sections of
+its own — My invoices, Purchase orders, Send an invoice — built from the same
+primitives and the same tokens, so the two products look related without the
+external one being the internal one with rows hidden. §7g.9 has the detail.
 
 ### 11.2 Why the redesign and Phase H landed in ONE commit
 
@@ -2943,7 +3545,7 @@ is already configured.
 
 ```powershell
 .\start.ps1                 # installs deps, generates samples, starts server, opens browser
-.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,224 tests, no key/network needed
+.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,398 tests, no key/network needed
 .\reset-demo.ps1             # clear run history (samples are order-dependent)
 .\reset-demo.ps1 -Replay     # clear, then drive all 10 samples through the API
 ```
@@ -2954,8 +3556,21 @@ is already configured.
 | `analyst` | `demo-analyst` | + process invoices |
 | `reviewer` | `demo-reviewer` | + accept/reject held invoices, claim reviews |
 | `admin` | `demo-admin` | + override any run's status |
+| `acme` | `demo-acme` | **supplier portal** — Acme's own invoices and POs, and may submit |
+| `globex` | `demo-globex` | **supplier portal** — Globex's own records, view only |
+
+The last two are EXTERNAL accounts (Phase J). They sign in at the same screen
+through the same token endpoint — there is no separate client login — and land
+in the **supplier portal**, not in the application above. They hold no
+`invoice:*` scope at all, so every internal endpoint refuses them. All six
+accounts carry the `demo` flag, so `APP_ENV=production` refuses to start with
+any of them present.
 
 **Known operational gotchas:**
+- **To revoke a supplier's access, DISABLE the record, do not delete it** —
+  the same instruction Phase K leaves for internal accounts (§7e.2), except
+  that for a client the portal itself also closes on deletion, because a
+  portal request needs a binding and a deleted record has none (§7g.3).
 - **`start.ps1` launched from a tool call does not survive** — the process
   tree is cleaned up when the call ends. Start it from a terminal the user
   owns.
@@ -2981,29 +3596,51 @@ is already configured.
 
 ### 13.1 Where the project stands
 
-**All phases A through K2 are COMPLETE and COMMITTED.**
+**All phases A through K2, AND J, are COMPLETE and COMMITTED.**
 
 | Phase | Commit | Status |
 |---|---|---|
 | A–I | (see §13.3 commit list) | ✅ Committed in order |
 | K | `2b0f97e` | ✅ Committed (security hardening) |
 | K2 | `86f4421` | ✅ Committed (read-only assistant) |
-| J | — | ⬜ Not started (next phase) |
+| J | see §13.3 | ✅ Committed (supplier portal) |
 | L, M | — | ⬜ Not started |
+
+**Phase J's schema change is ONE COLUMN AND ONE INDEX** — `runs.client_id` and
+`idx_runs_client_id` (§7g.11). No `clients` table, no portal session table, no
+per-client cache of anything; a test lists the schema's tables and requires
+none named for a client or a portal. `client_id` is added through
+`_ensure_columns`, so an existing database picks it up on the next startup with
+NULL on every existing run, which is the correct value: those invoices were not
+submitted by a supplier logging in.
 
 **Phase K2 changed NO schema.** Conversation history is not stored (§7f.5), and
 the daily budget reuses `extraction_quota`'s existing (day, provider) shape with
-a new provider string rather than a new table.
+a new provider string rather than a new table. Phase J's per-client submission
+budget reuses that same shape again, with a `portal:<client_id>` key (§7g.8).
 
-**`frontend-next/out/` was rebuilt** during Phase K2 work and is ready to serve.
+**`data/users.json` gained two DEMO SUPPLIER ACCOUNTS** (`acme`, `globex`),
+both carrying the `demo` flag so the existing production gate refuses them
+unchanged (§12). That file is tracked, so the change is in the Phase J commit.
+
+**`frontend-next/out/` was rebuilt** during Phase J work and is ready to serve.
 That directory is not tracked, so it does not appear in git status — but a fresh
-clone must run the build to see the screen (§12).
+clone must run the build to see the portal (§12).
 
 `claudee.md` is still untracked and is still not part of the app. **Leave it
 alone and keep it out of any commit** (§11.3).
 
-**Phase J (client access / client portal) has NOT been started.** Its brief is
-in §9. Do not start it without being explicitly asked (§2).
+| Phase J part | Where |
+|---|---|
+| `backend/portal.py` — the visibility predicate, projections and frozen vocabularies | new file |
+| `backend/auth.py` — two scopes, two roles, the live client binding | edit |
+| `backend/main.py` — 7 `/api/portal` endpoints, the pipeline's client context | edit |
+| `backend/storage.py` — one column, one index, the vendor-identity guard | edit |
+| `backend/ratelimit.py`, `quota.py`, `config.py` — the portal's own limits and per-client budget | edit |
+| `data/users.json` — two demo supplier accounts | edit |
+| `frontend-next/components/portal/*` — the supplier shell and its three screens | new files |
+| `tests/test_client_portal.py` — 174 tests | new file |
+| Documentation (§7g) | `CLAUDE.md`, `README.md` |
 
 | Phase I part | Commit |
 |---|---|
@@ -3038,6 +3675,8 @@ Neither commit contains `claudee.md`.
 ### 13.3 Commits
 
 ```
+(Phase J)  Let a supplier see their own invoices, and nothing else (Phase J)
+2514355 Record that phases K and K2 are fully committed and finalized
 86f4421 Let someone ask the records a question, without letting the model near them (Phase K2)
 2b0f97e Close what an issued token could still do after the account behind it changed (Phase K)
 248009e Make the history already on file searchable, groupable and exportable (Phase I)
@@ -3059,9 +3698,12 @@ d351869 Verify what an incoming email can actually prove about its own origin (P
 *(`cd4a348` is named for the state it recorded at the time; `96b3f92` later
 made that state obsolete, which is why §11 now reads differently from it.)*
 
-Branch `main`. Everything through `86f4421` (K2) **is committed locally** and
-1 commit ahead of `origin/main` (which is at `2b0f97e`). Push only if explicitly
-asked.
+Branch `main`. Everything through the Phase J commit **is committed locally**.
+Push only if explicitly asked.
+
+*(The Phase J row above is written without its own hash because the commit
+cannot cite itself. The hash is recorded in the short follow-up commit that
+comes immediately after it — the same pattern `4e76ef3` used for Phase H.)*
 
 **[README.md](README.md)** is kept in sync with the code and is the other
 primary reference — when it and this file disagree on a factual claim about
@@ -3071,12 +3713,15 @@ the code, verify against the code directly rather than trusting either.
 
 1. Read this file, then `README.md`.
 2. `git status` — expect only `claudee.md` UNTRACKED, and no uncommitted changes.
-   `git log --oneline -10` — expect `86f4421` at the tip (K2's commit).
-   `git branch -v` — expect `main` 1 commit ahead of `origin/main`.
+   `git log --oneline -10` — expect the Phase J commit at (or one below) the tip.
+   `git branch -v` — expect `main` ahead of `origin/main` unless it has been pushed.
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
-4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **1,212 passed, 12 failed**
-   (total of 1,224 tests, including 87 from K2, 81 from K security hardening,
-   204 from Phase I logs, 119 from Phase H analytics, plus all A–G tests).
+4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **1,386 passed, 12 failed**
+   (total of 1,398 tests, including 174 from J, 87 from K2, 81 from K security
+   hardening, 204 from Phase I logs, 119 from Phase H analytics, plus all A–G
+   tests). **Run the FULL suite, not just the file you changed** — Phase J
+   introduced two real problems that were invisible when either file ran alone
+   (§10).
    The 12 failures are ALL in `test_extraction_routing.py` (10), `test_confidence.py`'s
    end-to-end case (1), and `test_samples.py`'s scanned sample (1). Those are
    live-provider cases and the count moves with provider health and daily quota,
@@ -3088,5 +3733,6 @@ the code, verify against the code directly rather than trusting either.
 5. `cd frontend-next && npm run build` after any frontend change — FastAPI
    serves the static export in `out/`, so without a rebuild the browser keeps
    serving the old UI. There is no frontend test suite (§11.4).
-6. **Next phase is J.** K and K2 are both committed and complete (§2); J is still
-   untouched. Do not start it, or any later phase, without being asked (§2, §9).
+6. **Next phase is L** (multilingual support), then M (deployment hardening).
+   A–K2 and J are all committed and complete (§2). Do not start L or M, or any
+   later phase, without being asked (§2, §9).

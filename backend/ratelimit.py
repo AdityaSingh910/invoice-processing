@@ -228,3 +228,61 @@ def rate_limit_processing(
     _enforce(f"process-user:{principal.username}", config.RATE_LIMIT_PROCESS_PER_MINUTE,
              "invoice processing")
     return principal
+
+
+def rate_limit_portal(
+    request: Request,
+    principal: auth.Principal = Security(auth.current_principal, scopes=["portal:read"]),
+) -> auth.Principal:
+    """Guards the client portal's read surface (Phase J).
+
+    WHY THE PORTAL GETS ITS OWN LIMITER RATHER THAN REUSING THE REPORTING ONE.
+
+    Not because the queries are expensive -- they are not, next to an export
+    that streams fifty thousand rows -- but because of WHO makes them. Every
+    other limiter in this file counts requests from people inside the company,
+    on accounts an administrator provisioned and can watch. These endpoints are
+    the only ones reachable by someone outside it, and a shared counter would
+    mean one vendor's runaway integration script could exhaust a budget an
+    employee also draws on. Keeping them apart means the outside surface can
+    misbehave without degrading anything an employee is doing.
+
+    Counted per USER rather than per client id. Two logins belonging to one
+    vendor are two people, and one of them leaving a tab refreshing must not
+    lock the other out; the per-IP counter beside it is what catches a single
+    host cycling through several accounts. The ceiling is generous for the
+    reason the reporting limiter records -- a portal screen opening its
+    invoice list and its purchase orders at once must never see a 429. This
+    bounds automation, not use.
+    """
+    _enforce(f"portal-ip:{client_ip(request)}", config.RATE_LIMIT_IP_PER_MINUTE,
+             "this address")
+    _enforce(f"portal-user:{principal.username}", config.RATE_LIMIT_PORTAL_PER_MINUTE,
+             "portal requests")
+    return principal
+
+
+def rate_limit_portal_submit(
+    request: Request,
+    principal: auth.Principal = Security(auth.current_principal, scopes=["portal:submit"]),
+) -> auth.Principal:
+    """Guards invoice submission through the portal (Phase J).
+
+    The same order and the same pair of counters as `rate_limit_processing`,
+    for the same reasons -- authentication before counting, so an
+    unauthenticated flood is refused before it can consume anyone's budget.
+
+    The ceiling is much lower than the internal processing one, and that is the
+    point. This endpoint drives the full extraction pipeline, which spends the
+    SHARED provider budget: an external caller looping it does not merely slow
+    the portal down, it exhausts the vision quota that internal invoices also
+    need and that has no fallback. The per-minute limit here stops a runaway
+    script; `quota.portal_key()` is the slower per-client daily breaker behind
+    it, and between them an outside party can spend its own allowance without
+    reaching anybody else's.
+    """
+    _enforce(f"portal-submit-ip:{client_ip(request)}", config.RATE_LIMIT_IP_PER_MINUTE,
+             "this address")
+    _enforce(f"portal-submit-user:{principal.username}",
+             config.RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE, "invoice submissions")
+    return principal

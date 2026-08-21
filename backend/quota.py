@@ -50,6 +50,20 @@ TEXT = "groq-text"
 # that reads invoices -- see config.DAILY_QUOTA_CHAT.
 CHAT = "groq-chat"
 
+# The client portal (Phase J). NOT one key -- one key PER CLIENT, spelled
+# "portal:<client_id>", because the question this budget answers is "has THIS
+# vendor sent more than its share today", and a single shared counter would
+# let the first client through the door spend every other client's allowance.
+#
+# It is a new key rather than a new table for the same reason CHAT was: this
+# module already counts per (day, provider), so a per-client daily budget is a
+# provider string and nothing else.
+PORTAL_PREFIX = "portal:"
+
+
+def portal_key(client_id: str) -> str:
+    return PORTAL_PREFIX + str(client_id or "").strip()
+
 
 def _today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -60,6 +74,8 @@ def limit_for(provider: str) -> int:
         return config.DAILY_QUOTA_VISION
     if provider == CHAT:
         return config.DAILY_QUOTA_CHAT
+    if (provider or "").startswith(PORTAL_PREFIX):
+        return config.DAILY_QUOTA_PORTAL_SUBMISSIONS
     return config.DAILY_QUOTA_TEXT
 
 
