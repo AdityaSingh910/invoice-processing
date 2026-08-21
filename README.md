@@ -21,7 +21,7 @@ suite is green.**
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, five sections, light-first enterprise design with an explicit dark-mode toggle |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **848 passing** deterministically, 23 files, no live API calls |
+| Automated tests | **1,051 passing** deterministically, 24 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
@@ -29,6 +29,7 @@ suite is green.**
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
 | Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine |
 | KPIs and analytics | Automation / task-success / review KPIs, per-stage bottlenecks, review latency, vendor + PO + email funnels — **all derived at read time, no stored counters** |
+| Logs, filters & exports | Searchable, groupable, exportable history across invoices, messages and pipeline stages — **a query over the rows already on file, never a second log table** |
 | Email invoice ingestion | IMAP mailbox → cheap sender/relevance filter → security verification → the same invoice pipeline a browser upload uses |
 | Document storage | Uploaded PDFs persist after processing — metadata in Postgres, bytes behind a swappable local/S3 store |
 | Non-invoice detection | Rejects documents that contain no invoice, saying so |
@@ -941,6 +942,61 @@ Time ranges are `today` / `7d` / `30d` / `month` / `all` / custom, and
 
 ---
 
+### Logs, filtering, grouping and exports
+
+The dashboard gives the figure. This gives **the rows behind it**, for the
+person who has to answer something specific about something specific.
+
+**It is a query, not a table.** `backend/logs.py` writes nothing — no `logs`
+table, no search index, no event mirror. The two append-only histories the app
+already keeps (`invoice_activity` for invoices, `email_activity` for incoming
+messages) *are* the log, and this reads them. A mirrored copy would be a second
+truth: the first time a code path forgot to write to it, the log and the
+history it claims to show would disagree, and nobody would find out until an
+auditor asked. The only schema change is one index.
+
+Every event carries the invoice or message it belongs to — vendor, invoice
+number, decision, status — because a log line reading "REJECTED by ada" with no
+indication of which invoice is not a log, it is a riddle.
+
+**Filter** by date range, stream, actor, event type, vendor, PO, invoice, run,
+decision, ledger status, source (upload vs email), message status, the rule
+that failed, and free text. **Group** by any of nine axes to get counts instead
+of rows. **Export** either view as CSV.
+
+**The per-run stage log is queryable too** — one row per pipeline stage, across
+runs, so "which invoices failed at `VENDOR_CHECK` last week" is answerable. It
+is a JSON array on the run rather than rows in a table, so it gets its own view
+over the same filters instead of being flattened into the others.
+
+Four details that are easy to get wrong and were not:
+
+- **Dates go through the same parser the analytics screen uses.** A filter
+  panel that parses dates its own way disagrees with the dashboard beside it,
+  silently. A bad range gives the identical error on both.
+- **`%` typed into search finds a percent sign**, not everything. Unescaped it
+  would match every row while looking like it had filtered them — a wrong
+  answer that is plausible, which is the worst kind.
+- **A cell beginning `=` is written as text.** Excel and Sheets execute it on
+  open, so a review note or a filename typed as a formula would otherwise
+  become live content in whoever opens the export. Negative amounts are still
+  numbers, because the naive version of that fix breaks them.
+- **Paging is totally ordered.** Several events routinely share a timestamp to
+  the microsecond — one transaction writes two — so ordering on time alone
+  would let them swap between pages, showing one twice and dropping the other.
+
+**The export cannot show more than the list.** Both walk the same query,
+narrowed by the same filter object, behind the same scope — so it is true by
+construction, not because two implementations agree. Reading log rows needs
+`invoice:read`, the scope that has been able to read any single run's full
+activity since the feature existed; the one per-person view (`group_by=actor`)
+keeps the same restriction the reviewer stats do — your own row unless you hold
+`invoice:admin`, and an `actor=` filter cannot get around it.
+
+Nothing here has a UI yet: it is API and tests only.
+
+---
+
 ### API security
 
 The frontend is treated as an untrusted client. CORS is configured but is not a
@@ -1046,6 +1102,12 @@ GET  /api/analytics/reviews      review funnel, latency, reasons   [invoice:read
 GET  /api/analytics/vendors      per-vendor + every PO's budget    [invoice:read]
 GET  /api/analytics/email        the ingestion funnel              [invoice:read]
 GET  /api/analytics/users        YOUR reviewer stats — or everyone's, with invoice:admin
+GET  /api/logs                   activity rows, or counts with ?group_by=  [invoice:read]
+GET  /api/logs/facets            what a filter panel can offer     [invoice:read]
+GET  /api/logs/export            the filtered log as CSV           [invoice:read]
+GET  /api/logs/stages            one row per pipeline stage        [invoice:read]
+GET  /api/logs/stages/export     the filtered stage log as CSV     [invoice:read]
+GET  /api/logs/{stream}/{id}     one event + its subject's context [invoice:read]
 GET  /api/reference              POs + approved vendors            [invoice:read]
 GET  /api/sample-invoices        the bundled scenarios             [invoice:read]
 GET  /api/sample-invoices/{name} one sample PDF                    [invoice:read]
@@ -1159,10 +1221,12 @@ availability, so the badge can briefly contradict the run beside it.
 **Two differently-lettered phase tracks exist — do not conflate them.** The
 numbered table above is the original case-study track (0–7). A separate
 **lettered deployment-prep track (A–M)** turned the case study into a
-deployable multi-user platform: **A–H are complete**, with Phase H (KPIs &
-analytics) the most recent — backend at `9bdbeeb`, dashboard at `96b3f92`.
-**Phase I — logs, filtering, grouping and exports — is next and has not been
-started.** `CLAUDE.md` is the authority on that track.
+deployable multi-user platform: **A–I are complete**, with Phase I (logs,
+filtering, grouping and exports) the most recent — implemented and tested, but
+**still in the working tree rather than a commit**. Phase H (KPIs & analytics)
+is at `9bdbeeb` (backend) and `96b3f92` (dashboard). **Phase J — client access
+/ client portal — is next and has not been started.** `CLAUDE.md` is the
+authority on that track.
 
 **The most valuable thing left** was Phase 2's confidence gate — done, closing
 the low-confidence auto-approve problem as a *class* rather than case by case.
@@ -1197,6 +1261,9 @@ backend/
   storage.py      PostgreSQL: seed data, run history, ledger, human review
   analytics.py    KPIs and reporting queries. Reads only -- every figure is
                   aggregated at request time; no counter or rollup is stored
+  logs.py         Log search, filtering, grouping and CSV export. Also reads
+                  only -- the activity tables ARE the log; there is no second
+                  log table, and the per-run stage log is queried in place
   documents.py    Document storage abstraction: local disk or S3-compatible
   email_security.py   Incoming-message verification: DKIM (verified here),
                   SPF/DMARC evidence, alignment, deterministic classification
@@ -1230,7 +1297,7 @@ sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
 docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            23 files, 852 tests, both providers mocked
+tests/            24 files, 1,056 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

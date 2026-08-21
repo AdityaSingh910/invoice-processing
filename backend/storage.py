@@ -1062,6 +1062,23 @@ def init_db(reset_runs: bool = False):
             # invoice_activity indexes are on run_id and created_at only.
             cur.execute("CREATE INDEX IF NOT EXISTS idx_activity_actor ON invoice_activity(actor)")
 
+            # LOGS (Phase I). ONE index, for the same reason as the block
+            # above: the log is a QUERY over invoice_activity and
+            # email_activity (see logs.py), not a third table, so all it needs
+            # from the schema is for the column every one of its queries
+            # filters on to be indexed on both sides.
+            #
+            # invoice_activity(created_at) already exists (Phase D, just
+            # above). email_activity had only (email_id) -- which serves "one
+            # message's history" and nothing else -- so a date-windowed log
+            # scanned it end to end. Nothing else is added here: `event_type`
+            # and `status` are low-cardinality and the date window is what
+            # makes a log query selective, and `email_activity.actor` is NULL
+            # on almost every row because most message events are
+            # system-generated.
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_email_activity_created_at "
+                        "ON email_activity(created_at)")
+
             # Runs committed before this table existed carry their charge in
             # (po_number, total). Synthesise the one allocation row each of them always
             # implied, so every historical balance reads exactly as it did before -- the

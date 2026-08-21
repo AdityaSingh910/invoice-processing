@@ -23,6 +23,7 @@ import documents
 import email_ingest
 import email_security
 import extraction
+import logs
 import matching
 import ratelimit
 import rules
@@ -1269,6 +1270,269 @@ def analytics_users(window: "analytics.Window" = Depends(analytics_window),
     return analytics.users(window, viewer=principal.username,
                            see_everyone=principal.has("invoice:admin"))
 
+
+
+# --------------------------------------------------------------------------
+# Logs, filtering, grouping and exports (Phase I)
+#
+# WHAT THESE ENDPOINTS ARE
+#
+# Phase D and Phase F both write append-only histories, and both have been
+# readable ONE ENTITY AT A TIME ever since: `/api/runs/{id}/activity` answers
+# "what happened to this invoice", `/api/email/messages/{id}` answers it for
+# one message. Neither can answer "what happened yesterday", "what has this
+# vendor been doing", or "show me every rejection this month". These do.
+#
+# They READ. Nothing under /api/logs writes, and there is no logs table --
+# `invoice_activity` and `email_activity` are the log (see logs.py).
+#
+# AUTHORIZATION reuses the existing scopes, as Phases F, G and H all did.
+#
+#   * Reading log rows is `invoice:read`. This is not a widening: since Phase
+#     D, `/api/runs/{id}/activity` has returned EVERY actor's events for a run
+#     to any caller with `invoice:read`. A cross-run list of those same rows
+#     therefore exposes nothing that scope could not already reach, and
+#     demanding more for the list view would be theatre.
+#
+#   * `?group_by=actor` is the exception, because it is the only thing here
+#     that produces a PER-PERSON REPORT rather than a view of invoice history.
+#     It follows the rule `/api/analytics/users` already set (7c.5): your own
+#     row, unless you hold `invoice:admin`. The response says which, in
+#     `scope`, and the decision is made from the authenticated principal --
+#     never from a query parameter, and an `actor=` filter cannot override it.
+#
+#   * The export runs at the SAME scope, through the SAME filter object and
+#     the same query builder as the list. There is no second WHERE clause that
+#     could drift, so "the export cannot show more than the list" is true by
+#     construction rather than by two implementations agreeing.
+#
+# NO NEW SCOPE was created, for the reason Phase H recorded: a fifth scope
+# needs a role to carry it, which means editing every deployment's user store.
+# --------------------------------------------------------------------------
+
+def log_filters(
+    window: "analytics.Window" = Depends(analytics_window),
+    stream: str = Query("all", description="all | invoice | email"),
+    actor: str = Query(None, description="username, or __system__ for system events"),
+    event: str = Query(None, description="event type, e.g. REJECTED"),
+    vendor: str = Query(None),
+    run_id: int = Query(None, description="one invoice run"),
+    invoice_number: str = Query(None),
+    po_number: str = Query(None, alias="po"),
+    decision: str = Query(None, description="the rules' verdict: APPROVED | NEEDS_REVIEW | REJECTED"),
+    run_status: str = Query(None, alias="status", description="the ledger status"),
+    source: str = Query(None, description="MANUAL_UPLOAD | EMAIL"),
+    email_status: str = Query(None, description="ADMITTED | QUARANTINED | RELEASED | DISCARDED"),
+    rule_failed: str = Query(None, description="a rule name from the audit trail"),
+    q: str = Query(None, description="free-text search"),
+    order: str = Query("desc", description="desc (newest first) | asc"),
+) -> "logs.LogFilters":
+    """Validate every log filter once, for every endpoint that takes them.
+
+    ONE dependency, deliberately: the list, the grouped view and the CSV
+    export all receive the identical object, so a filter cannot mean one thing
+    on screen and another in the downloaded file. It also means a bad value is
+    rejected the same way -- same 400, same message -- whichever endpoint it
+    was sent to.
+
+    The date window comes from `analytics_window`, the same dependency the
+    analytics endpoints use, so `range`/`from`/`to` behave identically on both
+    screens. A second date parser here is exactly the trap the Phase I brief
+    named, and reusing this one is why the log and the dashboard beside it
+    cannot disagree about what "last 30 days" means.
+
+    `status` is taken through an alias because the endpoint bodies already
+    bind the name `status` to FastAPI's status-code module.
+    """
+    try:
+        return logs.LogFilters(
+            window, stream=stream, actor=actor, event=event, vendor=vendor,
+            run_id=run_id, invoice_number=invoice_number, po_number=po_number,
+            decision=decision, status=run_status, source=source,
+            email_status=email_status, rule_failed=rule_failed, search=q,
+            order=order)
+    except (logs.LogError, analytics.AnalyticsError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.get("/api/logs")
+def get_logs(
+    filters: "logs.LogFilters" = Depends(log_filters),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(logs.DEFAULT_PAGE_SIZE, ge=1, le=logs.MAX_PAGE_SIZE),
+    group_by: str = Query(None, description="event | actor | vendor | day | "
+                                            "decision | status | source | stream | run"),
+    limit: int = Query(None, description="rows returned when grouping"),
+    principal: auth.Principal = Security(auth.current_principal,
+                                         scopes=["invoice:read"]),
+):
+    """Activity across every invoice and message, filtered, searched and paged.
+
+    Two shapes from one endpoint, chosen by `group_by`, because they are the
+    same query answered at two altitudes -- the rows, or the counts behind
+    them. A separate /api/logs/group would have meant a second copy of
+    fourteen query parameters, and the two copies would drift.
+
+    Paging is OFFSET-based over a TOTAL ordering (timestamp, stream, event id).
+    The tiebreak is not decoration: `save_run_checked` writes
+    PROCESSING_COMPLETED and REVIEW_REQUIRED inside one transaction with the
+    same timestamp string, so ordering on time alone would let them swap
+    between page 1 and page 2 -- which shows one row twice and drops the
+    other.
+    """
+    try:
+        if group_by:
+            return logs.group(filters, group_by, logs.resolve_group_limit(limit),
+                              viewer=principal.username,
+                              see_everyone=principal.has("invoice:admin"))
+        resolved_page, resolved_size = logs.resolve_page(page, page_size)
+        return logs.search(filters, resolved_page, resolved_size)
+    except logs.LogError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.get("/api/logs/stages")
+def get_log_stages(
+    filters: "logs.LogFilters" = Depends(log_filters),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(logs.DEFAULT_PAGE_SIZE, ge=1, le=logs.MAX_PAGE_SIZE),
+    stage: str = Query(None, description="a stage name, e.g. VENDOR_CHECK"),
+    stage_status: str = Query(None, description="ok | warn | fail"),
+    principal: auth.Principal = Security(auth.current_principal,
+                                         scopes=["invoice:read"]),
+):
+    """The pipeline's own history: one row per STAGE, across runs.
+
+    The third record this phase opens up, and the one that is not an event
+    stream -- `runs.stages_json` is a JSON array on the run, so it gets its
+    own view rather than being flattened into the activity union (logs.py).
+
+    Narrowed by the same filter object every other log endpoint uses, so
+    "Globex, last 7 days" means the identical set of runs here and on the
+    activity list. The filters a stage cannot have -- actor, event type,
+    message status -- are REFUSED with a 400 naming them, rather than ignored
+    (which would return rows the caller did not ask for) or answered with an
+    empty page (which would read as "these runs have no stages").
+    """
+    try:
+        resolved_page, resolved_size = logs.resolve_page(page, page_size)
+        return logs.stage_rows(filters, resolved_page, resolved_size,
+                               stage=stage, stage_status=stage_status)
+    except logs.LogError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.get("/api/logs/stages/export")
+def export_log_stages(filters: "logs.LogFilters" = Depends(log_filters),
+                      stage: str = Query(None),
+                      stage_status: str = Query(None),
+                      principal: auth.Principal = Security(
+                          auth.current_principal, scopes=["invoice:read"])):
+    """The filtered per-stage log as CSV.
+
+    Same scope, same filter object and same row generator as the view above --
+    so, exactly as with the activity export, "the export cannot show more than
+    the list" holds by construction rather than by two queries agreeing.
+    """
+    try:
+        stream = logs.export_stages_csv(filters, stage=stage,
+                                        stage_status=stage_status)
+        # The generator validates its own arguments on the first pull, and a
+        # generator raises nothing until then -- so it is started HERE, inside
+        # the try, rather than letting a bad `stage` surface mid-download as a
+        # broken CSV with a 200 already sent.
+        first = next(stream)
+    except logs.LogError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    def body():
+        yield first
+        for chunk in stream:
+            yield chunk
+
+    filename = logs.export_filename("stage-log")
+    return StreamingResponse(
+        body(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Export-Max-Rows": str(logs.MAX_EXPORT_ROWS),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get("/api/logs/facets")
+def get_log_facets(window: "analytics.Window" = Depends(analytics_window),
+                   principal: auth.Principal = Security(auth.current_principal,
+                                                        scopes=["invoice:read"])):
+    """The values worth offering as filter options: who acted, which events
+    occurred, which vendors and POs exist, which rules have failed.
+
+    Served by the API rather than assembled in the browser, so a filter panel
+    offers what the DATABASE contains rather than what happens to be on the
+    page the client already fetched.
+    """
+    return logs.facets(window)
+
+
+@app.get("/api/logs/export")
+def export_logs(filters: "logs.LogFilters" = Depends(log_filters),
+                principal: auth.Principal = Security(auth.current_principal,
+                                                     scopes=["invoice:read"])):
+    """The filtered log as CSV.
+
+    STREAMED, and generated server-side: the rows are read a chunk at a time
+    and written straight to the response, so a large export never sits whole
+    in this process's memory.
+
+    THE FILTERS ARE THE ONES IN THE QUERY STRING, resolved by the same
+    dependency the list endpoint uses. Exporting more than the caller was
+    shown would require a different filter object, and there is only one.
+
+    Values are neutralised against spreadsheet formula injection before they
+    are written (logs.csv_safe) -- a review note beginning `=` is data, and
+    must not become live content in whoever opens the file.
+    """
+    filename = logs.export_filename()
+    return StreamingResponse(
+        logs.export_csv(filters),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # The row cap is announced in a header as well as in the file, so
+            # a scripted client can tell a truncated export from a complete
+            # one without parsing the CSV.
+            "X-Export-Max-Rows": str(logs.MAX_EXPORT_ROWS),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get("/api/logs/{stream}/{event_id}")
+def get_log_event(stream: str, event_id: int,
+                  principal: auth.Principal = Security(auth.current_principal,
+                                                       scopes=["invoice:read"])):
+    """One event, with its structured metadata and its subject's context.
+
+    Two path segments rather than a composite id, so FastAPI validates the
+    event id as an integer and the stream is checked against a fixed pair
+    before either reaches a query.
+
+    Returns the event's metadata as a parsed object and, for an invoice event,
+    the names of the rules that failed -- never the raw `audit_json` blob, the
+    extracted fields, a document storage key, or (for a message event) its
+    sender or subject. Phase F's own endpoint owns the message record; a log
+    entry links to it by id rather than restating it.
+    """
+    try:
+        row = logs.detail(stream, event_id)
+    except logs.LogError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="No such log event")
+    return row
 
 @app.get("/api/reference")
 def get_reference(principal: auth.Principal = Security(auth.current_principal,

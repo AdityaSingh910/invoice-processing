@@ -27,7 +27,9 @@ dashboard and an activity history.
 - **Backend** (`backend/`) — FastAPI, PostgreSQL, the 9-stage pipeline, the
   deterministic rule engine, OAuth2 auth, document storage, multi-user review
   collaboration, email trusted-source verification (§7a), email invoice
-  ingestion (§7b), and the derived-at-read-time KPI/analytics layer (§7c).
+  ingestion (§7b), the derived-at-read-time KPI/analytics layer (§7c), and the
+  log/filter/grouping/export query layer over the histories those phases
+  already write (§7d).
 - **Frontend** (`frontend-next/`) — Next.js 15 / React 19 / Tailwind v4,
   served as a static export by FastAPI. **Has uncommitted redesign work in
   progress — see §11, read before touching any frontend file.**
@@ -36,7 +38,7 @@ dashboard and an activity history.
 - **`data/`** — seed POs, vendors, demo users (JSON, tracked in git,
   reloaded into Postgres on every startup) plus gitignored runtime state
   (`documents/`).
-- **`tests/`** — 852 tests, 23 files, real (schema-isolated) PostgreSQL, both
+- **`tests/`** — 1,056 tests, 24 files, real (schema-isolated) PostgreSQL, both
   LLM providers mocked. See §10.
 
 ---
@@ -65,19 +67,22 @@ history — do not conflate them:
 | F | Email security & trusted-source verification | ✅ Complete | `d351869` |
 | G | Email invoice ingestion & extraction | ✅ Complete | `8dfc286` |
 | H | KPIs + analytics | ✅ Complete | `9bdbeeb` (backend) + `96b3f92` (frontend) |
-| I | Logs + filters + grouping + exports | ⬜ **Next — not started** | — |
+| I | Logs + filters + grouping + exports | ✅ Implemented + tested — **UNCOMMITTED** | — (working tree) |
 | J | Client access / client portal | ⬜ Not started | — |
 | K | Chatbot (read-only invoice/AP assistant) | ⬜ Not started | — |
 | L | Multilingual support | ⬜ Not started | — |
 | M | Final security + deployment hardening | ⬜ Not started | — |
 
-**Do not start Phase I or any later phase without being explicitly asked.**
+**Do not start Phase J or any later phase without being explicitly asked.**
 This project has been built one verified phase at a time, each requested
 individually, each committed on its own before the next began. See §9 for
-what I–M are planned to cover — plan only, nothing implemented.
+what J–M are planned to cover — plan only, nothing implemented.
 
-**Do not redo A–H.** They are complete, tested, and committed. If something
-in A–H looks wrong, raise it — don't silently "fix" or rebuild it.
+**Do not redo A–I.** A–H are complete, tested and committed. **Phase I is
+complete and tested but NOT YET COMMITTED** — it is the backend, its tests and
+these notes in the working tree; see §7d for what it does and §13.1 for
+exactly which files. If something in A–I looks wrong, raise it — don't
+silently "fix" or rebuild it.
 
 ---
 
@@ -346,6 +351,7 @@ Indexes: `run_allocations(po_number)`, `run_allocations(run_id)`,
 `review_claims(run_id, released_at)`, `runs(invoice_number)`, `runs(status)`,
 `email_messages(status)`, `email_messages(sha256)`, `email_messages(run_id)`,
 `email_messages(received_at)`, `email_activity(email_id)`,
+`email_activity(created_at)` (Phase I — §7d.1),
 **`UNIQUE email_messages(provider, provider_message_id)`** (Phase G's
 idempotency mechanism, §7b.5), `email_messages(ingest_status)`,
 `email_attachments(email_id)`, `email_attachments(run_id)`,
@@ -1521,6 +1527,327 @@ every endpoint returns in **under 11 ms** at that volume.
 
 ---
 
+## 7d. Logs, filtering, grouping & exports (Phase I)
+
+**Status: implemented, tested (204 tests), verified. NOT YET COMMITTED —
+`backend/logs.py`, `tests/test_logs.py` and edits to `backend/main.py` and
+`backend/storage.py` are in the working tree (§13.1).**
+
+Phase H answers *how well the process is working, in aggregate*. Phase I is
+the other half of the same question: **the rows behind the figure**, for the
+person who has to answer something specific about something specific rather
+than read a dashboard.
+
+### 7d.1 The one rule this phase is built on
+
+**Nothing in `backend/logs.py` writes.** Not one INSERT, not one UPDATE. There
+is no `logs` table, no `log_entries`, no denormalised search index, no event
+mirror. `invoice_activity` (Phase D) and `email_activity` (Phase F) **are** the
+log; this reads them.
+
+A second log would be a second truth: the moment one code path forgot to
+mirror an event, the log and the history it claims to show would disagree, and
+nobody would find out until an auditor asked.
+
+This is now the **fourth** time the project has made that call, and for the
+same reason each time:
+
+| | Stored copy | Derived at read time |
+|---|---|---|
+| PO balance (§3) | rejected twice | ✅ `SUM(run_allocations)` joined to APPROVED |
+| Review claim holder (§6.2) | rejected | ✅ most recent unreleased, unexpired row |
+| Every KPI (§7c.1) | rejected | ✅ aggregated per request |
+| **The log (this phase)** | **rejected** | ✅ **queried from the two activity tables** |
+
+**The only schema change is ONE index**, `email_activity(created_at)`, added in
+`init_db()` beside the existing block. Every query here filters on that column
+and nothing indexed it — `email_activity` had only `(email_id)`, which serves
+"one message's history" and nothing else, so a date-windowed log scanned it end
+to end. `invoice_activity(created_at)` and `(actor)` already exist from Phases D
+and H and are reused unchanged.
+
+### 7d.2 Two streams, one shape — and a third record that is not a stream
+
+`invoice_activity.run_id` is `NOT NULL` and foreign-keyed to `runs`;
+`email_activity.email_id` is `NOT NULL` and foreign-keyed to `email_messages`.
+A quarantined message has no run and may never have one, which is exactly why
+Phase F did not put its events in `invoice_activity` (§7a.7). **Phase I does
+not relitigate that** — it UNIONs the two at read time into one row shape,
+keeping `stream` on every row so a reader always knows which table an event
+came from and the detail endpoint can go back to the right one.
+
+Rows are joined to their subject (`runs`, `email_messages`) for context —
+vendor, invoice number, decision, status — because a log line reading
+"REJECTED by ada" with no indication of which invoice is not a log, it is a
+riddle.
+
+**The per-run stage log (`runs.stages_json`) is the third history this phase
+opens up, and it is deliberately NOT in that union.** It is a JSON array on the
+run — one entry per pipeline stage with its name, status, detail and
+milliseconds — so joining it would mean either inventing rows the database does
+not hold, or repeating every activity row once per stage. It gets its own view
+over the same filters instead (`logs.stage_rows()`, §7d.7).
+
+### 7d.3 Time — one parser, reused, not a second one
+
+`analytics.resolve_window()` does **all** date handling. It is already
+validated, already half-open `[start, end)`, already UTC, and already tested
+against midnight boundaries (§7c.4). Writing a second parser for a filter panel
+is the trap the Phase I brief named by name, and the failure it produces is
+silent: a filter panel that disagrees with the dashboard beside it about what
+"last 30 days" means.
+
+One FastAPI dependency (`main.log_filters`) builds the filter object for the
+list, the grouped view, the stage view and both exports, so a bad value is
+rejected identically whichever endpoint received it. A test asserts a bad
+`range` produces the **same 400 and the same message** on `/api/logs` as on
+`/api/analytics/overview`.
+
+**The activity log windows on WHEN THE EVENT HAPPENED**
+(`*_activity.created_at`), which is *not* what the analytics endpoints window
+on — they use `runs.created_at`, because they ask about a cohort of invoices.
+A log asks what happened in a period: an event yesterday about an invoice from
+last month belongs in yesterday's log. This is the same distinction
+`analytics.users()` already draws for reviewer workload (§7c.9).
+
+**The stage view is the exception, and windows on `runs.created_at`** — a stage
+has no timestamp of its own, so the run's own arrival time is the only honest
+thing to window on.
+
+### 7d.4 Filtering
+
+`stream` · `actor` · `event` · `vendor` · `run_id` · `invoice_number` ·
+`po_number` · `decision` (the rules' verdict) · `status` (the ledger) ·
+`source` (`MANUAL_UPLOAD`/`EMAIL`) · `email_status` · `rule_failed` · `q`
+(free-text) · `order`, plus the window.
+
+Three of these are worth reading before extending:
+
+**`rule_failed` is resolved in Python, never as a LIKE over the JSON.**
+`audit_json` lists every rule that was **evaluated**, passed ones included, so
+`audit_json LIKE '%PO remaining check%'` matches runs where that rule *passed*.
+It would look like it worked and be wrong in the direction that matters.
+`runs_failing_rule()` parses with `analytics._loads` — the same guarded parse
+(§7c.2), for the same reason: the column is TEXT, not JSONB, and one malformed
+blob would abort the query and take the page down.
+
+**`po_number` uses EXISTS over `run_allocations`, not a join.** A multi-PO
+invoice names one PO in `runs.po_number` and all of them in the ledger (§3); a
+join would silently duplicate every activity row for such a run.
+
+**`actor` has a reserved value, `__system__`.** `actor` is NULL for a
+system-generated event — an auto-approval cascade, a claim that expired
+unattended (§6.1) — and NULL cannot be expressed in a query string. Rows still
+report `actor: null` rather than an invented name like "system", which would be
+indistinguishable from a real user called that.
+
+**A stream that cannot match a filter is dropped from the UNION** rather than
+scanned: an email event has no vendor, PO or ledger status. The rows returned
+are identical either way; this just avoids scanning a table that cannot match.
+
+### 7d.5 Search is escaped, and the escaping is the point
+
+`escape_like()` makes `\`, `%` and `_` literal, and the pattern is bound with
+`ESCAPE '\'`. Without it, `%` typed into a search box matches everything **while
+looking like it had filtered something** — the worst kind of wrong answer,
+because it is plausible — and `PO_1001` would quietly also return `PO-1001`.
+
+Searching a literal `%` still finds a literal `%`, which is the other half of
+the property and is tested separately. Note that **a lone `_` legitimately
+matches**: every event type this application writes contains one
+(`PROCESSING_COMPLETED`), and `event_type` is one of the searched columns, so a
+correct literal search finds those rows. The test asserts what must actually
+hold — `_` never stands in for another character — rather than the tempting
+and wrong "searching `_` finds nothing".
+
+Search columns are a frozen tuple. `note` is included (a reviewer's own comment
+is the most useful thing to search); `metadata_json`, `audit_json`,
+`extracted_json` and every email header are not.
+
+### 7d.6 Grouping — the drill-down Phase H deliberately did not build
+
+`?group_by=` over the same filtered rows: `event` · `actor` · `vendor` · `day`
+· `decision` · `status` · `source` · `stream` · `run`. A **frozen table**, and
+that is the security property — `group_by` names a key in the dict and nothing
+else ever reaches SQL, so a caller cannot group by an expression they supply.
+
+Returned as rows with `count`, `first_at` and `last_at`, plus `distinct_keys`
+and `truncated` so a client can tell a complete ranking from a capped one. A
+`key` of `null` (a system event under `actor`, an email event under `vendor`)
+is reported as null, not collapsed into a bucket called "unknown" — that would
+assert something the rows do not say.
+
+### 7d.7 The per-run stage log
+
+`logs.stage_rows()` returns **one row per stage**, across runs, narrowed by the
+same window and the same run-level filters (vendor, PO, invoice, decision,
+status, source, rule) — plus `stage` and `stage_status` (`ok`/`warn`/`fail`),
+which only this view has.
+
+`GET /api/runs/{id}` could always show ONE run's stage log, and Phase H reports
+per-stage timings in **aggregate** (§7c.2). Neither can answer *"which invoices
+failed at `VENDOR_CHECK` last week"*, which is the row-level question this
+phase exists to make askable.
+
+Three things it does deliberately:
+
+- **The stage log is always read in the order the pipeline wrote it**, whichever
+  direction the *runs* are ordered in. A run read backwards would show
+  `DECISION` before `INGEST`, which is not a sort order — it is a false account
+  of what happened.
+- **Unmeasured is `null`, never `0`** — for `ms` and for a missing
+  `stage_status` alike. Zero would say the stage took no time; null says
+  nothing was recorded. Same distinction Phase H's timing block makes (§7c.10).
+- **A filter it cannot apply is REFUSED, not ignored.** A stage has no actor,
+  no event type and no message status, so `?actor=` on this view returns a 400
+  naming the conflict. Ignoring it would return rows the caller did not ask for
+  while looking filtered; answering with an empty page would read as "these
+  runs have no stages".
+
+Paging is done in Python, which is the honest consequence of the column being
+JSON: a database that cannot filter the array also cannot LIMIT it. The walk is
+bounded by the same `COUNT_CEILING` the SQL count uses, and reads runs a chunk
+at a time so neither the list nor the export ever materialises the whole
+result.
+
+**The cost is stated, not hidden:** this parses the JSON of every run the
+filters select. Same trade, same volume, same remedy at a larger one (a JSONB
+column) as §7c.2 records. A malformed blob is skipped, counted in
+`data_quality.malformed_stages`, and reported — every other run still reads.
+
+### 7d.8 Exports
+
+CSV, streamed, generated server-side.
+
+**The export is not a second query.** It walks the same `_union` (activity) or
+the same `_iter_stage_rows` generator (stages) that the list endpoints walk,
+narrowed by the same `LogFilters` object built by the same dependency behind the
+same scope. "The export cannot show more than the list" is therefore true **by
+construction**, not because two implementations agree. A test asserts the
+exported rows are exactly the listed rows under the same filters.
+
+**Formula injection is neutralised** (`csv_safe`). A cell beginning `=`, `+`,
+`-`, `@`, tab or CR is executed on open by Excel and by Sheets, so a review note
+— or a stage `detail` line embedding a filename the uploader chose — typed as
+`=cmd|' /C calc'!A0` would become live content in whoever opens the file. It is
+prefixed with a single quote, which every major spreadsheet reads as "this cell
+is text" and strips on display.
+
+**The naive version of that fix breaks ordinary data**, so it is checked
+against a plain-number pattern first: `-1250.00` starts with `-`, and prefixing
+it produces text that no longer sums.
+
+**Truncation is announced, never silent.** Past `MAX_EXPORT_ROWS` (50,000) the
+last line of the file says so and by what cap, and the cap is also in an
+`X-Export-Max-Rows` header so a scripted client can tell a truncated export
+from a complete one without parsing the CSV. A complete file never carries the
+warning, so its presence means exactly one thing.
+
+### 7d.9 Endpoints — no new scope
+
+```
+GET /api/logs                     [invoice:read]  rows, or counts with ?group_by=
+GET /api/logs/facets              [invoice:read]  the values a filter panel can offer
+GET /api/logs/export              [invoice:read]  the filtered activity log as CSV
+GET /api/logs/stages              [invoice:read]  one row per pipeline stage, across runs
+GET /api/logs/stages/export       [invoice:read]  the filtered stage log as CSV
+GET /api/logs/{stream}/{event_id} [invoice:read]  one event, with its subject's context
+```
+
+**Reading log rows is `invoice:read`, and that is not a widening.** Since Phase
+D, `GET /api/runs/{id}/activity` has returned **every** actor's events for a run
+to any caller holding `invoice:read`. A cross-run list of those same rows
+exposes nothing that scope could not already reach, and demanding more for the
+list view would be theatre.
+
+**`?group_by=actor` is the exception**, because it is the only thing here that
+produces a **per-person report** rather than a view of invoice history. It
+follows the rule `/api/analytics/users` already set (§7c.5): your own row,
+unless you hold `invoice:admin`. The response carries `scope: "self" | "all"`,
+the decision is made from the authenticated principal, and an `actor=` filter
+the caller supplies **cannot widen it** — for a non-admin the key is
+*replaced* with the viewer's own name, so asking about a colleague returns your
+own row, not theirs. Tested from both directions.
+
+**No fifth scope was invented**, for the reason Phase H recorded (§7c.5): a new
+scope needs a role to carry it, which means editing every deployment's user
+store.
+
+`GET /api/logs` returns rows **or** groups from one endpoint, chosen by
+`group_by`, because they are the same query answered at two altitudes. A
+separate `/api/logs/group` would have meant a second copy of fourteen query
+parameters, and the two copies would drift.
+
+### 7d.10 What the log deliberately does not disclose
+
+Checked by seeding distinctive values and grepping every response body and
+every exported file:
+
+- **No invoice contents** — no `extracted_json`, no `raw_text`, no raw
+  `audit_json` blob, no provenance. The detail endpoint returns the **names**
+  of the rules that failed and the reason sentences the reviewer was shown, and
+  nothing else from that structure.
+- **No document location** — no `storage_key`, no `storage_backend`, the same
+  restriction the Phase C document endpoints observe (§5).
+- **No email contents** — no sender address, no domain, no subject, anywhere in
+  the module. Phase F owns that record and exposes it at
+  `/api/email/messages/{id}`; a log line links to it by id rather than
+  restating it, and a CSV of it would carry message content out of the
+  application.
+- **No injectable identifier** — every caller-supplied value is a bind
+  parameter. The only interpolated fragments are column names and pre-built SQL
+  from this module's own frozen tables, and `_search_clause` re-checks each
+  column against `analytics._SAFE_COLUMN` before it reaches SQL, so a future
+  edit that threads a request value in there fails loudly instead of becoming
+  an injection point.
+- **Read-only** — asserted by snapshotting the decision-bearing columns and the
+  activity/allocation row counts, calling every service, and requiring the
+  snapshot identical. Every endpoint also 405s on POST.
+
+### 7d.11 Paging is total, and that is not decoration
+
+Ordering is `(created_at, stream, event_id)`. **Several events land in the same
+microsecond routinely**: `save_run_checked()` writes `PROCESSING_COMPLETED` and
+`REVIEW_REQUIRED` inside one transaction with one timestamp string. Ordering on
+time alone would let them swap between page 1 and page 2 — which shows one row
+twice and drops the other, silently. Tested by paging through rows written with
+an identical timestamp and asserting the union is exactly the set, with no
+repeats.
+
+The count is bounded by `COUNT_CEILING` (10,000) and the response carries
+`total_is_exact`, so a client renders "10,000+" rather than claiming a precise
+figure it was never given. `resolve_page()` **refuses** an out-of-range page
+size rather than clamping it — a caller who asked for 5,000 rows and silently
+got 200 would page through 4% of the data believing they had seen it all.
+
+### 7d.12 Known limitations
+
+1. **No frontend.** These endpoints have no UI — the same restriction Phases D,
+   E, F and G worked under (§11). The API is complete and tested; nothing
+   renders it yet.
+2. **OFFSET paging.** Deep pages cost more as the tables grow. The sort is
+   index-servable on both streams (that is what the new index is for) and the
+   count is capped, but a keyset cursor is the real answer at a much larger
+   volume, and it is not implemented.
+3. **The stage view and `rule_failed` both parse JSON per request** (§7d.7).
+   Fine at this volume; the remedy at a larger one is a JSONB column, and it is
+   a self-contained change to those functions.
+4. **`__system__` is a reserved actor value**, so a real user genuinely named
+   `__system__` could not be filtered for. The shape makes a collision
+   unlikely, not impossible.
+5. **Facets are all-time, except the rule and stage vocabularies**, which are
+   windowed because both are derived by scanning a JSON column. A dropdown that
+   empties as you narrow the date range is a filter panel that fights the user;
+   an all-time JSON scan on every panel load is a cost it should not pay. The
+   asymmetry is deliberate and stated rather than smoothed over.
+6. **Grouping by vendor groups by the stored `vendor_name` string**, so two
+   spellings of one vendor are two rows — the same limitation, for the same
+   reason, as §7c.15's item 8.
+7. **No exports beyond CSV** (no XLSX, no PDF), and no scheduled or emailed
+   exports. CSV was the brief's stated minimum.
+
+---
+
 ## 8. Authentication, authorization
 
 - **OAuth 2.0 resource-server pattern.** `Authorization: Bearer <JWT>`,
@@ -1547,11 +1874,11 @@ every endpoint returns in **under 11 ms** at that volume.
 
 ---
 
-## 9. Roadmap — Phase I and beyond
+## 9. Roadmap — Phase J and beyond
 
-**Phases F, G and H are done and are recorded here as markers only** (§7a, §7b
-and §7c are the authority on what they actually do). **Everything from I onward
-is a plan and nothing in it is implemented.**
+**Phases F, G, H and I are done and are recorded here as markers only** (§7a,
+§7b, §7c and §7d are the authority on what they actually do). **Everything from
+J onward is a plan and nothing in it is implemented.**
 
 ### Phase F — Email security & trusted-source verification (DONE)
 
@@ -1595,51 +1922,46 @@ here rather than quietly dropped:
 table were added. The only schema change is four indexes (§7c.14), and a test
 asserts the schema gained no table.
 
-### Phase I — Logs, filtering, grouping & exports (NEXT, not started)
+### Phase I — Logs, filtering, grouping & exports (DONE, not yet committed)
 
-**Nothing is implemented. This is the brief, recorded so the next session
-starts from the right place.**
+**Implemented, tested and verified — see [§7d](#7d-logs-filtering-grouping--exports-phase-i)
+for what it does, and §7d.12 for what it deliberately does not.** This entry is
+a marker only; §7d is the authority. **It is the one completed phase that is
+still in the working tree rather than in a commit (§13.1).**
 
-**Purpose:** make the history already on file searchable, groupable and
-extractable, for the people who have to answer a specific question about a
-specific invoice rather than read a dashboard.
+Every trap the original brief named was avoided, and each one is worth
+recording as having been a real decision rather than a lucky default:
 
-**Planned scope:**
-- **Logs** — a queryable view over `invoice_activity` and `email_activity`
-  (both already append-only, both already carry actor, event type and
-  timestamp), and over the per-run stage log in `runs.stages_json`.
-- **Filtering** — by date range, decision, status, vendor, PO, reviewer,
-  source (`MANUAL_UPLOAD` / `EMAIL`), and rule that failed.
-- **Grouping** — the same axes Phase H aggregates on, but returning the ROWS
-  behind a figure rather than the figure. This is the natural drill-down that
-  §7c.15 lists as deliberately absent from the analytics screen.
-- **Exports** — CSV at minimum. Note that an export leaves the application and
-  the authorization boundary with it, so exports must carry the same scope
-  rules the read endpoints do, and a per-person export must respect the
-  `users()` restriction in §7c.5 rather than becoming a way around it.
+- **No second time-window parser.** `analytics.resolve_window()` is reused
+  through one shared FastAPI dependency, and a test asserts a bad `range`
+  produces the identical 400 and identical message on `/api/logs` as on
+  `/api/analytics/overview` (§7d.3).
+- **No export that widens authorization.** The exports walk the same query the
+  list endpoints walk, behind the same scope, narrowed by the same filter
+  object — so the property holds by construction rather than by two
+  implementations agreeing. The per-person view (`?group_by=actor`) keeps the
+  `users()` restriction of §7c.5: your own row unless you hold `invoice:admin`,
+  and an `actor=` filter cannot override it (§7d.9).
+- **No unindexed OFFSET sort.** The one schema change this phase makes is the
+  index that supports it, `email_activity(created_at)`; the count is capped and
+  the response says whether it is exact (§7d.11). Keyset paging is still the
+  right answer at a much larger volume, and §7d.12 says so rather than
+  implying the current approach scales indefinitely.
 
-**What already exists to build on:**
+Two things came out differently from the brief and are recorded rather than
+quietly dropped:
 
-| Need | Where it already is |
-|---|---|
-| what people did, append-only | `invoice_activity`, `email_activity` |
-| per-run stage log | `runs.stages_json` (name, status, detail, ms) |
-| why a verdict was reached | `runs.audit_json` (`rules`, `rules_failed`, `reason`) |
-| validated time windows | `analytics.resolve_window()` — reuse it, do not write a second date parser |
-| safe JSON reads | `analytics._loads()` — the guarded parse (§7c.2) |
-| date-range indexes | `idx_runs_created_at`, `idx_activity_created_at`, `idx_activity_actor` |
-
-**The traps to avoid:**
-- **Do not write a second time-window parser.** `analytics.resolve_window()` is
-  already validated, already half-open, already UTC, and already tested against
-  boundary cases. A filter panel that parses dates its own way will disagree
-  with the dashboard beside it.
-- **Do not let an export widen authorization.** The most likely accidental leak
-  in this phase is a CSV of reviewer activity available to anyone holding
-  `invoice:read`.
-- **Do not paginate by OFFSET over a growing table** without an index that
-  supports the sort; `list_runs()` currently caps at 200 rows for exactly this
-  reason (§6.3).
+- The brief listed the per-run stage log (`runs.stages_json`) alongside the two
+  activity tables, as though all three were one queryable view. They cannot be:
+  the activity tables are ROWS and the stage log is a JSON ARRAY on the run, so
+  unioning them means either inventing rows the database does not hold or
+  repeating every activity row once per stage. The stage log therefore got its
+  own view over the same filters (§7d.7) rather than a shared one, and the
+  filters it cannot honestly answer — actor, event type, message status — are
+  refused with a 400 naming them instead of being silently ignored.
+- **Phase I ships no UI** (§7d.12). The brief described it in terms of what a
+  person needs to answer a question, but every endpoint here is API-and-tests
+  only, as Phases D–G were.
 
 ### J–M
 
@@ -1651,7 +1973,7 @@ asked for individually.
 
 ## 10. Testing
 
-**852 tests, 23 files.** Both Groq and Gemini mocked at the HTTP transport
+**1,056 tests, 24 files.** Both Groq and Gemini mocked at the HTTP transport
 boundary — the suite needs no API key, no network, no quota, only a reachable
 PostgreSQL (`DATABASE_URL`). `test_samples.py` is the deliberate exception:
 it honours a live key and exercises the real routes end-to-end.
@@ -1667,6 +1989,7 @@ signature verified, an actual signature actually verified.
 
 | File | Tests | Covers |
 |---|---|---|
+| `test_logs.py` | 204 | Phase I: retrieval and context joins, total ordering under identical timestamps, every filter and every combination, the reused date window, LIKE-metacharacter escaping, grouping and its per-person authorization, the two streams, event detail, the per-run stage view (order, unmeasured-is-null, refused filters, malformed blobs), both CSV exports (list-parity, formula neutralisation, truncation, no-leak greps), HTTP authorization, read-only-ness, and the one new index |
 | `test_analytics.py` | 119 | Phase H: every KPI against known rows, the null-not-zero rule, task-success vs automation-rate divergence, per-stage timing and bottleneck ordering, both review latencies, date windows and UTC boundaries, trends with gaps, malformed/wrong-shaped JSON, the ledger-agreement anti-drift test, the email funnel, per-person authorization from both sides, read-only-ness, and no-leak greps |
 | `test_email_ingestion.py` | 95 | Phase G: sender/relevance triage, the no-LLM-for-junk guarantee (an extraction spy), provider failure, idempotency under 8 threads, attachment validation & path traversal, multi-invoice emails, the Phase F gate, quarantine→release→process, authorization, backwards compatibility |
 | `test_email_security.py` | 110 | Phase F: real DKIM verification (all four canonicalisations, tampered signature/body, revoked key), DMARC alignment, discarded/forged Authentication-Results, spoofed From, conflicting signals, unavailable-vs-failed, S/MIME + PGP detection, malformed/hostile headers, quarantine gate, 10-thread ruling race, authorization, backwards compatibility |
@@ -1693,6 +2016,67 @@ signature verified, an actual signature actually verified.
 
 (Counts verified via `pytest --collect-only -q` on the current tree — not
 copied from an old table.)
+
+**Verified state at the end of Phase I** (2026-08-21).
+`tests/test_logs.py` alone: **204 passed.**
+
+| Run | Result |
+|---|---|
+| Phase H's recorded state, tree at `0e7792c` (not re-run) | 852 tests — 848 passed, 4 failed |
+| Phase I as the previous session left it (`test_logs.py` at 146 tests, 2 failing) | 998 tests — **994 passed, 4 failed** |
+| **After the two fixes and the stage view** | 1,056 tests — **1,051 passed, 5 failed** |
+
+The 4 constant failures are exactly the pre-existing `test_extraction_routing.py`
+cases described below, and that file still passes **23/23 when run alone** —
+re-verified during this phase. The 5th is
+`test_samples.py::test_sample_invoice[05_scanned_no_text.pdf]`, the live-provider
+condition documented further down: it PASSED on the first full run of this
+session and failed on the second, with the assertion naming the cause itself
+(`Vision extraction failed - provider unavailable (503)`). Phase I touches no
+extraction code — `git diff --stat` shows `extraction.py`, `rules.py`,
+`matching.py` and `quota.py` untouched — and that test is the one file that
+deliberately honours a live key and calls the real API.
+
+1,051 − 994 = 57, and the stage view added 58 tests — the difference being that
+flaky sample, which passed on the first full run and failed on the second.
+**No Phase A–H test changed behaviour on either run.**
+
+Two tests in `test_logs.py` were WRONG rather than the code, and were corrected
+rather than weakened — both were the previous session's own drafts, not
+established tests:
+
+- `test_filtering_by_rule_failed_groups_by_rule_name` asserted
+  `"PO remaining check" in audit["rules"]`, but `audit["rules"]` is a list of
+  `{name, passed, ...}` dicts, so the membership test could never pass. It now
+  compares against `[r["name"] for r in ...]`, which is what it meant, and the
+  assertion it was guarding (that the rule was EVALUATED on the passing run
+  too, so a text match would be wrong) is now actually made.
+- `test_like_metacharacters_are_matched_literally` included a lone `_` in its
+  "must find nothing" list. **The implementation was correct and the assertion
+  was the opposite of the property**: every event type this application writes
+  contains a literal underscore (`PROCESSING_COMPLETED`) and `event_type` is a
+  searched column, so a correct literal search MUST find those rows. `_` was
+  removed from that list and given its own test asserting the real property —
+  that it matches a literal underscore and never stands in for another
+  character (`INV_UNDER` must not match `INV-UNDER`). Verified empirically
+  before changing anything: `%` returns nothing, `INV_META` does not match
+  `INV-META`, so `escape_like` was doing its job.
+
+Those 204 were checked against passing vacuously by mutation — three
+mutations, each breaking exactly the tests that should break, all reverted and
+re-verified green:
+
+| Mutation | Broke | Correct? |
+|---|---|---|
+| an unmeasured stage's `ms` becomes `0.0` instead of `None` | 1 test (the unmeasured-is-not-zero assertion) | ✅ |
+| the stage view stops refusing filters it cannot apply | 9 tests (service, export and HTTP, all four conflicts) | ✅ |
+| the stage log is read in reverse order | 2 tests (stage order, and the one-row-per-stage sequence) | ✅ |
+
+**One real gap was found by reading the phase brief against the code, not by a
+test**: §9 listed `runs.stages_json` as part of Phase I's scope and nothing in
+`logs.py` touched it — the module had no reference to stages at all. The
+per-stage view (§7d.7), its CSV export, its facets and 58 of those 204 tests
+close it. Everything else in the brief was already implemented and verified.
 
 **Verified state at the end of Phase H** (2026-08-21).
 `tests/test_analytics.py` alone: **119 passed.**
@@ -1913,7 +2297,7 @@ is already configured.
 
 ```powershell
 .\start.ps1                 # installs deps, generates samples, starts server, opens browser
-.\venv\Scripts\python.exe -m pytest tests\ -q      # 852 tests, no key/network needed
+.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,056 tests, no key/network needed
 .\reset-demo.ps1             # clear run history (samples are order-dependent)
 .\reset-demo.ps1 -Replay     # clear, then drive all 10 samples through the API
 ```
@@ -1951,12 +2335,31 @@ is already configured.
 
 ### 13.1 Where the project stands
 
-**Phase H (KPIs & analytics) is COMPLETE and fully committed — backend,
-frontend, tests and documentation.** The working tree is clean apart from
-`claudee.md`, a stray file that has never been part of the app.
+**Phase I (logs, filtering, grouping, exports) is COMPLETE and TESTED but NOT
+YET COMMITTED.** It is the first thing to deal with in a new session: decide
+whether to commit it, then commit it staged BY NAME (§11.3). What is in the
+working tree:
 
-**Phase I (logs, filtering, grouping, exports) has NOT been started.** Its
-brief is in §9.
+| Phase I part | State |
+|---|---|
+| `backend/logs.py` (new, ~1,570 lines) — the whole query layer | untracked |
+| `tests/test_logs.py` (new) — 204 tests | untracked |
+| `backend/main.py` — 6 `/api/logs` endpoints + the shared filter dependency | modified |
+| `backend/storage.py` — one index, `email_activity(created_at)` | modified |
+| `CLAUDE.md` — §7d and the status updates through this file | modified |
+| `README.md` — the matching user-facing entries | modified |
+
+**Phase I has NO frontend** (§7d.12) — the endpoints are API-and-tests only,
+as Phases D–G were. Nothing in `frontend-next/` was touched.
+
+`claudee.md` is still untracked and is still not part of the app. **Leave it
+alone and keep it out of any commit** (§11.3).
+
+**Phase H (KPIs & analytics) remains COMPLETE and fully committed** — backend,
+frontend, tests and documentation.
+
+**Phase J (client access / client portal) has NOT been started.** Its brief is
+in §9.
 
 | Phase H part | Commit |
 |---|---|
@@ -1982,7 +2385,10 @@ Neither commit contains `claudee.md`.
 
 ### 13.3 Commits
 
+**Phase I sits on top of this list, uncommitted** — see §13.1 for the files.
+
 ```
+0e7792c Record that the frontend is committed and Phase H is closed
 96b3f92 Land the interface redesign and the Phase H analytics screen together
 670308e Stop the commit list in section 13.4 citing its own hash
 e142976 Add the doc commit to its own commit list
@@ -2010,17 +2416,21 @@ the code, verify against the code directly rather than trusting either.
 ### Before doing anything in a new session
 
 1. Read this file, then `README.md`.
-2. `git status` — expect a clean tree apart from `claudee.md`.
-   `git log --oneline -10` — expect `96b3f92` or a later documentation commit
-   at the tip.
+2. `git status` — expect `backend/main.py` and `backend/storage.py` MODIFIED,
+   and `backend/logs.py`, `tests/test_logs.py` and `claudee.md` UNTRACKED. That
+   is Phase I plus the stray file, not a dirty tree to clean up (§13.1).
+   `git log --oneline -10` — expect `0e7792c` at the tip.
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
-4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **848 passed, 4
+4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **1,051 passed, 4–5
    failed**, the 4 being the known `test_extraction_routing.py` cases, which
    pass 23/23 when that file runs alone (§10). A 5th failure in
-   `test_samples.py`'s scanned sample means the live Gemini free-tier quota is
-   spent, not that anything broke.
+   `test_samples.py`'s scanned sample means the live Gemini key hit a quota or
+   a provider outage, not that anything broke.
 5. `cd frontend-next && npm run build` after any frontend change — FastAPI
    serves the static export in `out/`, so without a rebuild the browser keeps
-   serving the old UI. There is no frontend test suite (§11.4).
-6. **Next phase is I.** Do not start it, or any later phase, without being
+   serving the old UI. There is no frontend test suite (§11.4). **Phase I
+   changed nothing in the frontend.**
+6. **Phase I is done but uncommitted.** Committing it is the open task; stage
+   by name (§11.3) and keep `claudee.md` out.
+7. **Next phase is J.** Do not start it, or any later phase, without being
    asked (§2, §9).
