@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from fastapi import (Body, Depends, FastAPI, File, HTTPException, Query, Request,
                      Security, UploadFile, status)
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.datastructures import MutableHeaders
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
@@ -32,17 +33,138 @@ from schemas import ExtractedInvoice
 
 app = FastAPI(title="Invoice Processing")
 
+
+# --------------------------------------------------------------------------
+# HTTP security headers (Phase K)
+#
+# This process serves its own UI (the static export is mounted at "/" at the
+# bottom of this file), so the browser-side protections for that UI are this
+# application's job. Before Phase K, no response carried any of them: the app
+# could be framed by any site (clickjacking the accept/reject controls, which
+# are one click and move money), responses could be MIME-sniffed, and full
+# URLs -- including run ids -- were sent as the Referer to anywhere a user
+# navigated next.
+#
+# WRITTEN AS RAW ASGI, NOT AS @app.middleware("http"), AND THAT IS DELIBERATE.
+# The existing comment on the static mount records why a blanket HTTP
+# middleware was avoided in the first place: Starlette's BaseHTTPMiddleware
+# wraps the response body in its own stream, which is exactly the machinery
+# the SSE run view depends on and the last thing worth risking. This class
+# never touches the body. It intercepts one message -- http.response.start --
+# sets headers that are not already present, and passes everything through
+# untouched, so a streaming response streams exactly as it did before.
+#
+# Existing headers are never overwritten: the app shell sets its own
+# Cache-Control, and a proxy in front may set its own policy.
+# --------------------------------------------------------------------------
+
+_STATIC_SECURITY_HEADERS = {
+    # Stop the browser second-guessing a Content-Type. Without it, a response
+    # this app labels application/json can be sniffed into something
+    # executable if an attacker controls enough of the body.
+    "X-Content-Type-Options": "nosniff",
+    # Never send this app's URLs to another origin. Run ids, filter strings
+    # and search terms all live in query strings here.
+    "Referrer-Policy": "no-referrer",
+    # Anti-clickjacking, twice over: X-Frame-Options for older browsers, and
+    # frame-ancestors inside the CSP for current ones. Approving an invoice is
+    # a single click, which is precisely what a framed UI monetises.
+    "X-Frame-Options": "DENY",
+    # Sever the window.opener relationship with anything that opens this app.
+    "Cross-Origin-Opener-Policy": "same-origin",
+    # This application asks for no device permissions at all, so it says so
+    # rather than leaving the defaults to whatever the browser decides.
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+}
+
+
+class SecurityHeaders:
+    """Adds the headers above to every HTTP response, without touching bodies."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not config.SECURITY_HEADERS_ENABLED:
+            await self.app(scope, receive, send)
+            return
+
+        async def _send(message):
+            if message.get("type") == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                for name, value in _STATIC_SECURITY_HEADERS.items():
+                    if name not in headers:
+                        headers[name] = value
+                if config.CONTENT_SECURITY_POLICY and \
+                        "Content-Security-Policy" not in headers:
+                    headers["Content-Security-Policy"] = config.CONTENT_SECURITY_POLICY
+                # HSTS is production-only and is the one header here that is
+                # hard to take back: a browser told to pin https:// for a year
+                # will refuse plain http to that host for a year. On a
+                # developer's laptop, served over http, that would break the
+                # machine rather than protect it.
+                if config.is_production() and config.HSTS_MAX_AGE_SECONDS > 0 \
+                        and "Strict-Transport-Security" not in headers:
+                    headers["Strict-Transport-Security"] = (
+                        f"max-age={config.HSTS_MAX_AGE_SECONDS}; includeSubDomains")
+            await send(message)
+
+        await self.app(scope, receive, _send)
+
+
+app.add_middleware(SecurityHeaders)
+
 # CORS is configured, never relied on. It is enforced by browsers and ignored
 # entirely by curl or a script, so it is not a security boundary -- the bearer
-# token is. Default is same-origin (no middleware at all), which is how the app
-# is actually served; CORS_ORIGINS opts specific origins in deliberately.
-if config.CORS_ORIGINS:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=config.CORS_ORIGINS,
-        allow_methods=["GET", "POST"],
-        allow_headers=["Authorization", "Content-Type"],
-    )
+# token is. Default is same-origin (no allowed origins at all), which is how
+# the app is actually served; CORS_ORIGINS opts specific origins in
+# deliberately.
+#
+# THE ORIGINS ARE READ AT REQUEST TIME, NOT AT IMPORT (Phase K).
+#
+# `app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS)` binds
+# that list when this module is imported -- which is BEFORE `load_dotenv()` has
+# ever run, so `CORS_ORIGINS` set in .env configured precisely nothing, and the
+# production start-up check that refuses a wildcard origin was inspecting a
+# value .env could not influence.
+#
+# The obvious fix -- load .env at import -- was tried and reverted, because it
+# also front-loads the provider API KEYS: importing this module would then mean
+# a live provider is available, which changed the behaviour of test modules
+# that had never asked for one. Configuration and secrets should not have to
+# share a load order, so the middleware learns to re-read instead.
+class ConfiguredCORS:
+    """CORSMiddleware over the CURRENT `config.CORS_ORIGINS`.
+
+    Delegates to a real CORSMiddleware, rebuilt only when the configured
+    origins actually change -- so this costs one tuple comparison per request
+    and none of Starlette's behaviour is reimplemented here. With no origins
+    configured it steps out of the way entirely, which is exactly what the
+    previous `if config.CORS_ORIGINS:` did.
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self._origins = None
+        self._impl = None
+
+    def _delegate(self):
+        origins = tuple(config.CORS_ORIGINS or ())
+        if origins != self._origins:
+            self._origins = origins
+            self._impl = CORSMiddleware(
+                self.app,
+                allow_origins=list(origins),
+                allow_methods=["GET", "POST"],
+                allow_headers=["Authorization", "Content-Type"],
+            ) if origins else None
+        return self._impl or self.app
+
+    async def __call__(self, scope, receive, send):
+        await self._delegate()(scope, receive, send)
+
+
+app.add_middleware(ConfiguredCORS)
 
 # Which UI to serve.
 #
@@ -1192,16 +1314,14 @@ def analytics_window(
 
 @app.get("/api/analytics/overview")
 def analytics_overview(window: "analytics.Window" = Depends(analytics_window),
-                       principal: auth.Principal = Security(auth.current_principal,
-                                                            scopes=["invoice:read"])):
+                       principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
     """Headline KPIs, the decision mix, value by currency, and the open backlog."""
     return analytics.overview(window)
 
 
 @app.get("/api/analytics/trends")
 def analytics_trends(window: "analytics.Window" = Depends(analytics_window),
-                     principal: auth.Principal = Security(auth.current_principal,
-                                                          scopes=["invoice:read"])):
+                     principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
     """One row per UTC calendar day, with empty days present as explicit zeroes."""
     try:
         return analytics.trends(window)
@@ -1213,16 +1333,14 @@ def analytics_trends(window: "analytics.Window" = Depends(analytics_window),
 
 @app.get("/api/analytics/processing")
 def analytics_processing(window: "analytics.Window" = Depends(analytics_window),
-                         principal: auth.Principal = Security(auth.current_principal,
-                                                              scopes=["invoice:read"])):
+                         principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
     """Run and per-stage timing, extraction routes, and extraction budget use."""
     return analytics.processing(window)
 
 
 @app.get("/api/analytics/reviews")
 def analytics_reviews(window: "analytics.Window" = Depends(analytics_window),
-                      principal: auth.Principal = Security(auth.current_principal,
-                                                           scopes=["invoice:read"])):
+                      principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
     """The human-review funnel, its latency, and what reviewers decided.
 
     Aggregate only. Per-person figures are /api/analytics/users."""
@@ -1232,8 +1350,7 @@ def analytics_reviews(window: "analytics.Window" = Depends(analytics_window),
 @app.get("/api/analytics/vendors")
 def analytics_vendors(window: "analytics.Window" = Depends(analytics_window),
                       limit: int = Query(None, ge=1, le=analytics.MAX_GROUP_LIMIT),
-                      principal: auth.Principal = Security(auth.current_principal,
-                                                           scopes=["invoice:read"])):
+                      principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
     """Per-vendor invoice behaviour, and every PO's budget position."""
     try:
         resolved = analytics.resolve_limit(limit)
@@ -1244,8 +1361,7 @@ def analytics_vendors(window: "analytics.Window" = Depends(analytics_window),
 
 @app.get("/api/analytics/email")
 def analytics_email(window: "analytics.Window" = Depends(analytics_window),
-                    principal: auth.Principal = Security(auth.current_principal,
-                                                         scopes=["invoice:read"])):
+                    principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
     """The email ingestion funnel: what arrived, what triage filtered, what
     verification admitted, and what became an invoice run. Counts and statuses
     only -- no sender addresses, no subjects, no message content."""
@@ -1254,8 +1370,7 @@ def analytics_email(window: "analytics.Window" = Depends(analytics_window),
 
 @app.get("/api/analytics/users")
 def analytics_users(window: "analytics.Window" = Depends(analytics_window),
-                    principal: auth.Principal = Security(auth.current_principal,
-                                                         scopes=["invoice:read"])):
+                    principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
     """Reviewer workload.
 
     Your own activity, unless you hold `invoice:admin`, in which case the whole
@@ -1363,8 +1478,7 @@ def get_logs(
     group_by: str = Query(None, description="event | actor | vendor | day | "
                                             "decision | status | source | stream | run"),
     limit: int = Query(None, description="rows returned when grouping"),
-    principal: auth.Principal = Security(auth.current_principal,
-                                         scopes=["invoice:read"]),
+    principal: auth.Principal = Depends(ratelimit.rate_limit_reporting),
 ):
     """Activity across every invoice and message, filtered, searched and paged.
 
@@ -1398,8 +1512,7 @@ def get_log_stages(
     page_size: int = Query(logs.DEFAULT_PAGE_SIZE, ge=1, le=logs.MAX_PAGE_SIZE),
     stage: str = Query(None, description="a stage name, e.g. VENDOR_CHECK"),
     stage_status: str = Query(None, description="ok | warn | fail"),
-    principal: auth.Principal = Security(auth.current_principal,
-                                         scopes=["invoice:read"]),
+    principal: auth.Principal = Depends(ratelimit.rate_limit_reporting),
 ):
     """The pipeline's own history: one row per STAGE, across runs.
 
@@ -1426,8 +1539,7 @@ def get_log_stages(
 def export_log_stages(filters: "logs.LogFilters" = Depends(log_filters),
                       stage: str = Query(None),
                       stage_status: str = Query(None),
-                      principal: auth.Principal = Security(
-                          auth.current_principal, scopes=["invoice:read"])):
+                      principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
     """The filtered per-stage log as CSV.
 
     Same scope, same filter object and same row generator as the view above --
@@ -1464,8 +1576,7 @@ def export_log_stages(filters: "logs.LogFilters" = Depends(log_filters),
 
 @app.get("/api/logs/facets")
 def get_log_facets(window: "analytics.Window" = Depends(analytics_window),
-                   principal: auth.Principal = Security(auth.current_principal,
-                                                        scopes=["invoice:read"])):
+                   principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
     """The values worth offering as filter options: who acted, which events
     occurred, which vendors and POs exist, which rules have failed.
 
@@ -1478,8 +1589,7 @@ def get_log_facets(window: "analytics.Window" = Depends(analytics_window),
 
 @app.get("/api/logs/export")
 def export_logs(filters: "logs.LogFilters" = Depends(log_filters),
-                principal: auth.Principal = Security(auth.current_principal,
-                                                     scopes=["invoice:read"])):
+                principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
     """The filtered log as CSV.
 
     STREAMED, and generated server-side: the rows are read a chunk at a time
@@ -1511,8 +1621,7 @@ def export_logs(filters: "logs.LogFilters" = Depends(log_filters),
 
 @app.get("/api/logs/{stream}/{event_id}")
 def get_log_event(stream: str, event_id: int,
-                  principal: auth.Principal = Security(auth.current_principal,
-                                                       scopes=["invoice:read"])):
+                  principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
     """One event, with its structured metadata and its subject's context.
 
     Two path segments rather than a composite id, so FastAPI validates the

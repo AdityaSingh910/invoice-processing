@@ -92,6 +92,26 @@ def hash_password(password: str, salt: bytes = None) -> str:
     )
 
 
+def _dummy_hash() -> str:
+    """One precomputed hash, used to equalise the timing of a failed login.
+
+    Phase K: `authenticate_user` used to build this fresh on every miss, which
+    ran the 390,000-round KDF twice for an unknown username (once to make the
+    hash, once to check it) against one pass for a real one. That made an
+    unknown-user flood the most expensive request in the application and left
+    the timing it was meant to equalise measurably UNequal in the other
+    direction. Computing it once, lazily, at first use gives one KDF pass on
+    either path -- which is both cheaper and closer to constant.
+    """
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = hash_password("timing-equaliser")
+    return _DUMMY_HASH
+
+
+_DUMMY_HASH = None
+
+
 def verify_password(password: str, encoded: str) -> bool:
     """Constant-time verification. Returns False on anything malformed rather
     than raising -- a corrupt hash must read as "wrong password", not as a 500
@@ -187,16 +207,49 @@ def enforce_production_config():
     raise RuntimeError("\n".join([header] + [f"  - {p}" for p in problems]))
 
 
+def is_disabled(user: dict) -> bool:
+    """Whether a user record has been deactivated (Phase K).
+
+    Two spellings are honoured because both are the obvious one to reach for,
+    and an operator who deactivates an account must not discover that they
+    picked the word this code does not read:
+
+        {"disabled": true}      -- the flag this codebase writes
+        {"active": false}       -- the flag most user stores already carry
+
+    Anything unparseable reads as DISABLED. Every other default in this file
+    fails open for availability (the quota breaker, document persistence); this
+    one fails closed, because the question it answers is "should this person
+    still be allowed in", and a corrupt record is not a yes.
+    """
+    if not isinstance(user, dict):
+        return True
+    if user.get("disabled"):
+        return True
+    if "active" in user and not user.get("active"):
+        return True
+    return False
+
+
 def authenticate_user(username: str, password: str) -> Optional[dict]:
     """The user record, or None. Deliberately makes no distinction between
-    "no such user" and "wrong password" to the caller."""
+    "no such user", "wrong password" and "account disabled" to the caller.
+
+    The third one is new in Phase K and is why the password is still checked
+    for a disabled account before returning None: answering a disabled account
+    faster, or differently, would turn this endpoint into a way to ask which
+    of your colleagues has been deactivated.
+    """
     user = load_users().get((username or "").strip())
     if user is None:
         # Still run a hash so a missing user and a wrong password take
         # comparable time; a fast 'no' enumerates valid usernames.
-        verify_password(password, hash_password("timing-equaliser"))
+        verify_password(password, _dummy_hash())
         return None
-    if not verify_password(password, user.get("password_hash", "")):
+    password_ok = verify_password(password, user.get("password_hash", ""))
+    if not password_ok:
+        return None
+    if is_disabled(user):
         return None
     return user
 
@@ -297,6 +350,59 @@ class Principal:
         return f"<Principal {self.username} scopes={self.scopes}>"
 
 
+def apply_account_state(principal: Principal, header: str = "Bearer") -> Principal:
+    """Re-check a decoded token against the LIVE user store (Phase K).
+
+    THE PROBLEM THIS SOLVES. A JWT is a snapshot: it carries the roles and
+    scopes the account held at the moment it was minted, and it is then
+    believed, unexamined, until it expires -- `AUTH_TOKEN_TTL_MINUTES`, eight
+    hours by default. So before this existed, an account that was deactivated
+    or demoted kept every permission it had at sign-in for the rest of that
+    window, and there was no way to cut it short except rotating AUTH_SECRET,
+    which signs everybody out. An offboarded AP clerk could keep approving
+    invoices for the rest of the working day.
+
+    THE CHECK, and it is deliberately two separate things:
+
+      * A DISABLED account is refused outright -- 401, the same wording every
+        other token failure gets.
+      * A live account's scopes are INTERSECTED with what its CURRENT roles
+        grant, so a demotion (reviewer -> viewer) takes effect on the very next
+        request. A token can therefore never carry more authority than the
+        account behind it holds right now; it can only carry less.
+
+    `load_users()` already reads the store on every call, so this costs one
+    small file read per request and no new state, no denylist, no session
+    table -- which is what keeps it inside the existing architecture rather
+    than being a second authentication system.
+
+    THE RESIDUAL GAP, STATED PLAINLY: a username with NO record in the store
+    is passed through unchanged rather than refused. That is not an oversight
+    and it is not free. This module is built so the token issuer can be
+    replaced by a real identity provider without touching anything else (see
+    the file docstring); an IdP-minted principal legitimately has no local
+    record, so treating "absent" as "revoked" would break the one migration
+    path this design exists to keep open. The operational consequence is the
+    documented instruction: to revoke access, DISABLE the record, do not
+    delete it. Deleting still leaves the outstanding token valid until it
+    expires.
+    """
+    user = load_users().get(principal.username or "")
+    if user is None:
+        return principal
+
+    if is_disabled(user):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired credentials",
+            headers={"WWW-Authenticate": header},
+        )
+
+    granted = set(scopes_for_roles(user.get("roles")))
+    principal.scopes = [s for s in principal.scopes if s in granted]
+    return principal
+
+
 def current_principal(security_scopes: SecurityScopes,
                       token: Optional[str] = Depends(oauth2_scheme)) -> Principal:
     """Authenticate, then authorize against the scopes the endpoint declared.
@@ -312,7 +418,10 @@ def current_principal(security_scopes: SecurityScopes,
                             detail="Not authenticated",
                             headers={"WWW-Authenticate": header})
 
-    principal = Principal(decode_token(token))
+    # Decode, THEN re-check against the live account. A valid signature proves
+    # the token was minted here; it does not prove the account still exists in
+    # the state it was minted for.
+    principal = apply_account_state(Principal(decode_token(token)), header)
 
     for scope in security_scopes.scopes:
         if not principal.has(scope):

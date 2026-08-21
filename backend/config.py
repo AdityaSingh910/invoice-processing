@@ -9,6 +9,31 @@ import os
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 ENV_PATH = os.path.join(ROOT, ".env")
 
+
+def _read_dotenv(path: str = None):
+    """Load .env into os.environ. The real environment always wins.
+
+    Split out from `load_dotenv()` (Phase K) so the file read and the
+    rebinding of the settings below are separately testable, and so the
+    loader can be pointed at a path in a test without touching the real one.
+    """
+    path = path or ENV_PATH
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key, val = key.strip(), val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except Exception:
+        pass
+
+
 # Upload guardrails
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024   # 15 MB
 MAX_PAGES_TEXT = 25                   # pages scanned for embedded text
@@ -236,11 +261,100 @@ RATE_LIMIT_IP_PER_MINUTE = int(os.environ.get("RATE_LIMIT_IP_PER_MINUTE", "60") 
 # Login attempts per IP per minute. Lower, because this one guards passwords.
 RATE_LIMIT_LOGIN_PER_MINUTE = int(os.environ.get("RATE_LIMIT_LOGIN_PER_MINUTE", "10") or 10)
 
+# Login attempts per USERNAME per minute (Phase K).
+#
+# The per-IP limit above is the wrong shape on its own for the attack it is
+# meant to stop. Guessing one account's password from a pool of addresses --
+# a botnet, a VPN, a cloud provider's whole range -- resets the counter with
+# every request, so the account under attack is protected by nothing. Counting
+# the TARGET as well means the account is protected however many sources the
+# guesses arrive from.
+#
+# Deliberately a little higher than the per-IP figure: this key is shared by
+# everyone legitimately signing in as that account, so it should stop a
+# guessing run without becoming a way to lock a colleague out by failing their
+# login on purpose. The counter records ATTEMPTS, not failures, and is not a
+# lockout -- it expires on its own within the window, so there is no state for
+# an attacker to leave behind.
+RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE = int(
+    os.environ.get("RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE", "15") or 15)
+
+# Reporting/export calls per authenticated user per minute (Phase K).
+#
+# Analytics, log search and CSV export are all READ endpoints, and all three
+# are far more expensive than the reads they sit beside: an export streams up
+# to MAX_EXPORT_ROWS rows, and the rule and stage filters parse the JSON of
+# every run in the window (logs.py, analytics.py both say so). Until now the
+# only limits in this application guarded WRITES and extraction quota, so the
+# cheapest role in the system -- viewer, read-only -- could loop an export and
+# occupy the database indefinitely.
+#
+# Set generously: a dashboard opening five panels at once, a person paging
+# through a log and exporting it, must never see a 429. This is a ceiling on
+# automation, not on use.
+RATE_LIMIT_REPORTING_PER_MINUTE = int(
+    os.environ.get("RATE_LIMIT_REPORTING_PER_MINUTE", "120") or 120)
+
 # Whether X-Forwarded-For may be believed when identifying a caller. Off by
 # default: the header is client-controlled, so trusting it on a directly-exposed
 # app lets anyone reset their own rate-limit counter by inventing one. Turn it on
 # only when the app genuinely sits behind a proxy that overwrites it.
 TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "").strip() in ("1", "true", "True")
+
+# --------------------------------------------------------------------------
+# HTTP security headers (Phase K)
+#
+# This process serves its own UI (main.py mounts the static export at "/"), so
+# the browser's protections for that UI are this application's responsibility
+# and nobody else's. Until Phase K no response carried any of them.
+#
+# On by default, because a header that is only enabled in production is a
+# header nobody notices they have broken until production. Switchable so a
+# deployment putting this behind a proxy that sets its own can turn it off
+# rather than fight over duplicates.
+# --------------------------------------------------------------------------
+SECURITY_HEADERS_ENABLED = os.environ.get(
+    "SECURITY_HEADERS_ENABLED", "1").strip() not in ("0", "false", "False", "")
+
+# HSTS max-age in seconds; sent ONLY when APP_ENV says production, because it
+# is the one header here that is hard to take back -- a browser that has been
+# told to pin https:// for a year will refuse plain http to that host, which on
+# localhost means breaking the developer's own machine. 0 disables it entirely.
+HSTS_MAX_AGE_SECONDS = int(os.environ.get("HSTS_MAX_AGE_SECONDS", "31536000") or 0)
+
+# The Content-Security-Policy served with the app shell.
+#
+# WHY 'unsafe-inline' IS HERE, STATED RATHER THAN HIDDEN: the UI is a Next.js
+# STATIC export. It ships an inline bootstrap script (frontend-next/app/
+# layout.tsx applies the saved theme before first paint) and inline style
+# attributes, and a static export has no server render pass in which to stamp a
+# per-response nonce. So script-src cannot be locked down without either
+# breaking the UI or rebuilding how it is served, and this policy's real value
+# is in the other directives -- no plugins, no framing, no form posts
+# elsewhere, no base-tag rewriting, and connect/img/font restricted to this
+# origin. It is a reduction in attack surface, NOT XSS immunity; see the Phase
+# K limitations in CLAUDE.md.
+#
+# blob: appears in object-src and frame-src on purpose: the document preview
+# fetches the PDF WITH its Authorization header and renders the resulting
+# blob: URL (frontend-next/components/invoice/DocumentPreview.tsx). That is the
+# reason no token ever appears in a URL, and the policy has to allow it.
+DEFAULT_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "object-src 'self' blob:; "
+    "frame-src 'self' blob:; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+CONTENT_SECURITY_POLICY = (os.environ.get("CONTENT_SECURITY_POLICY", "").strip()
+                           or DEFAULT_CONTENT_SECURITY_POLICY)
 
 # --------------------------------------------------------------------------
 # Daily extraction quota (circuit breaker)
@@ -566,22 +680,72 @@ def email_personal_domains() -> tuple:
     return _env_domains(EMAIL_PERSONAL_DOMAINS_ENV)
 
 
+def refresh_env_settings():
+    """Re-read the settings that are bound as module constants (Phase K).
+
+    THE BUG THIS FIXES. Most of this module reads os.environ at CALL time, and
+    several comments above explain why: load_dotenv() runs after this module is
+    imported, so a module-level constant would miss a value set in .env. That
+    reasoning was right -- and the settings that were nevertheless bound at
+    import were quietly wrong because of it. CORS_ORIGINS, every RATE_LIMIT_*
+    value, TRUST_PROXY_HEADERS, AUTH_ISSUER and AUTH_TOKEN_TTL_MINUTES all read
+    the environment at import and therefore never saw .env at all.
+
+    That was not merely untidy. An operator who configured CORS or a rate limit
+    in .env silently got neither. Worse, `auth.validate_production_config()`'s
+    "CORS_ORIGINS must not contain '*'" check -- one of the few things standing
+    between a misconfiguration and production -- was reading a value that .env
+    could not influence, so it certified a configuration it had never looked at.
+
+    Rebinding here, rather than loading .env at import, is deliberate: an
+    import-time load would also front-load the PROVIDER API KEYS, which are
+    read at call time precisely so that importing this module never implies a
+    live provider is available. Keeping the two separate means configuration
+    becomes correct without changing when a key comes into existence.
+    """
+    global CORS_ORIGINS, RATE_LIMIT_ENABLED, RATE_LIMIT_PROCESS_PER_MINUTE
+    global RATE_LIMIT_IP_PER_MINUTE, RATE_LIMIT_LOGIN_PER_MINUTE
+    global RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE, RATE_LIMIT_REPORTING_PER_MINUTE
+    global TRUST_PROXY_HEADERS, AUTH_ISSUER, AUTH_TOKEN_TTL_MINUTES
+    global SECURITY_HEADERS_ENABLED, HSTS_MAX_AGE_SECONDS, CONTENT_SECURITY_POLICY
+
+    def _int(name, default):
+        try:
+            return int(os.environ.get(name, "").strip() or default)
+        except ValueError:
+            return default
+
+    def _flag(name, default="1"):
+        return os.environ.get(name, default).strip() not in ("0", "false", "False", "")
+
+    CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",")
+                    if o.strip()]
+    RATE_LIMIT_ENABLED = _flag("RATE_LIMIT_ENABLED")
+    RATE_LIMIT_PROCESS_PER_MINUTE = _int("RATE_LIMIT_PROCESS_PER_MINUTE", 20)
+    RATE_LIMIT_IP_PER_MINUTE = _int("RATE_LIMIT_IP_PER_MINUTE", 60)
+    RATE_LIMIT_LOGIN_PER_MINUTE = _int("RATE_LIMIT_LOGIN_PER_MINUTE", 10)
+    RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE = _int("RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE", 15)
+    RATE_LIMIT_REPORTING_PER_MINUTE = _int("RATE_LIMIT_REPORTING_PER_MINUTE", 120)
+    TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "").strip() in (
+        "1", "true", "True")
+    AUTH_ISSUER = os.environ.get("AUTH_ISSUER", "invoice-processing")
+    AUTH_TOKEN_TTL_MINUTES = _int("AUTH_TOKEN_TTL_MINUTES", 480)
+    SECURITY_HEADERS_ENABLED = _flag("SECURITY_HEADERS_ENABLED")
+    HSTS_MAX_AGE_SECONDS = _int("HSTS_MAX_AGE_SECONDS", 31536000)
+    CONTENT_SECURITY_POLICY = (os.environ.get("CONTENT_SECURITY_POLICY", "").strip()
+                               or DEFAULT_CONTENT_SECURITY_POLICY)
+
+
 def load_dotenv():
-    """Minimal .env loader (KEY=VALUE per line). Real environment wins."""
-    if not os.path.isfile(ENV_PATH):
-        return
-    try:
-        with open(ENV_PATH, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, val = line.partition("=")
-                key, val = key.strip(), val.strip().strip('"').strip("'")
-                if key and key not in os.environ:
-                    os.environ[key] = val
-    except Exception:
-        pass
+    """Minimal .env loader (KEY=VALUE per line). Real environment wins.
+
+    Now also rebinds the settings that are held as constants, so that a value
+    set in .env reaches them too -- see `refresh_env_settings`. Idempotent, so
+    the FastAPI startup call remains correct and main.py can also call it at
+    import to configure the middleware it builds there.
+    """
+    _read_dotenv()
+    refresh_env_settings()
 
 
 def api_key() -> str:

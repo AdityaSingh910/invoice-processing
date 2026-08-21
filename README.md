@@ -21,11 +21,12 @@ suite is green.**
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, five sections, light-first enterprise design with an explicit dark-mode toggle |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **1,051 passing** deterministically, 24 files, no live API calls |
+| Automated tests | **1,125 passing** deterministically, 25 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
+| Security hardening | Account deactivation that revokes live tokens, per-account brute-force limits, reporting/export limits, CSP and security headers — see [Security hardening](#security-hardening) |
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
 | Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine |
 | KPIs and analytics | Automation / task-success / review KPIs, per-stage bottlenecks, review latency, vendor + PO + email funnels — **all derived at read time, no stored counters** |
@@ -997,6 +998,71 @@ Nothing here has a UI yet: it is API and tests only.
 
 ---
 
+### Security hardening
+
+A security audit of the whole application, and fixes for what it found. Most of
+the audit produced **no change** — SQL was already parameterised throughout,
+document storage keys were already server-generated and shape-validated,
+uploads were already magic-byte checked, error bodies already said six words
+and put the detail in the server log, and 41 of the 43 routes already carried
+the right authorization. Five real weaknesses did turn up.
+
+**An issued token could not be revoked, and no account could be disabled.** A
+token carried the roles it was minted with and was believed for eight hours, so
+deactivating somebody did nothing until it expired — an offboarded clerk could
+keep approving invoices for the rest of the day. Now a `"disabled": true` (or
+`"active": false`) flag on the user record cuts off both new sign-ins and any
+token that account already holds, from the very next request; and a live
+account's permissions are re-derived from its **current** roles on every
+request, so a demotion applies immediately. A token can never carry more
+authority than the account holds right now, only less.
+
+*To revoke access, disable the record — do not merely delete it.* A deleted
+record leaves the outstanding token valid until it expires, because a principal
+with no local record is exactly how an external identity provider's tokens
+legitimately look, and this codebase is built so that issuer can be swapped in
+without changing anything else.
+
+**Password guessing was limited per source address only** — which a botnet or a
+VPN pool resets with every request, so the account under attack was protected by
+nothing. Attempts are now counted per **target account** as well. Deliberately
+not a lockout: the window expires on its own, so nobody can lock a colleague out
+by failing their login on purpose.
+
+**Analytics, log search and CSV exports had no limit at all.** An export streams
+up to 50,000 rows and the rule and stage filters read every run's JSON in the
+window, so the lowest-privileged credential in the system — read-only `viewer` —
+could loop one indefinitely. All thirteen reporting endpoints now share one
+limiter, set generously enough that a dashboard opening several panels never
+sees it.
+
+**No HTTP security headers**, on an app that serves its own UI — so the review
+screen could be framed by any site, and accepting an invoice is one click.
+`Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`,
+`Referrer-Policy`, `Cross-Origin-Opener-Policy` and `Permissions-Policy` now
+ship on every response; HSTS only in production, because a browser told to pin
+https for a year will refuse http to that host for a year and on a laptop that
+breaks the machine rather than protecting it.
+
+**Security settings in `.env` were silently ignored.** `CORS_ORIGINS`, the rate
+limits, `TRUST_PROXY_HEADERS` and the token TTL were all read before `.env` was
+loaded — so configuring them there did nothing, and the production start-up
+check that refuses a wildcard CORS origin was inspecting a value `.env` could
+not influence. It was certifying a configuration it had never looked at. Both
+halves are fixed, and CORS origins are now read per request rather than frozen
+at import.
+
+**What this does not claim.** The CSP carries `script-src 'unsafe-inline'`,
+because the UI is a static export with an inline theme bootstrap and no server
+pass in which to stamp a nonce — the policy reduces attack surface, it is not
+XSS immunity. Rate-limit counters are per process, so several workers multiply
+them. The password grant is still the token issuer, so there is no MFA or
+password policy until it is replaced. Sign-ins and rate-limit trips go to the
+server log, not to a queryable audit table. Nothing here was penetration
+tested. The full list is in `CLAUDE.md`.
+
+---
+
 ### API security
 
 The frontend is treated as an untrusted client. CORS is configured but is not a
@@ -1221,12 +1287,15 @@ availability, so the badge can briefly contradict the run beside it.
 **Two differently-lettered phase tracks exist — do not conflate them.** The
 numbered table above is the original case-study track (0–7). A separate
 **lettered deployment-prep track (A–M)** turned the case study into a
-deployable multi-user platform: **A–I are complete**, with Phase I (logs,
-filtering, grouping and exports) the most recent — implemented and tested, but
-**still in the working tree rather than a commit**. Phase H (KPIs & analytics)
-is at `9bdbeeb` (backend) and `96b3f92` (dashboard). **Phase J — client access
-/ client portal — is next and has not been started.** `CLAUDE.md` is the
-authority on that track.
+deployable multi-user platform: **A–I are complete and committed**, and a
+**security hardening pass (Phase K)** has since been done out of order — before
+Phase J, because J opens the application to people outside the company and the
+right order is to fix what is already reachable before widening who can reach
+it. Phase I (logs, filtering, grouping and exports) is at `248009e`; Phase H
+(KPIs & analytics) at `9bdbeeb` and `96b3f92`. Phase K is implemented and
+tested but **still in the working tree rather than a commit**. **Phase J —
+client access / client portal — is next and has not been started.**
+`CLAUDE.md` is the authority on that track.
 
 **The most valuable thing left** was Phase 2's confidence gate — done, closing
 the low-confidence auto-approve problem as a *class* rather than case by case.
@@ -1297,7 +1366,7 @@ sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
 docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            24 files, 1,056 tests, both providers mocked
+tests/            25 files, 1,137 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

@@ -29,7 +29,7 @@ dashboard and an activity history.
   collaboration, email trusted-source verification (§7a), email invoice
   ingestion (§7b), the derived-at-read-time KPI/analytics layer (§7c), and the
   log/filter/grouping/export query layer over the histories those phases
-  already write (§7d).
+  already write (§7d), hardened by the Phase K security pass (§7e).
 - **Frontend** (`frontend-next/`) — Next.js 15 / React 19 / Tailwind v4,
   served as a static export by FastAPI. **Has uncommitted redesign work in
   progress — see §11, read before touching any frontend file.**
@@ -38,7 +38,7 @@ dashboard and an activity history.
 - **`data/`** — seed POs, vendors, demo users (JSON, tracked in git,
   reloaded into Postgres on every startup) plus gitignored runtime state
   (`documents/`).
-- **`tests/`** — 1,056 tests, 24 files, real (schema-isolated) PostgreSQL, both
+- **`tests/`** — 1,137 tests, 25 files, real (schema-isolated) PostgreSQL, both
   LLM providers mocked. See §10.
 
 ---
@@ -67,22 +67,30 @@ history — do not conflate them:
 | F | Email security & trusted-source verification | ✅ Complete | `d351869` |
 | G | Email invoice ingestion & extraction | ✅ Complete | `8dfc286` |
 | H | KPIs + analytics | ✅ Complete | `9bdbeeb` (backend) + `96b3f92` (frontend) |
-| I | Logs + filters + grouping + exports | ✅ Implemented + tested — **UNCOMMITTED** | — (working tree) |
-| J | Client access / client portal | ⬜ Not started | — |
-| K | Chatbot (read-only invoice/AP assistant) | ⬜ Not started | — |
+| I | Logs + filters + grouping + exports | ✅ Complete | `248009e` |
+| J | Client access / client portal | ⬜ **Next — not started** | — |
+| K | Security hardening | ✅ Implemented + tested — **UNCOMMITTED** | — (working tree) |
+| K2 | Chatbot (read-only invoice/AP assistant) | ⬜ Not started | — |
 | L | Multilingual support | ⬜ Not started | — |
 | M | Final security + deployment hardening | ⬜ Not started | — |
+
+**PHASE K WAS TAKEN OUT OF ORDER, ON PURPOSE.** Security hardening was done
+BEFORE Phase J at the owner's request: J opens this application to people
+outside the company, and the right order is to fix what is already reachable
+before widening who can reach it. The letter K was already spoken for by the
+chatbot in the original roadmap; that entry is listed as K2 above and is
+unchanged, unstarted, and not renamed anywhere else.
 
 **Do not start Phase J or any later phase without being explicitly asked.**
 This project has been built one verified phase at a time, each requested
 individually, each committed on its own before the next began. See §9 for
 what J–M are planned to cover — plan only, nothing implemented.
 
-**Do not redo A–I.** A–H are complete, tested and committed. **Phase I is
-complete and tested but NOT YET COMMITTED** — it is the backend, its tests and
-these notes in the working tree; see §7d for what it does and §13.1 for
-exactly which files. If something in A–I looks wrong, raise it — don't
-silently "fix" or rebuild it.
+**Do not redo A–I or K.** A–I are complete, tested and committed. **Phase K is
+complete and tested but NOT YET COMMITTED** — four modified backend modules,
+one new test file and these notes, in the working tree; see §7e for what it
+does and §13.1 for exactly which files. If something in A–I or K looks wrong,
+raise it — don't silently "fix" or rebuild it.
 
 ---
 
@@ -1848,6 +1856,295 @@ got 200 would page through 4% of the data believing they had seen it all.
 
 ---
 
+## 7e. Security hardening (Phase K)
+
+**Status: audited, remediated, tested (81 tests), verified.**
+
+Taken **before Phase J**, deliberately: J opens the application to people
+outside the company, and the right order is to fix what is already reachable
+before widening who can reach it.
+
+### 7e.1 What this phase was, and what it was not
+
+An audit of the existing architecture followed by fixes for what it actually
+found — **not** a bag of security features. Nothing was redesigned: the OAuth
+2.0 resource-server model (§8), the four scopes, the review workflow, the
+document store and the email verification layer are all unchanged. No new
+dependency, no new service, no new table, no new scope.
+
+Most of the audit's work produced **no change**, and that is a result worth
+recording rather than hiding: SQL is parameterised throughout (the only
+interpolations are this codebase's own frozen column names, already guarded by
+`analytics._SAFE_COLUMN`), document storage keys are server-generated UUID4s
+validated against a fixed shape before touching any path, uploads are magic-byte
+checked and read in capped chunks, the sample-invoice path traversal was fixed
+long ago, error bodies carry six words and the detail goes to the server log,
+`.env` has never been committed and no key-shaped string appears anywhere in the
+history, and every route except `/api/health` and the login endpoint already
+carried an authorization dependency. **41 of 43 routes were already correctly
+guarded and stayed exactly as they were.**
+
+Five real weaknesses were found. All five are fixed.
+
+### 7e.2 HIGH — an issued token could not be revoked, and no account could be disabled
+
+**The finding.** A JWT is a snapshot: it carries the roles the account held when
+it was minted, and it was then believed, unexamined, until it expired —
+`AUTH_TOKEN_TTL_MINUTES`, **eight hours** by default. There was no `disabled`
+flag anywhere in the user store and no check for one, so:
+
+- deactivating somebody did nothing at all — they could still sign in;
+- an offboarded employee's outstanding token kept every permission it was minted
+  with for the rest of the working day;
+- a demotion (reviewer → viewer) took effect only when the token expired.
+
+The only way to cut any of it short was rotating `AUTH_SECRET`, which signs
+**everybody** out.
+
+**Attack scenario.** An AP clerk is walked out at 09:30. Their browser session,
+or a token copied out of it beforehand, keeps approving invoices against live
+POs until 17:30.
+
+**The fix** (`auth.py`, `is_disabled()` + `apply_account_state()`):
+
+- `authenticate_user()` refuses a disabled account — after checking the
+  password, so that a disabled account cannot be distinguished from a wrong one
+  by timing or by response.
+- **Every authenticated request re-checks the live user store.** A disabled
+  account is refused (401, the same wording every other token failure gets), and
+  a live account's scopes are **intersected with what its current roles grant**,
+  so a demotion applies on the very next request. A token can therefore never
+  carry more authority than the account holds right now — only less.
+- Both `{"disabled": true}` and `{"active": false}` are honoured, because both
+  are the obvious flag to reach for and an operator must not discover they
+  picked the word the code ignores. An unparseable record reads as **disabled**:
+  every other default in this codebase fails open for availability, this one
+  fails closed.
+
+No new state, no denylist, no session table — `load_users()` already read the
+store on every call, which is what keeps this inside the existing architecture
+rather than being a second authentication system.
+
+**Residual limitation, stated because it is real.** A username with **no record
+at all** is passed through rather than refused. That is deliberate: this module
+is built so the token issuer can be swapped for a real identity provider without
+touching anything else (see `auth.py`'s docstring), and an IdP-minted principal
+legitimately has no local record — treating "absent" as "revoked" would break the
+one migration path the design exists to keep open. **The operational consequence
+is an instruction: to revoke access, DISABLE the record; do not merely delete
+it.** Deleting leaves the outstanding token valid until it expires. Closing that
+too needs a token denylist or a much shorter TTL, and neither was in this phase's
+scope.
+
+### 7e.3 MEDIUM — login brute force was limited per IP only
+
+**The finding.** `/api/auth/token` counted attempts per source address. Password
+guessing does not have to come from one address: a botnet, a VPN pool or one
+cloud provider's range resets that counter with every request, so the account
+actually under attack was protected by nothing.
+
+**The fix** (`ratelimit.rate_limit_login`): a second counter keyed on the
+**target username**, using the existing `SlidingWindow`. The account is now
+covered however many sources the guesses arrive from. The username is read from
+the form body purely as a counter key — lower-cased, length-bounded, never
+trusted for identity, and it does not change what `authenticate_user` is told.
+
+**Deliberately not a lockout.** The window slides shut on its own, so there is no
+state an attacker can leave behind — which is the denial-of-service that "disable
+the account after N failures" ships with, handed to anyone willing to fail a
+colleague's login on purpose. The per-account limit is set slightly higher than
+the per-IP one for the same reason.
+
+### 7e.4 MEDIUM — reporting and exports had no limit at all
+
+**The finding.** Every limiter in the application protected either a password or
+extraction quota. That left the surface Phases H and I added with nothing —
+and those endpoints are not ordinary reads. An export streams up to
+`logs.MAX_EXPORT_ROWS` (50,000) rows, and the rule and stage filters parse the
+JSON of **every run in the window** (§7c.2, §7d.7). So `viewer`, the lowest-
+privileged credential in the system, read-only by design, could loop a CSV
+export and keep the database busy indefinitely.
+
+**The fix** (`ratelimit.rate_limit_reporting`): all seven `/api/analytics/*` and
+all six `/api/logs*` endpoints now go through one dependency that authorises
+`invoice:read` **and** counts, per user and per IP — the same pair the processing
+limiter uses. The limit is deliberately generous (120/min): a dashboard opening
+several panels, or a person paging a log then exporting it, must never see a 429.
+This bounds automation, not use. Ordinary reads (`/api/runs`, `/api/reference`)
+are untouched.
+
+A parametrised test asserts **every one** of those thirteen endpoints is behind
+the limiter, because an attacker only needs the one that was forgotten.
+
+### 7e.5 MEDIUM — no HTTP security headers
+
+**The finding.** This process serves its own UI (the static export is mounted at
+`/`), and no response carried a single browser-side protection. The invoice
+review screen could be framed by any site — and accepting an invoice is one
+click, which is exactly what a framed UI monetises. Responses could be
+MIME-sniffed, and full URLs including run ids went out as the `Referer`.
+
+**The fix** (`main.SecurityHeaders`): `X-Content-Type-Options`,
+`Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, a
+`Content-Security-Policy`, `Cross-Origin-Opener-Policy` and `Permissions-Policy`
+on every response; HSTS **only** when `APP_ENV` says production.
+
+Three implementation decisions worth keeping:
+
+- **It is raw ASGI, not `@app.middleware("http")`.** Starlette's
+  `BaseHTTPMiddleware` wraps the response body in its own stream, which is
+  precisely the machinery the SSE run view depends on. This class touches one
+  message — `http.response.start` — and never the body, so a stream still
+  streams. A test uploads a real invoice and asserts both.
+- **HSTS is production-only** because it is the one header here that is hard to
+  take back: a browser told to pin `https://` for a year will refuse plain
+  `http://` to that host for a year, which on a laptop breaks the machine rather
+  than protecting it.
+- **Existing headers are never overwritten** — the app shell's own `no-store`
+  `Cache-Control` exists for a reason that cost two debugging sessions to find
+  (§11), and a proxy in front may set its own policy.
+
+**Residual limitation, stated rather than hidden.** The CSP contains
+`script-src 'unsafe-inline'`. The UI is a Next.js **static export**: it ships an
+inline theme bootstrap and has no server render pass in which to stamp a
+per-response nonce, so script-src cannot be tightened without either breaking
+the UI or changing how it is served. **The policy is attack-surface reduction,
+not XSS immunity** — its value here is in the other directives (no plugins, no
+framing, no base-tag rewriting, form posts and connections restricted to this
+origin). `blob:` is permitted in `object-src`/`frame-src` on purpose: the
+document preview fetches the PDF **with** its `Authorization` header and renders
+the resulting blob URL, which is the reason no token ever appears in a URL.
+
+### 7e.6 MEDIUM — security settings in `.env` were silently ignored
+
+**The finding.** `config.py` reads most values at **call** time, and says why in
+its own comments: `load_dotenv()` runs at startup, after the module is imported,
+so a constant would miss a value set in `.env`. That reasoning was right — and
+the settings that were nevertheless bound at import were quietly wrong because
+of it. `CORS_ORIGINS`, every `RATE_LIMIT_*` value, `TRUST_PROXY_HEADERS`,
+`AUTH_ISSUER` and `AUTH_TOKEN_TTL_MINUTES` all read the environment at import
+and **never saw `.env` at all**.
+
+An operator who configured CORS or a rate limit in `.env` silently got neither.
+Worse: `auth.validate_production_config()`'s "`CORS_ORIGINS` must not contain
+`*`" check — one of the few things standing between a misconfiguration and
+production — was reading a value `.env` could not influence, so it **certified a
+configuration it had never looked at**.
+
+**The fix**, in two parts:
+
+- `config.refresh_env_settings()` rebinds those settings, and `load_dotenv()`
+  calls it. Startup calls `load_dotenv()` **before** `enforce_production_config()`,
+  so the production check now inspects the real value. A malformed number falls
+  back to its default instead of killing the process with a traceback.
+- The CORS middleware reads `config.CORS_ORIGINS` **per request**
+  (`main.ConfiguredCORS`), rebuilding the underlying `CORSMiddleware` only when
+  the list actually changes, because `add_middleware` binds its arguments at
+  import and there is no later point at which middleware can be added.
+
+**A rejected fix, recorded because it looked obviously right and was not.**
+Loading `.env` at `config` import — the one-line version of this — also
+front-loads the **provider API keys**, so merely importing `config` would imply
+a live provider is available. It changed the behaviour of test modules that had
+never asked for one (`test_extraction_routing.py` went from 23/23 to 13/23 when
+run alone). Configuration and secrets should not have to share a load order.
+The two are now separate: settings are rebound when `.env` loads; keys stay
+call-time, exactly as before.
+
+### 7e.7 LOW — the failed-login timing equaliser was the most expensive request in the app
+
+`authenticate_user()` built a throwaway hash on **every** miss, running the
+390,000-round KDF twice for an unknown username (once to make it, once to check
+it) against once for a real one. So the equaliser was measurably unequal in the
+other direction, and an unknown-user flood cost double. It is now computed once,
+lazily, at first use: one KDF pass on either path — cheaper *and* closer to
+constant.
+
+### 7e.8 INFORMATIONAL — what the audit examined and deliberately did not change
+
+- **There is no per-user invoice ownership, and that is the product, not a
+  bug.** Every `invoice:read` holder can read every run, document and activity
+  row, because this is a shared AP review queue: the whole point of Phase D is
+  that several employees work the same invoices. So "cross-user invoice access"
+  is not a privilege boundary here — **the scope is the boundary**, and it is
+  tested from both sides (a no-scope token gets 403 on every route; a viewer
+  cannot review, override, claim or reset). Inventing per-user ownership would
+  be a new authorization model, which this phase's brief explicitly excludes.
+- **`X-Forwarded-For` takes the left-most entry**, and only when
+  `TRUST_PROXY_HEADERS` is on (off by default). Behind a proxy that appends,
+  left-most is the original client; behind one that does not overwrite, a client
+  can prepend a value. Left alone deliberately — the correct entry depends on
+  how many proxies are in front, so changing it could break a real deployment
+  worse than the setting it guards. It stays opt-in and documented.
+- **Rate-limit counters are per process.** Several uvicorn workers each keep
+  their own, so the effective limit multiplies by the worker count. Already
+  documented in `ratelimit.py` since it was written; unchanged, and it now
+  applies to the reporting limiter too.
+- **The frontend was audited and needed no change.** The token lives in
+  `sessionStorage` (it dies with the tab), no `dangerouslySetInnerHTML` or
+  `innerHTML` anywhere, no secret in the bundle (already asserted by a test),
+  and the document preview sends the token as a header rather than putting it in
+  a URL. Client-side scope checks drive which controls render and nothing else —
+  every endpoint re-checks server-side.
+- **Email security (Phases F and G) was audited and not weakened.** The
+  quarantine gate re-reads the stored status from the database rather than
+  trusting anything the caller passed, so it holds across restarts and however
+  the function is reached; a test calls the process endpoint on a quarantined
+  message and asserts it never reaches the pipeline. The limitations §7a.10 and
+  §7b.12 already state — SPF is never computed locally, S/MIME is detected and
+  never verified, DMARC's relaxed alignment uses a heuristic public-suffix list
+  — remain true and remain documented as limitations rather than presented as
+  guarantees.
+
+### 7e.9 Database changes
+
+**None.** No table, no column, no index. Account deactivation is a flag on the
+existing user record in `data/users.json`, which `auth.py` already read on every
+call — there is no `users` table to migrate (§4).
+
+### 7e.10 Tests
+
+`tests/test_security_hardening.py`, **81 tests**, driven through the real app
+over HTTP wherever the claim is about an endpoint. It does not repeat
+`test_api_security.py` (59 tests, still passing unchanged); it covers what Phase
+K changed, plus the boundaries the audit had to confirm before it could report
+them.
+
+Verified against passing vacuously by mutation — four mutations, each breaking
+exactly the tests that should break, all reverted and re-verified green:
+
+| Mutation | Broke | Correct? |
+|---|---|---|
+| `current_principal` stops re-checking the live account | 4 (disable, demotion, scope-claim, `/auth/me`) | ✅ |
+| the login limiter stops counting the target username | 2 (many-address guessing, case folding) | ✅ |
+| one export endpoint left off the reporting limiter | 2 (that endpoint, and the "every endpoint" sweep) | ✅ |
+| the security-headers middleware removed | 9 (all header assertions, incl. the SSE one) | ✅ |
+
+### 7e.11 Known limitations after Phase K
+
+Security is risk reduced and documented, not risk eliminated. Nothing here
+claims this application is secure in the abstract.
+
+1. **A deleted user's outstanding token stays valid until it expires.** Disable,
+   do not delete (§7e.2). Full revocation needs a denylist or a short TTL.
+2. **`script-src 'unsafe-inline'`** in the CSP, forced by the static export
+   (§7e.5). The policy reduces attack surface; it is not XSS immunity.
+3. **Rate limits are per process** (§7e.8), so they multiply by worker count.
+4. **The password grant is still the token issuer.** Correct for a case study on
+   one laptop, and `auth.py` is built to be swapped for an IdP; until that swap
+   there is no MFA, no password policy and no rotation.
+5. **No audit log of authentication events.** Invoice and message activity are
+   append-only and complete (§6.1, §7a.7), but sign-ins, failures and
+   rate-limit trips go to stderr, not to a queryable table. Adding one is a
+   Phase I-shaped job, not a Phase K one.
+6. **`X-Forwarded-For` handling is opt-in and proxy-topology dependent** (§7e.8).
+7. **No dependency-vulnerability scanning** is wired into this repository.
+8. **Nothing here was penetration tested.** The findings came from reading the
+   code and driving the API, and the tests demonstrate the boundaries that were
+   fixed — not the absence of boundaries nobody looked for.
+
+---
+
 ## 8. Authentication, authorization
 
 - **OAuth 2.0 resource-server pattern.** `Authorization: Bearer <JWT>`,
@@ -1876,9 +2173,20 @@ got 200 would page through 4% of the data believing they had seen it all.
 
 ## 9. Roadmap — Phase J and beyond
 
-**Phases F, G, H and I are done and are recorded here as markers only** (§7a,
-§7b, §7c and §7d are the authority on what they actually do). **Everything from
-J onward is a plan and nothing in it is implemented.**
+**Phases F, G, H, I and K are done and are recorded here as markers only**
+(§7a, §7b, §7c, §7d and §7e are the authority on what they actually do).
+**Everything else from J onward is a plan and nothing in it is implemented.**
+
+### Phase K — Security hardening (DONE, out of order, not yet committed)
+
+**Audited, remediated, tested and verified — see [§7e](#7e-security-hardening-phase-k)
+for the five findings and their fixes, and §7e.11 for what it deliberately does
+not claim.** This entry is a marker only; §7e is the authority.
+
+Taken before Phase J at the owner's request, for the reason §2 records: J opens
+the application to people outside the company, so fixing what is already
+reachable comes first. It changed no schema, added no dependency, invented no
+scope, and left 41 of the 43 routes exactly as they were.
 
 ### Phase F — Email security & trusted-source verification (DONE)
 
@@ -1963,17 +2271,24 @@ quietly dropped:
   person needs to answer a question, but every endpoint here is API-and-tests
   only, as Phases D–G were.
 
-### J–M
+### J, K2, L, M
 
-A client-facing portal, a read-only AP chatbot, multilingual support, and a
-final security/deployment hardening pass — all unstarted, all deferred until
-asked for individually.
+A client-facing portal, a read-only AP chatbot (K2 — the original roadmap's
+Phase K, renamed in the table at §2 only because the letter was reused by the
+security pass), multilingual support, and a final deployment hardening pass —
+all unstarted, all deferred until asked for individually.
+
+**Note on M.** Its brief was "final security + deployment hardening". Phase K
+has now done the security audit and remediation part; what remains for M is the
+deployment side — a real token issuer, TLS termination, secret management, and
+the operational items §7e.11 lists as out of scope (a token denylist, an
+authentication audit log, dependency scanning).
 
 ---
 
 ## 10. Testing
 
-**1,056 tests, 24 files.** Both Groq and Gemini mocked at the HTTP transport
+**1,137 tests, 25 files.** Both Groq and Gemini mocked at the HTTP transport
 boundary — the suite needs no API key, no network, no quota, only a reachable
 PostgreSQL (`DATABASE_URL`). `test_samples.py` is the deliberate exception:
 it honours a live key and exercises the real routes end-to-end.
@@ -1989,6 +2304,7 @@ signature verified, an actual signature actually verified.
 
 | File | Tests | Covers |
 |---|---|---|
+| `test_security_hardening.py` | 81 | Phase K: account deactivation and the live re-check (revocation, demotion, scope intersection), per-account login limiting, the reporting/export limiter across all thirteen endpoints, HTTP security headers incl. the SSE path and the production-only HSTS, CORS read per request, .env-bound settings, plus the boundaries the audit re-verified — no hash or secret in any response, no path or traceback in an error, storage-key traversal, hostile filter values, and the email quarantine gate |
 | `test_logs.py` | 204 | Phase I: retrieval and context joins, total ordering under identical timestamps, every filter and every combination, the reused date window, LIKE-metacharacter escaping, grouping and its per-person authorization, the two streams, event detail, the per-run stage view (order, unmeasured-is-null, refused filters, malformed blobs), both CSV exports (list-parity, formula neutralisation, truncation, no-leak greps), HTTP authorization, read-only-ness, and the one new index |
 | `test_analytics.py` | 119 | Phase H: every KPI against known rows, the null-not-zero rule, task-success vs automation-rate divergence, per-stage timing and bottleneck ordering, both review latencies, date windows and UTC boundaries, trends with gaps, malformed/wrong-shaped JSON, the ledger-agreement anti-drift test, the email funnel, per-person authorization from both sides, read-only-ness, and no-leak greps |
 | `test_email_ingestion.py` | 95 | Phase G: sender/relevance triage, the no-LLM-for-junk guarantee (an extraction spy), provider failure, idempotency under 8 threads, attachment validation & path traversal, multi-invoice emails, the Phase F gate, quarantine→release→process, authorization, backwards compatibility |
@@ -2016,6 +2332,51 @@ signature verified, an actual signature actually verified.
 
 (Counts verified via `pytest --collect-only -q` on the current tree — not
 copied from an old table.)
+
+**Verified state at the end of Phase K** (2026-08-21).
+`tests/test_security_hardening.py` alone: **81 passed.**
+
+| Run | Result |
+|---|---|
+| **Baseline**, tree at `248009e`, stashed and run for this comparison | 1,056 tests — **1,045 passed, 11 failed** |
+| **After Phase K**, same session | 1,137 tests — **1,126 passed, 11 failed** |
+| **After Phase K**, final run before committing | 1,137 tests — **1,125 passed, 12 failed** |
+
+**THE SAME ELEVEN FAILURES, BY NAME, ON THE BASELINE AND ON PHASE K.** Phase K
+introduced none of them, and the comparison was made by actually stashing the
+changes and running the full suite on the untouched tree — not by trusting a
+figure recorded further down this file. 1,126 − 1,045 = 81 = exactly the tests
+this phase added.
+
+The final run picked up a TWELFTH failure,
+`test_samples.py::test_sample_invoice[05_scanned_no_text.pdf]` — the live-Gemini
+case §10 already documents as flaky. It passed on one full run earlier the same
+session and failed on the next, on unchanged code, which is the behaviour that
+entry predicts.
+
+Eleven rather than the usual four because the live providers were unhealthy that
+day (the assertion output names it: `Vision extraction failed - provider
+unavailable (503)`), which drags in the Groq-route cases and
+`test_confidence.py`'s end-to-end case alongside the four constant
+`test_extraction_routing.py` ones. **Every one of the twelve is a live-provider
+case, and Phase K touched no extraction code at all.**
+`test_extraction_routing.py` still passes **23/23 when run alone**, before and
+after.
+
+**One genuine regression WAS introduced during this phase, and was caught by
+that same file rather than by the new tests.** The first version of the .env fix
+(§7e.6) loaded `.env` at `config` import, which also front-loads the provider
+API keys — so importing `config` began to imply a live provider was available,
+and `test_extraction_routing.py` alone went from 23/23 to 13/23. It was found by
+running that file alone as the handoff checklist says to, diagnosed against the
+stashed tree, and fixed by separating the two concerns: settings are rebound
+when `.env` loads, keys stay call-time. Recorded because "the security fix
+changed what the test suite was testing" is exactly the kind of damage a
+hardening pass does quietly.
+
+Those 81 were checked against passing vacuously by mutation — four mutations,
+each breaking exactly the tests that should break, all reverted and re-verified
+green. The table is in §7e.10.
 
 **Verified state at the end of Phase I** (2026-08-21).
 `tests/test_logs.py` alone: **204 passed.**
@@ -2297,7 +2658,7 @@ is already configured.
 
 ```powershell
 .\start.ps1                 # installs deps, generates samples, starts server, opens browser
-.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,056 tests, no key/network needed
+.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,137 tests, no key/network needed
 .\reset-demo.ps1             # clear run history (samples are order-dependent)
 .\reset-demo.ps1 -Replay     # clear, then drive all 10 samples through the API
 ```
@@ -2335,31 +2696,42 @@ is already configured.
 
 ### 13.1 Where the project stands
 
-**Phase I (logs, filtering, grouping, exports) is COMPLETE and TESTED but NOT
-YET COMMITTED.** It is the first thing to deal with in a new session: decide
-whether to commit it, then commit it staged BY NAME (§11.3). What is in the
-working tree:
+**Phase K (security hardening) is COMPLETE and TESTED but NOT YET COMMITTED.**
+It is the first thing to deal with in a new session: decide whether to commit
+it, then commit it staged BY NAME (§11.3). What is in the working tree:
 
-| Phase I part | State |
+| Phase K part | State |
 |---|---|
-| `backend/logs.py` (new, ~1,570 lines) — the whole query layer | untracked |
-| `tests/test_logs.py` (new) — 204 tests | untracked |
-| `backend/main.py` — 6 `/api/logs` endpoints + the shared filter dependency | modified |
-| `backend/storage.py` — one index, `email_activity(created_at)` | modified |
-| `CLAUDE.md` — §7d and the status updates through this file | modified |
+| `tests/test_security_hardening.py` (new) — 81 tests | untracked |
+| `backend/auth.py` — account deactivation + the live account re-check | modified |
+| `backend/ratelimit.py` — per-account login limit + the reporting limiter | modified |
+| `backend/main.py` — security-headers middleware + per-request CORS + 13 endpoints moved onto the reporting limiter | modified |
+| `backend/config.py` — `refresh_env_settings`, header/CSP and new limit settings | modified |
+| `.env.example` — the new settings, and how to deactivate an account | modified |
+| `CLAUDE.md` — §7e and the status updates through this file | modified |
 | `README.md` — the matching user-facing entries | modified |
 
-**Phase I has NO frontend** (§7d.12) — the endpoints are API-and-tests only,
-as Phases D–G were. Nothing in `frontend-next/` was touched.
+**Phase K changed NO schema and NO frontend file.** Account deactivation is a
+flag on the existing user record; there is no `users` table to migrate (§4).
+`frontend-next/` was audited (§7e.8) and needed no change.
 
 `claudee.md` is still untracked and is still not part of the app. **Leave it
 alone and keep it out of any commit** (§11.3).
 
-**Phase H (KPIs & analytics) remains COMPLETE and fully committed** — backend,
-frontend, tests and documentation.
+**Phase I (logs, filtering, grouping, exports) is COMPLETE and committed** at
+`248009e` — backend, tests and documentation. **Phase H remains COMPLETE and
+fully committed**, backend, frontend, tests and documentation.
 
 **Phase J (client access / client portal) has NOT been started.** Its brief is
 in §9.
+
+| Phase I part | Commit |
+|---|---|
+| `backend/logs.py` — the query layer | `248009e` |
+| `backend/main.py` — 6 `/api/logs` endpoints | `248009e` |
+| `backend/storage.py` — one index, `email_activity(created_at)` | `248009e` |
+| `tests/test_logs.py` — 204 tests | `248009e` |
+| Documentation (§7d) | `248009e` |
 
 | Phase H part | Commit |
 |---|---|
@@ -2385,9 +2757,10 @@ Neither commit contains `claudee.md`.
 
 ### 13.3 Commits
 
-**Phase I sits on top of this list, uncommitted** — see §13.1 for the files.
+**Phase K sits on top of this list, uncommitted** — see §13.1 for the files.
 
 ```
+248009e Make the history already on file searchable, groupable and exportable (Phase I)
 0e7792c Record that the frontend is committed and Phase H is closed
 96b3f92 Land the interface redesign and the Phase H analytics screen together
 670308e Stop the commit list in section 13.4 citing its own hash
@@ -2416,21 +2789,27 @@ the code, verify against the code directly rather than trusting either.
 ### Before doing anything in a new session
 
 1. Read this file, then `README.md`.
-2. `git status` — expect `backend/main.py` and `backend/storage.py` MODIFIED,
-   and `backend/logs.py`, `tests/test_logs.py` and `claudee.md` UNTRACKED. That
-   is Phase I plus the stray file, not a dirty tree to clean up (§13.1).
-   `git log --oneline -10` — expect `0e7792c` at the tip.
+2. `git status` — expect `backend/auth.py`, `backend/config.py`,
+   `backend/main.py`, `backend/ratelimit.py`, `.env.example`, `CLAUDE.md` and
+   `README.md` MODIFIED, and `tests/test_security_hardening.py` and
+   `claudee.md` UNTRACKED. That is Phase K plus the stray file, not a dirty
+   tree to clean up (§13.1).
+   `git log --oneline -10` — expect `248009e` at the tip.
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
-4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **1,051 passed, 4–5
-   failed**, the 4 being the known `test_extraction_routing.py` cases, which
-   pass 23/23 when that file runs alone (§10). A 5th failure in
-   `test_samples.py`'s scanned sample means the live Gemini key hit a quota or
-   a provider outage, not that anything broke.
+4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **1,126 passed**
+   and between 4 and 11 failures, ALL of them in `test_extraction_routing.py`,
+   `test_confidence.py`'s end-to-end case and `test_samples.py`'s scanned
+   sample. Those are live-provider cases and the count moves with provider
+   health and daily quota, not with the code. `test_extraction_routing.py`
+   passes **23/23 when run alone** — check that before concluding anything
+   broke, and if you need to attribute a failure, stash and run the untouched
+   tree rather than trusting a number written down here (§10).
 5. `cd frontend-next && npm run build` after any frontend change — FastAPI
    serves the static export in `out/`, so without a rebuild the browser keeps
    serving the old UI. There is no frontend test suite (§11.4). **Phase I
    changed nothing in the frontend.**
-6. **Phase I is done but uncommitted.** Committing it is the open task; stage
+6. **Phase K is done but uncommitted.** Committing it is the open task; stage
    by name (§11.3) and keep `claudee.md` out.
-7. **Next phase is J.** Do not start it, or any later phase, without being
-   asked (§2, §9).
+7. **Next phase is J.** Phase K was taken out of order on purpose (§2); J is
+   still untouched. Do not start it, or any later phase, without being asked
+   (§2, §9).

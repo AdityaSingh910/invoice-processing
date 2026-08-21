@@ -102,11 +102,87 @@ def _enforce(key: str, limit: int, what: str):
         )
 
 
-def rate_limit_login(request: Request):
-    """Guards the one endpoint that takes a password. Per IP, since by
-    definition there is no authenticated identity to count against yet."""
+async def rate_limit_login(request: Request):
+    """Guards the one endpoint that takes a password.
+
+    TWO COUNTERS, and the second one is the point (Phase K).
+
+    Per IP was the original control, and on its own it is the wrong shape for
+    the attack it exists to stop. Password guessing does not have to come from
+    one address: a botnet, a VPN pool or a cloud provider's range resets the
+    per-IP counter with every single request, so the account being guessed at
+    is protected by nothing at all. Counting the TARGET USERNAME as well means
+    the account is covered however many sources the attempts arrive from.
+
+    The username is read from the form body rather than from a token, because
+    at this point in the request there is no authenticated identity -- that is
+    what the caller is trying to obtain. It is used ONLY as a counter key: it
+    is lower-cased and truncated so a caller cannot mint unbounded distinct
+    keys, it is never trusted for identity, and reading it here does not
+    change what `authenticate_user` is later told.
+
+    Not a lockout. The window slides shut on its own, so there is no state an
+    attacker can leave behind to keep a colleague locked out -- which is the
+    failure mode a "disable the account after N failures" design ships with.
+    """
     _enforce(f"login:{client_ip(request)}", config.RATE_LIMIT_LOGIN_PER_MINUTE,
              "sign-in attempts")
+
+    username = await _login_username(request)
+    if username:
+        _enforce(f"login-user:{username}",
+                 config.RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE,
+                 "sign-in attempts for this account")
+
+
+async def _login_username(request: Request) -> str:
+    """The username being attempted, for use as a rate-limit key only.
+
+    Returns "" on anything unexpected. A malformed body must fall through to
+    the endpoint's own validation and produce its normal 400/422 -- never a
+    500 from the limiter, and never an unlimited path around it: the per-IP
+    counter above has already been applied either way.
+    """
+    try:
+        form = await request.form()
+        raw = form.get("username")
+    except Exception:
+        return ""
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip().lower()[:120]
+
+
+def rate_limit_reporting(
+    request: Request,
+    principal: auth.Principal = Security(auth.current_principal, scopes=["invoice:read"]),
+) -> auth.Principal:
+    """Guards analytics, log search and the CSV exports (Phase K).
+
+    WHY READS NEEDED A LIMIT AT ALL. Every limiter above this one protects
+    either a password or extraction quota, which left the reporting surface --
+    added by Phases H and I -- with nothing. Those endpoints are not ordinary
+    reads: an export streams up to `logs.MAX_EXPORT_ROWS` rows, and the rule
+    and stage filters parse the JSON of every run in the window (both modules
+    say so in their own comments). So the cheapest credential in the system, a
+    read-only `viewer`, could loop an export and keep the database busy
+    indefinitely. Authentication was never the missing control here; a ceiling
+    on volume was.
+
+    Per user AND per IP, the same pair the processing limiter uses and for the
+    same reasons. The limit is deliberately generous -- a dashboard opening
+    several panels at once, or a person paging a log and then exporting it,
+    must never see a 429. This bounds automation, not use.
+
+    Returns the principal so an endpoint can depend on this INSTEAD of
+    `current_principal` and still receive the caller, without authorising
+    anything twice.
+    """
+    _enforce(f"report-ip:{client_ip(request)}", config.RATE_LIMIT_IP_PER_MINUTE,
+             "this address")
+    _enforce(f"report-user:{principal.username}", config.RATE_LIMIT_REPORTING_PER_MINUTE,
+             "reporting queries")
+    return principal
 
 
 def rate_limit_processing(
