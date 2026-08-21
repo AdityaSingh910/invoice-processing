@@ -21,12 +21,13 @@ suite is green.**
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light-first enterprise design with an explicit dark-mode toggle |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **528 passing** deterministically, 20 files, no live API calls |
+| Automated tests | **638 passing** deterministically, 21 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
+| Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine — **verification only; nothing connects to a mailbox yet** |
 | Document storage | Uploaded PDFs persist after processing — metadata in Postgres, bytes behind a swappable local/S3 store |
 | Non-invoice detection | Rejects documents that contain no invoice, saying so |
 | Demo reset | One click for an admin, or `.\reset-demo.ps1` |
@@ -711,6 +712,63 @@ same `SELECT ... FOR UPDATE` row lock claiming already uses, now held for the
 whole check-then-write sequence rather than across several separate
 transactions.
 
+### Email trusted-source verification
+
+Before this application ever trusts an email as a source of invoices, it has
+to establish that the email is what it claims to be. `From:` is a display
+header — anyone can type anything into it — and so is
+`Authentication-Results:`, and so is every `Received:` line. A message is a
+blob of bytes, and every byte of it was chosen by whoever sent it.
+
+**Two things in that blob are worth believing, and nothing else is:**
+
+1. **A header stamped by a boundary you control and can name.**
+   `EMAIL_TRUSTED_AUTHSERV_IDS` is the allowlist of those boundaries. An
+   `Authentication-Results` header from anywhere else is discarded — and
+   *recorded* as discarded, so an auditor can see that someone tried it.
+   Empty is the default, and it is safe rather than broken: nothing is
+   believed, so unauthenticated mail is quarantined instead of trusted.
+2. **A signature verified here.** DKIM is real public-key cryptography over
+   the message's own bytes, so who relayed it does not matter.
+
+**What is actually verified, and what is not:**
+
+| | |
+|---|---|
+| **DKIM** | Genuinely verified — full RFC 6376: both canonicalisations, body hash, signed-header selection, the signer's own `x=` expiry, `rsa-sha256` and `ed25519-sha256`. `rsa-sha1` is refused. |
+| **SPF** | Never computed locally, because it authorises the *connecting IP*, which a stored message cannot establish. Relayed from a trusted boundary, or reported unavailable. |
+| **DMARC alignment** | Computed locally — this is the check that catches a spoofed From riding on a real signature from somewhere else. |
+| **DMARC policy** | Needs DNS; unavailable with the default resolver. |
+| **S/MIME / PGP** | Detected, never verified — there is no certificate store, no trust anchor and no revocation source here, and a signature "validated" against any root you like means nothing. |
+
+Public keys come from a swappable resolver: nothing at all by default (so a
+signature reads *unavailable*, never *failed*), a pinned static table, or live
+DNS if `dnspython` is installed.
+
+**Three outcomes, and the third one matters most.** Every mechanism reports
+`pass`, `fail`, or `unavailable`. "We checked and it failed" and "we could not
+check" are different facts, and merging them would either flag honest senders
+as hostile or wave unverified ones through. A message with nothing checkable
+is classified **UNVERIFIED** and held for a person — the same "hold rather
+than guess" posture the confidence gate and the injection guard already take.
+It is not called suspicious, and nothing in its reasoning calls it hostile.
+
+A verdict of VERIFIED admits a message; anything else quarantines it until
+someone with the review scope releases or discards it. Releasing is a ruling
+recorded once, under a row lock, exactly like accepting a held invoice.
+
+**And it is not proof the invoice is legitimate.** An authenticated sender can
+still send a wrong invoice, a duplicate, or one over its PO — and a
+compromised but authenticated mailbox passes every check here perfectly. The
+rule engine still runs on the content, unchanged. Each stored record carries
+its own list of limitations saying so, so the caveat travels with the verdict.
+
+**What this does not do yet:** connect to a mailbox. Messages are submitted to
+the API, not fetched from a server; retrieving them, and feeding their
+attachments through the pipeline, is the next phase. The database stores
+authentication evidence and attachment metadata — never the message body, and
+never attachment bytes.
+
 ### API security
 
 The frontend is treated as an untrusted client. CORS is configured but is not a
@@ -799,6 +857,12 @@ POST /api/runs/{id}/comment      add a note without deciding       [invoice:revi
 GET  /api/runs/{id}/activity     who did what, and when, plus the current claim [invoice:read]
 POST /api/runs/{id}/status       override any run's status         [invoice:admin]
 POST /api/admin/reset-demo       clear run history so samples replay[invoice:admin]
+POST /api/email/messages         verify an incoming message        [invoice:process]
+GET  /api/email/messages         messages evaluated                [invoice:read]
+GET  /api/email/messages/{id}    one message + its auth evidence   [invoice:read]
+POST /api/email/messages/{id}/release  release from quarantine     [invoice:review]
+POST /api/email/messages/{id}/discard  discard a held message      [invoice:review]
+GET  /api/email/trusted-senders  allowlist + verification setup    [invoice:read]
 GET  /api/reference              POs + approved vendors            [invoice:read]
 GET  /api/sample-invoices        the bundled scenarios             [invoice:read]
 GET  /api/sample-invoices/{name} one sample PDF                    [invoice:read]
@@ -844,6 +908,12 @@ DOCUMENT_STORE_BACKEND=local  # local | s3 -- see "Document storage" below
 DOCUMENT_STORAGE_DIR=./data/documents
 DOCUMENT_S3_BUCKET=           # required if DOCUMENT_STORE_BACKEND=s3
 REVIEW_CLAIM_LEASE_MINUTES=15 # see "Review collaboration and activity history"
+EMAIL_TRUSTED_AUTHSERV_IDS=   # authserv-ids whose Authentication-Results are believed.
+                              # Empty (the default) means believe none, which is safe:
+                              # unauthenticated mail is quarantined, not trusted.
+EMAIL_DNS_RESOLVER=none       # none | dnspython -- where DKIM public keys come from
+EMAIL_SIGNATURE_VERIFIER=none # only "none" is implemented (detect, never verify)
+EMAIL_MAX_MESSAGE_BYTES=      # defaults to twice MAX_UPLOAD_BYTES
 ```
 
 ---
@@ -926,6 +996,10 @@ backend/
   rules.py        Validation, vendor, duplicates, decision + audit trail
   storage.py      PostgreSQL: seed data, run history, ledger, human review
   documents.py    Document storage abstraction: local disk or S3-compatible
+  email_security.py   Incoming-message verification: DKIM (verified here),
+                  SPF/DMARC evidence, alignment, deterministic classification
+  email_signature.py  S/MIME + PGP detection, and the interface a real
+                  verifier would plug into -- detection only, never a fake pass
   auth.py         OAuth 2.0 bearer tokens, scopes, production config checks
   ratelimit.py    Per-user / per-IP sliding-window limits
   quota.py        Daily per-provider extraction budget (circuit breaker)
@@ -948,7 +1022,7 @@ sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
 docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            20 files, 528 tests, both providers mocked
+tests/            21 files, 638 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

@@ -42,6 +42,20 @@ pyjwt==2.13.0
 # compile their own dependencies, but this project has no such build step.
 psycopg2-binary==2.9.10
 
+# Email security (backend/email_security.py). NOT a new dependency: pdfplumber
+# already pulls this in through pdfminer.six, so every working install of this
+# project has had it all along. Declared explicitly because Phase F now USES it
+# directly -- for real RFC 6376 DKIM signature verification -- and a direct use
+# should not rest on another package's transitive choice.
+cryptography==50.0.0
+
+# Live DNS for DKIM public keys and DMARC policies (EMAIL_DNS_RESOLVER=dnspython).
+# NOT installed by default, exactly like boto3 above: the default resolver does
+# no lookups at all and reports DKIM `unavailable` rather than failing, so an
+# install that does not opt in never needs the package. DnspythonTxtResolver
+# imports it lazily and raises a clear error at construction if it is missing.
+# dnspython==2.7.0
+
 # Document storage (backend/documents.py). NOT installed by default: the
 # local filesystem backend (DOCUMENT_STORE_BACKEND=local, the default) needs
 # nothing beyond the standard library. Uncomment only when running with

@@ -1,0 +1,10 @@
+[
+  {"sender": "acme-office.example", "kind": "domain", "vendor_name": "Acme Office Supplies", "status": "trusted"},
+  {"sender": "globex-logistics.example", "kind": "domain", "vendor_name": "Globex Logistics", "status": "trusted"},
+  {"sender": "initech-consulting.example", "kind": "domain", "vendor_name": "Initech Consulting", "status": "trusted"},
+  {"sender": "billing@umbrella-cleaning.example", "kind": "address", "vendor_name": "Umbrella Cleaning Co", "status": "trusted"},
+  {"sender": "stark-industrial.example", "kind": "domain", "vendor_name": "Stark Industrial Parts", "status": "trusted"},
+  {"sender": "wayne-facilities.example", "kind": "domain", "vendor_name": "Wayne Facilities", "status": "trusted"},
+  {"sender": "ap-invoices@oscorp-materials.example", "kind": "address", "vendor_name": "Oscorp Materials", "status": "trusted"},
+  {"sender": "lexcorp-studios.example", "kind": "domain", "vendor_name": "LexCorp Studios", "status": "trusted"}
+]

@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 import auth
 import config
 import documents
+import email_security
 import extraction
 import matching
 import ratelimit
@@ -833,6 +834,188 @@ def get_run_activity(run_id: int,
         "run_id": run_id,
         "activity": storage.list_activity(run_id),
         "current_claim": storage.get_active_claim(run_id),
+    }
+
+
+# --------------------------------------------------------------------------
+# Email security & trusted-source verification (Phase F)
+#
+# WHAT THESE ENDPOINTS ARE, AND WHAT THEY ARE NOT
+#
+# They verify a message that is HANDED to this process. They do not connect
+# to a mailbox, poll IMAP, or fetch anything -- that is Phase G, and this is
+# the seam it plugs into: whatever transport eventually retrieves a message
+# hands the raw bytes to the same `email_security.classify()` these endpoints
+# call, and gets the same verdict, because the verdict depends only on the
+# bytes and on configuration.
+#
+# Nothing here creates a run or processes an attachment. An ADMITTED message
+# is one that is *allowed* to be processed; actually processing it is the
+# next phase.
+#
+# AUTHORIZATION reuses the scopes that already exist rather than inventing an
+# email-specific one: submitting a message is ingestion (invoice:process),
+# reading its record is reading invoice data (invoice:read), and releasing a
+# quarantined message is a hold/release ruling (invoice:review) -- the same
+# authority that accepts or rejects a NEEDS_REVIEW invoice.
+# --------------------------------------------------------------------------
+async def _read_capped_message(file: UploadFile) -> bytes:
+    """Read a submitted message, refusing anything past the configured cap.
+
+    Same chunked approach as `_read_capped` and for the same reason -- the
+    cap has to be enforced while reading, not after -- but against
+    `config.email_max_message_bytes()`, since a message carrying a PDF is
+    necessarily larger than the PDF alone.
+    """
+    limit = config.email_max_message_bytes()
+    chunks, total = [], 0
+    while True:
+        chunk = await file.read(1024 * 256)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Message exceeds the {limit // (1024 * 1024)} MB limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@app.post("/api/email/messages")
+async def submit_email_message(
+    file: UploadFile = File(...),
+    principal: auth.Principal = Depends(ratelimit.rate_limit_processing),
+):
+    """Verify an incoming RFC 5322 message and record what could be proven.
+
+    Rate limited and scoped exactly like invoice processing: this is the
+    ingestion door, and an unauthorised caller must not be able to make it do
+    work. The verdict is deterministic -- the same bytes and the same
+    configuration always produce the same classification -- which is why a
+    byte-identical resubmission returns the existing record rather than
+    writing a second one. A retried or double-clicked submission is therefore
+    safe, and a genuine replay is visible in the message's history rather
+    than hidden behind a duplicate row.
+    """
+    raw = await _read_capped_message(file)
+    if not raw:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty message")
+
+    try:
+        record = email_security.classify(raw, trusted_senders=storage.list_trusted_senders())
+    except Exception as exc:
+        # A malformed or hostile message must produce a verdict or a clean
+        # 400 -- never a 500 that tells the sender they found a crash.
+        print(f"[error] email verification failed: {exc.__class__.__name__}", file=sys.stderr)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="The message could not be evaluated")
+
+    existing = storage.find_email_by_sha256(record["sha256"])
+    if existing:
+        storage.log_email_activity(existing["id"], "MESSAGE_RESUBMITTED",
+                                   principal.username,
+                                   metadata={"sha256": record["sha256"]})
+        return {"duplicate": True, "message": storage.get_email_message(existing["id"])}
+
+    email_id = storage.save_email_message(record, submitted_by=principal.username,
+                                          source="SUBMITTED")
+    return {"duplicate": False, "message": storage.get_email_message(email_id)}
+
+
+@app.get("/api/email/messages")
+def list_email_messages(status_filter: str = None,
+                        principal: auth.Principal = Security(auth.current_principal,
+                                                             scopes=["invoice:read"])):
+    """Every message evaluated, newest first. Summary rows only -- the full
+    authentication evidence is on the individual record."""
+    if status_filter and status_filter.upper() not in config.EMAIL_STATUSES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Unknown status {status_filter!r}")
+    return storage.list_email_messages(
+        status=status_filter.upper() if status_filter else None)
+
+
+@app.get("/api/email/messages/{email_id}")
+def get_email_message(email_id: int,
+                      principal: auth.Principal = Security(auth.current_principal,
+                                                           scopes=["invoice:read"])):
+    """One message: the verdict, the full authentication evidence behind it,
+    and what people have done about it.
+
+    The evidence is the point. It carries the authentication headers that
+    were believed, the ones that were DISCARDED as coming from an untrusted
+    boundary, the DKIM signature parameters, and the alignment arithmetic --
+    everything an auditor needs to re-derive the verdict without the original
+    message, which this system deliberately did not keep.
+    """
+    message = storage.get_email_message(email_id)
+    if not message:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    message["activity"] = storage.list_email_activity(email_id)
+    return message
+
+
+@app.post("/api/email/messages/{email_id}/release")
+def release_email_message(email_id: int, payload: dict = Body(default=None),
+                          principal: auth.Principal = Security(auth.current_principal,
+                                                               scopes=["invoice:review"])):
+    """Release a quarantined message: a person accepts responsibility for it.
+
+    Requires 'invoice:review' -- the same authority that accepts a
+    NEEDS_REVIEW invoice, because it is the same kind of act. Deliberately
+    NOT automatic for any classification: an UNVERIFIED message is held
+    because nothing could be checked, and the resolution to "nothing could be
+    checked" is a human looking, not a rule that eventually gives up and lets
+    it through.
+    """
+    note = ((payload or {}).get("note") or "").strip() or None
+    result = storage.set_email_status(email_id, "RELEASED", principal.username, note)
+    if not result.get("ok"):
+        err = result.get("error", "")
+        code = (status.HTTP_404_NOT_FOUND if "unknown message" in err
+               else status.HTTP_409_CONFLICT)
+        raise HTTPException(status_code=code, detail=err)
+    return result
+
+
+@app.post("/api/email/messages/{email_id}/discard")
+def discard_email_message(email_id: int, payload: dict = Body(default=None),
+                          principal: auth.Principal = Security(auth.current_principal,
+                                                               scopes=["invoice:review"])):
+    """Discard a quarantined message. Terminal: it can never become a run."""
+    note = ((payload or {}).get("note") or "").strip() or None
+    result = storage.set_email_status(email_id, "DISCARDED", principal.username, note)
+    if not result.get("ok"):
+        err = result.get("error", "")
+        code = (status.HTTP_404_NOT_FOUND if "unknown message" in err
+               else status.HTTP_409_CONFLICT)
+        raise HTTPException(status_code=code, detail=err)
+    return result
+
+
+@app.get("/api/email/trusted-senders")
+def get_trusted_senders(principal: auth.Principal = Security(auth.current_principal,
+                                                             scopes=["invoice:read"])):
+    """The configured trusted-sender allowlist, and how message verification
+    is currently set up.
+
+    `trusted_authserv_ids` being empty is worth surfacing rather than hiding:
+    it is the difference between "this deployment can recognise an
+    authenticated sender" and "every message will read UNVERIFIED", and an
+    operator should be able to see which one they have without reading the
+    source. No secret is exposed -- an authserv-id is a hostname, and the
+    resolver name is a class name.
+    """
+    return {
+        "senders": storage.list_trusted_senders(),
+        "verification": {
+            "trusted_authserv_ids": list(config.email_trusted_authserv_ids()),
+            "dns_resolver": config.email_dns_resolver(),
+            "signature_verifier": config.email_signature_verifier(),
+            "classifications": list(config.EMAIL_CLASSIFICATIONS),
+            "statuses": list(config.EMAIL_STATUSES),
+        },
     }
 
 

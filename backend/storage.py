@@ -55,6 +55,10 @@ import documents
 
 PO_SEED = os.path.join(os.path.dirname(__file__), "..", "data", "purchase_orders.json")
 VENDOR_SEED = os.path.join(os.path.dirname(__file__), "..", "data", "approved_vendors.json")
+# Phase F. Same treatment as the two above: reference data the business owns,
+# reloaded from JSON on every startup rather than edited through the API.
+TRUSTED_SENDER_SEED = os.path.join(os.path.dirname(__file__), "..", "data",
+                                   "trusted_email_senders.json")
 
 # --------------------------------------------------------------------------
 # connection target
@@ -782,6 +786,117 @@ def init_db(reset_runs: bool = False):
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_claims_active ON review_claims(run_id, released_at)")
 
+            # SENDERS THIS BUSINESS EXPECTS INVOICES FROM (Phase F).
+            #
+            # Reloaded from data/trusted_email_senders.json every startup,
+            # exactly like purchase_orders and vendors, and for the same
+            # reason: it is procurement reference data, owned by the business
+            # and changed by editing a file under review, not by an API call
+            # that would make "who are we willing to accept invoices from"
+            # editable at runtime by anyone holding a token.
+            #
+            # An entry is a domain or a full address. Being on this list is
+            # NOT authentication -- a spoofer can put an allowlisted domain in
+            # From for free. It only decides whether an ALREADY-authenticated
+            # sender is one we do business with.
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS trusted_email_senders (
+                    sender TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    vendor_name TEXT,
+                    status TEXT,
+                    note TEXT
+                )"""
+            )
+
+            # WHAT WE COULD PROVE ABOUT AN INCOMING MESSAGE (Phase F).
+            #
+            # METADATA AND AUTHENTICATION EVIDENCE ONLY. The message body is
+            # never written here or anywhere else, and neither are attachment
+            # bytes -- `auth_json` holds the authentication headers, the
+            # signature parameters and the alignment arithmetic, which is what
+            # an auditor needs to re-derive the verdict, and nothing that
+            # needs it also needs the invoice text. `sha256` is over the raw
+            # message so a stored record can still be tied to a message
+            # produced from another source, without keeping the message.
+            #
+            # `classification` and `status` are split for exactly the reason
+            # `runs.automated_decision` and `runs.status` are split: the
+            # classification is what the deterministic evaluator concluded and
+            # is never rewritten, while `status` moves when a person releases
+            # or discards a quarantined message.
+            #
+            # `run_id` is nullable and stays NULL in Phase F -- feeding an
+            # admitted message's attachment through the pipeline is Phase G.
+            # The column exists now so that when it does, the security record
+            # and the run it produced are joinable without a schema change.
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS email_messages (
+                    id SERIAL PRIMARY KEY,
+                    run_id INTEGER,
+                    sha256 TEXT NOT NULL,
+                    message_id TEXT,
+                    received_at TEXT NOT NULL,
+                    submitted_by TEXT,
+                    source TEXT,
+                    from_address TEXT,
+                    from_domain TEXT,
+                    from_display_name TEXT,
+                    envelope_from TEXT,
+                    subject TEXT,
+                    size_bytes INTEGER,
+                    attachment_count INTEGER,
+                    has_pdf_attachment BOOLEAN,
+                    spf_result TEXT,
+                    dkim_result TEXT,
+                    dmarc_result TEXT,
+                    dmarc_aligned BOOLEAN,
+                    signature_kind TEXT,
+                    signature_result TEXT,
+                    trusted_sender BOOLEAN,
+                    classification TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reasons_json TEXT,
+                    auth_json TEXT,
+                    released_by TEXT,
+                    released_at TEXT,
+                    release_note TEXT,
+                    FOREIGN KEY (run_id) REFERENCES runs(id)
+                )"""
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_email_status ON email_messages(status)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_email_sha256 ON email_messages(sha256)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_email_run_id ON email_messages(run_id)")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_email_received_at ON email_messages(received_at)")
+
+            # WHAT PEOPLE DID ABOUT A MESSAGE (Phase F).
+            #
+            # WHY THIS IS NOT invoice_activity: that table's `run_id` is NOT
+            # NULL and foreign-keyed to `runs`. A quarantined message has no
+            # run, and if it is discarded it never will have one -- so it
+            # cannot be represented there without dropping that constraint,
+            # which is a Phase D invariant this phase has no business
+            # weakening. Same design, same columns, same append-only rule,
+            # different subject. Once Phase G turns an admitted message into a
+            # run, that run's own history continues in invoice_activity as
+            # normal; these two are joined by email_messages.run_id, not
+            # merged.
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS email_activity (
+                    id SERIAL PRIMARY KEY,
+                    email_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    actor TEXT,
+                    created_at TEXT NOT NULL,
+                    note TEXT,
+                    metadata_json TEXT,
+                    FOREIGN KEY (email_id) REFERENCES email_messages(id)
+                )"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_email_activity_email_id ON email_activity(email_id)")
+
             # Read heavily by find_duplicate() (invoice_number equality) and by every
             # ledger query that filters on status -- neither existed as an index under
             # SQLite because a single-file database at this volume never needed one;
@@ -847,6 +962,31 @@ def init_db(reset_runs: bool = False):
             for v in vendors:
                 cur.execute("INSERT INTO vendors VALUES (%s,%s,%s)",
                            (v["vendor_name"], v["vendor_id"], v["status"]))
+
+            # Phase F reference data, same reload-on-startup contract. A
+            # MISSING file is not an error: a deployment that has not decided
+            # who it trusts yet gets an empty list, and the classifier's
+            # behaviour with an empty list is well defined (it stops treating
+            # allowlist membership as a requirement rather than failing every
+            # sender). A malformed file IS an error, and rolls back the whole
+            # of init_db with the other seed loads.
+            cur.execute("DELETE FROM trusted_email_senders")
+            if os.path.isfile(TRUSTED_SENDER_SEED):
+                with open(TRUSTED_SENDER_SEED) as f:
+                    senders = json.load(f)
+                for s in senders:
+                    sender = (s.get("sender") or "").strip().lower()
+                    if not sender:
+                        continue
+                    cur.execute(
+                        """INSERT INTO trusted_email_senders
+                           (sender, kind, vendor_name, status, note)
+                           VALUES (%s,%s,%s,%s,%s)
+                           ON CONFLICT (sender) DO NOTHING""",
+                        (sender,
+                         (s.get("kind") or ("address" if "@" in sender else "domain")).lower(),
+                         s.get("vendor_name"), (s.get("status") or "trusted").lower(),
+                         s.get("note")))
 
 
 def list_purchase_orders():
@@ -1460,6 +1600,263 @@ def get_run(run_id):
     return hydrated
 
 
+# --------------------------------------------------------------------------
+# Email security records (Phase F)
+#
+# Everything below stores what could be PROVEN about an incoming message and
+# what people did about it. Nothing below stores the message.
+# --------------------------------------------------------------------------
+def list_trusted_senders():
+    """The senders this business expects invoices from. Reference data,
+    reloaded from JSON on startup -- there is deliberately no writer."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT sender, kind, vendor_name, status, note
+                           FROM trusted_email_senders ORDER BY sender""")
+            return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _insert_email_activity(cur, email_id, event_type, actor, note=None, metadata=None):
+    """Append one message-activity row on a caller's open cursor, so the event
+    lands atomically with the write it describes. Same contract as
+    `_insert_activity` for runs."""
+    cur.execute(
+        """INSERT INTO email_activity (email_id, event_type, actor, created_at, note, metadata_json)
+           VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+        (email_id, event_type, actor, datetime.now(timezone.utc).isoformat(), note,
+         json.dumps(metadata) if metadata is not None else None),
+    )
+    return cur.fetchone()["id"]
+
+
+def log_email_activity(email_id: int, event_type: str, actor: str = None, note: str = None,
+                       metadata: dict = None):
+    """Append one message-activity row in its own transaction, for callers
+    with no open cursor of their own. Prefer `_insert_email_activity` when
+    already inside a `write_txn()`."""
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            return _insert_email_activity(cur, email_id, event_type, actor, note, metadata)
+
+
+def list_email_activity(email_id: int):
+    """The full chronological history for one message, oldest first."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, email_id, event_type, actor, created_at, note, metadata_json
+                   FROM email_activity WHERE email_id=%s ORDER BY id ASC""", (email_id,))
+            rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    for r in rows:
+        r["metadata"] = json.loads(r.pop("metadata_json")) if r.get("metadata_json") else None
+    return rows
+
+
+def find_email_by_sha256(sha256: str):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM email_messages WHERE sha256=%s ORDER BY id ASC LIMIT 1",
+                        (sha256,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return _hydrate_email(dict(row)) if row else None
+
+
+def save_email_message(record: dict, submitted_by: str = None, source: str = "SUBMITTED"):
+    """Persist one message's security record, with its arrival in the history.
+
+    `record` is exactly what email_security.classify() returned. This function
+    does not re-derive, re-check or second-guess any of it -- the evaluator
+    owns the verdict, storage owns keeping it. Same division as
+    rules.decide() and save_run_checked().
+    """
+    audit = record.get("audit") or {}
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO email_messages
+                   (run_id, sha256, message_id, received_at, submitted_by, source,
+                    from_address, from_domain, from_display_name, envelope_from, subject,
+                    size_bytes, attachment_count, has_pdf_attachment,
+                    spf_result, dkim_result, dmarc_result, dmarc_aligned,
+                    signature_kind, signature_result, trusted_sender,
+                    classification, status, reasons_json, auth_json)
+                   VALUES (NULL,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                           %s,%s,%s,%s)
+                   RETURNING id""",
+                (record["sha256"], record.get("message_id"),
+                 datetime.now(timezone.utc).isoformat(), submitted_by, source,
+                 record.get("from_address"), record.get("from_domain"),
+                 record.get("from_display_name"), record.get("envelope_from"),
+                 record.get("subject"), record.get("size_bytes"),
+                 record.get("attachment_count"), bool(record.get("has_pdf_attachment")),
+                 record.get("spf_result"), record.get("dkim_result"),
+                 record.get("dmarc_result"), bool(record.get("dmarc_aligned")),
+                 record.get("signature_kind"), record.get("signature_result"),
+                 bool(record.get("trusted_sender")),
+                 record["classification"], record["status"],
+                 json.dumps(record.get("reasons") or []), json.dumps(audit)),
+            )
+            email_id = cur.fetchone()["id"]
+            _insert_email_activity(
+                cur, email_id, "MESSAGE_RECEIVED", submitted_by,
+                metadata={"source": source, "sha256": record["sha256"],
+                          "attachment_count": record.get("attachment_count")})
+            # The evaluation is logged separately from the arrival because
+            # they are separate facts: one day a message may be re-evaluated
+            # (a trust anchor arrives, a resolver is configured) and the
+            # history must be able to carry a second evaluation without
+            # implying the message arrived twice.
+            _insert_email_activity(
+                cur, email_id, "AUTHENTICATION_EVALUATED", None,
+                note="; ".join(record.get("reasons") or [])[:2000] or None,
+                metadata={"classification": record["classification"],
+                          "spf": record.get("spf_result"),
+                          "dkim": record.get("dkim_result"),
+                          "dmarc": record.get("dmarc_result"),
+                          "signature": record.get("signature_result")})
+            _insert_email_activity(
+                cur, email_id,
+                "QUARANTINED" if record["status"] == "QUARANTINED" else "ADMITTED", None,
+                metadata={"classification": record["classification"]})
+    return email_id
+
+
+def _hydrate_email(row: dict) -> dict:
+    row["reasons"] = json.loads(row.pop("reasons_json")) if row.get("reasons_json") else []
+    row["audit"] = json.loads(row.pop("auth_json")) if row.get("auth_json") else None
+    return row
+
+
+def get_email_message(email_id: int):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM email_messages WHERE id=%s", (email_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return _hydrate_email(dict(row)) if row else None
+
+
+def list_email_messages(limit: int = 200, status: str = None):
+    """Summary rows, newest first. `audit` is deliberately omitted -- it is
+    the largest column by far and a list view never needs it, the same reason
+    list_runs() does not carry each run's claim."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            sql = """SELECT id, run_id, sha256, message_id, received_at, submitted_by, source,
+                            from_address, from_domain, from_display_name, subject,
+                            size_bytes, attachment_count, has_pdf_attachment,
+                            spf_result, dkim_result, dmarc_result, dmarc_aligned,
+                            signature_kind, signature_result, trusted_sender,
+                            classification, status, reasons_json,
+                            released_by, released_at, release_note
+                     FROM email_messages"""
+            params = []
+            if status:
+                sql += " WHERE status=%s"
+                params.append(status)
+            sql += " ORDER BY id DESC LIMIT %s"
+            params.append(limit)
+            cur.execute(sql, tuple(params))
+            rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    for r in rows:
+        r["reasons"] = json.loads(r.pop("reasons_json")) if r.get("reasons_json") else []
+    return rows
+
+
+def set_email_status(email_id: int, new_status: str, actor: str = None, note: str = None):
+    """Release or discard a quarantined message. One transaction, one lock.
+
+    Built the way Phase E rebuilt record_human_review(), and for the same
+    reason: the eligibility check and the write have to be one atomic step or
+    two concurrent requests -- a double-clicked Release, a retry, or one
+    reviewer releasing while another discards -- can both read "still
+    quarantined" and both apply. `SELECT ... FOR UPDATE` on the message row
+    means the second caller blocks until the first commits, then re-reads the
+    status it is no longer allowed to change and is refused.
+
+    A message may be ruled on ONCE. Releasing is a security decision with a
+    consequence (the message becomes eligible to be processed), so it gets
+    the same single-ruling discipline a human invoice review gets.
+    """
+    if new_status not in ("RELEASED", "DISCARDED"):
+        return {"ok": False, "error": f"unsupported status {new_status!r}"}
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, status, classification FROM email_messages WHERE id=%s "
+                        "FOR UPDATE", (email_id,))
+            row = cur.fetchone()
+            if not row:
+                return {"ok": False, "error": "unknown message"}
+            current = row["status"]
+            if current == "ADMITTED":
+                # Nothing to release: it was never held. Refused rather than
+                # silently accepted, so a caller cannot record a "release"
+                # that did not happen.
+                return {"ok": False,
+                        "error": "this message was admitted and is not quarantined"}
+            if current != "QUARANTINED":
+                return {"ok": False,
+                        "error": f"this message has already been ruled on ({current.lower()})"}
+            now = datetime.now(timezone.utc).isoformat()
+            cur.execute(
+                """UPDATE email_messages
+                   SET status=%s, released_by=%s, released_at=%s, release_note=%s
+                   WHERE id=%s""",
+                (new_status, actor, now, note, email_id))
+            _insert_email_activity(
+                cur, email_id, new_status, actor, note=note,
+                metadata={"from_status": current, "to_status": new_status,
+                          "classification": row["classification"]})
+    return {"ok": True, "id": email_id, "status": new_status, "by": actor}
+
+
+def link_email_to_run(email_id: int, run_id: int):
+    """Record that a run was produced from this message.
+
+    Nothing in Phase F calls this -- creating a run from an email attachment
+    is Phase G. It exists, and is tested, because the join it enables is the
+    whole reason `email_messages.run_id` was added now rather than later: the
+    security record and the invoice it produced have to be answerable
+    together ("what did we know about the sender of the message this run came
+    from?") without a schema migration to ask.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, status FROM email_messages WHERE id=%s FOR UPDATE",
+                        (email_id,))
+            row = cur.fetchone()
+            if not row:
+                return {"ok": False, "error": "unknown message"}
+            if row["status"] not in ("ADMITTED", "RELEASED"):
+                # A quarantined or discarded message must not be able to
+                # acquire a run: that would mean it reached the pipeline
+                # without passing the gate this phase exists to impose.
+                return {"ok": False,
+                        "error": f"a message with status {row['status'].lower()} may not be "
+                                 "processed; release it first"}
+            cur.execute("SELECT id FROM runs WHERE id=%s", (run_id,))
+            if not cur.fetchone():
+                return {"ok": False, "error": "unknown run"}
+            cur.execute("UPDATE email_messages SET run_id=%s WHERE id=%s", (run_id, email_id))
+            _insert_email_activity(cur, email_id, "LINKED_TO_RUN", None,
+                                   metadata={"run_id": run_id})
+    return {"ok": True, "id": email_id, "run_id": run_id}
+
+
 def clear_run_history():
     """Delete every processed run, leaving reference data untouched.
 
@@ -1496,6 +1893,14 @@ def clear_run_history():
             cur.execute("DELETE FROM documents")
             cur.execute("DELETE FROM review_claims")
             cur.execute("DELETE FROM invoice_activity")
+            # Phase F: an email security record is NOT run history. It records
+            # what could be proven about a sender, which stays true whether or
+            # not the invoice it carried is still on file -- and deleting a
+            # security finding because someone reset a demo would be the wrong
+            # instinct to build in. So the link is dropped (the run it pointed
+            # at is about to stop existing, and the foreign key would refuse
+            # the delete otherwise) and the record itself is kept.
+            cur.execute("UPDATE email_messages SET run_id=NULL WHERE run_id IS NOT NULL")
             cur.execute("DELETE FROM runs")
             deleted = cur.rowcount
 

@@ -333,6 +333,96 @@ def review_claim_lease_minutes() -> int:
     return int(os.environ.get(REVIEW_CLAIM_LEASE_MINUTES_ENV, "15") or 15)
 
 
+# --------------------------------------------------------------------------
+# Email security & trusted-source verification (Phase F)
+#
+# Everything here answers one question: how much of an incoming message's
+# claimed origin can this process actually PROVE. Nothing here decides whether
+# an invoice is legitimate -- that stays with rules.decide(), exactly as it is
+# for a manually uploaded PDF. An email authentication result is a security
+# signal about the ENVELOPE, never a verdict about the CONTENT.
+#
+# WHY AN AUTHSERV-ID ALLOWLIST IS THE CENTRE OF THIS
+#
+# `Authentication-Results` (RFC 8601) is an ordinary header. Anyone can put
+# one in a message they send, saying anything they like -- "dmarc=pass" costs
+# a spoofer nothing. The header is only worth reading when it was stamped by a
+# receiving boundary WE control and can name. That is what this list is: the
+# authserv-ids whose verdicts this process is willing to believe. Empty (the
+# default) means believe none of them, which makes every message read as
+# UNVERIFIED rather than trusted -- the safe direction, and the reason there is
+# no "trust whatever is in the header" fallback.
+# --------------------------------------------------------------------------
+EMAIL_TRUSTED_AUTHSERV_IDS_ENV = "EMAIL_TRUSTED_AUTHSERV_IDS"
+EMAIL_DNS_RESOLVER_ENV = "EMAIL_DNS_RESOLVER"
+EMAIL_SIGNATURE_VERIFIER_ENV = "EMAIL_SIGNATURE_VERIFIER"
+EMAIL_MAX_MESSAGE_BYTES_ENV = "EMAIL_MAX_MESSAGE_BYTES"
+
+# A submitted .eml carries the invoice PDF inline, base64-encoded, so it is
+# necessarily larger than the PDF alone -- base64 costs ~33%, plus headers and
+# any other parts. Sized off the PDF cap rather than picked independently, so
+# raising one does not silently leave the other as the real limit.
+EMAIL_MAX_MESSAGE_BYTES_DEFAULT = MAX_UPLOAD_BYTES * 2
+
+# The seed list of senders this business actually expects invoices FROM.
+# Reloaded from JSON on every startup, exactly like purchase_orders.json and
+# approved_vendors.json -- it is reference data the business owns, not
+# application state.
+TRUSTED_SENDER_SEED = os.path.join(ROOT, "data", "trusted_email_senders.json")
+
+# Classifications email_security.classify() can produce. Deliberately FOUR,
+# not three: "we proved it failed" and "we could not check" are different
+# facts about a message and must never collapse into one another.
+EMAIL_CLASSIFICATIONS = ("VERIFIED", "SUSPICIOUS", "FAILED", "UNVERIFIED")
+
+# What the message is allowed to do next. Separate from the classification for
+# the same reason `runs.status` is separate from `runs.automated_decision`:
+# the classification is an immutable finding, the status moves when a human
+# rules on it.
+EMAIL_STATUSES = ("ADMITTED", "QUARANTINED", "RELEASED", "DISCARDED")
+
+
+def email_trusted_authserv_ids() -> tuple:
+    """The authentication-results boundaries this process believes, lowercased.
+
+    Empty by default and empty is meaningful: it is not "misconfigured", it is
+    "this deployment has no trusted boundary yet", and the classifier reports
+    UNVERIFIED accordingly instead of inventing trust.
+    """
+    raw = os.environ.get(EMAIL_TRUSTED_AUTHSERV_IDS_ENV, "")
+    return tuple(x.strip().lower() for x in raw.split(",") if x.strip())
+
+
+def email_dns_resolver() -> str:
+    """'none' (default) or 'dnspython'.
+
+    'none' is not a degraded mode to apologise for -- it is the only setting
+    that keeps verification reproducible offline, and it makes DKIM report
+    `unavailable` (never `fail`) because no public key could be fetched.
+    """
+    choice = os.environ.get(EMAIL_DNS_RESOLVER_ENV, "none").strip().lower()
+    return choice if choice in ("none", "dnspython") else "none"
+
+
+def email_signature_verifier() -> str:
+    """Which user-level (S/MIME or PGP) signature verifier to use.
+
+    Only 'none' is implemented. It DETECTS a signature and reports its status
+    as unavailable; it cannot and does not report a pass. See
+    backend/email_signature.py for why a real one needs a trust anchor this
+    deployment does not have.
+    """
+    return os.environ.get(EMAIL_SIGNATURE_VERIFIER_ENV, "none").strip().lower() or "none"
+
+
+def email_max_message_bytes() -> int:
+    try:
+        return int(os.environ.get(EMAIL_MAX_MESSAGE_BYTES_ENV, "")
+                   or EMAIL_MAX_MESSAGE_BYTES_DEFAULT)
+    except ValueError:
+        return EMAIL_MAX_MESSAGE_BYTES_DEFAULT
+
+
 def load_dotenv():
     """Minimal .env loader (KEY=VALUE per line). Real environment wins."""
     if not os.path.isfile(ENV_PATH):
