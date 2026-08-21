@@ -26,7 +26,8 @@ dashboard and an activity history.
 **Major components:**
 - **Backend** (`backend/`) — FastAPI, PostgreSQL, the 9-stage pipeline, the
   deterministic rule engine, OAuth2 auth, document storage, multi-user review
-  collaboration, email trusted-source verification (§7a).
+  collaboration, email trusted-source verification (§7a), email invoice
+  ingestion (§7b).
 - **Frontend** (`frontend-next/`) — Next.js 15 / React 19 / Tailwind v4,
   served as a static export by FastAPI. **Has uncommitted redesign work in
   progress — see §11, read before touching any frontend file.**
@@ -35,7 +36,7 @@ dashboard and an activity history.
 - **`data/`** — seed POs, vendors, demo users (JSON, tracked in git,
   reloaded into Postgres on every startup) plus gitignored runtime state
   (`documents/`).
-- **`tests/`** — 638 tests, 21 files, real (schema-isolated) PostgreSQL, both
+- **`tests/`** — 733 tests, 22 files, real (schema-isolated) PostgreSQL, both
   LLM providers mocked. See §10.
 
 ---
@@ -62,21 +63,21 @@ history — do not conflate them:
 | D | Multi-user collaboration + activity history | ✅ Complete | `345033a` |
 | E | Review workflow hardening | ✅ Complete | `66e6f79` |
 | F | Email security & trusted-source verification | ✅ Complete | see `git log` |
-| G | Email invoice ingestion & extraction | ⬜ **Next — not started** | — |
-| H | KPIs + analytics | ⬜ Not started | — |
+| G | Email invoice ingestion & extraction | ✅ Complete | see `git log` |
+| H | KPIs + analytics | ⬜ **Next — not started** | — |
 | I | Logs + filters + grouping + exports | ⬜ Not started | — |
 | J | Client access / client portal | ⬜ Not started | — |
 | K | Chatbot (read-only invoice/AP assistant) | ⬜ Not started | — |
 | L | Multilingual support | ⬜ Not started | — |
 | M | Final security + deployment hardening | ⬜ Not started | — |
 
-**Do not start Phase G or any later phase without being explicitly asked.**
+**Do not start Phase H or any later phase without being explicitly asked.**
 This project has been built one verified phase at a time, each requested
 individually, each committed on its own before the next began. See §9 for
-what Phase G is planned to cover — plan only, nothing implemented.
+what H–M are planned to cover — plan only, nothing implemented.
 
-**Do not redo A–F.** They are complete, tested, and committed. If something
-in A–F looks wrong, raise it — don't silently "fix" or rebuild it.
+**Do not redo A–G.** They are complete, tested, and committed. If something
+in A–G looks wrong, raise it — don't silently "fix" or rebuild it.
 
 ---
 
@@ -318,6 +319,15 @@ email_messages    id (PK, SERIAL), run_id (nullable FK → runs.id), sha256,
                   and authentication evidence only; the body and attachment
                   bytes are never stored (Phase F, §7a.7)
 
+email_attachments id (PK, SERIAL), email_id (FK → email_messages.id), seq,
+                  filename, content_type, size_bytes, sha256,
+                  is_invoice_candidate, status, skip_reason,
+                  run_id (nullable FK → runs.id), run_status, error,
+                  created_at, processed_at, storage_backend, storage_key
+                  — one row per attachment, so ONE email can produce SEVERAL
+                  invoice runs. A quarantined candidate's PDF is held in the
+                  Phase C DocumentStore via storage_key (Phase G, §7b.6)
+
 email_activity    id (PK, SERIAL), email_id (FK → email_messages.id),
                   event_type, actor, created_at, note, metadata_json
                   — append-only history for a message. Separate from
@@ -335,7 +345,11 @@ Indexes: `run_allocations(po_number)`, `run_allocations(run_id)`,
 `invoice_activity(created_at)`, `review_claims(run_id)`,
 `review_claims(run_id, released_at)`, `runs(invoice_number)`, `runs(status)`,
 `email_messages(status)`, `email_messages(sha256)`, `email_messages(run_id)`,
-`email_messages(received_at)`, `email_activity(email_id)`.
+`email_messages(received_at)`, `email_activity(email_id)`,
+**`UNIQUE email_messages(provider, provider_message_id)`** (Phase G's
+idempotency mechanism, §7b.5), `email_messages(ingest_status)`,
+`email_attachments(email_id)`, `email_attachments(run_id)`,
+**`UNIQUE email_attachments(email_id, sha256)`**.
 
 ### Concurrency and locking
 
@@ -837,6 +851,230 @@ deterministic, which is itself tested.
 6. **No frontend.** These endpoints have no UI; Phase F is backend-and-tests
    only, the same restriction Phases D and E worked under (§11).
 
+## 7b. Email invoice ingestion & extraction (Phase G)
+
+**Status: implemented, tested (95 tests), verified, committed.**
+
+Phase F answers *what can be proven about a message handed to us*. Phase G is
+the part that **goes and gets one**, and connects it to the pipeline that
+already existed. Keep the two straight: F is verification, G is ingestion.
+
+### 7b.1 The flow, and why the order is the whole point
+
+```
+IMAP provider          fetch raw bytes + a stable message id
+      v
+idempotency check      one indexed lookup; a message seen before stops here
+      v
+parse headers/MIME     stdlib, cheap; NO attachment is opened
+      v
+TRIAGE                 cheap, deterministic, NO MODEL   <-- stops most mail
+      v                (LOW / IRRELEVANT stop here, recorded and kept)
+PHASE F verification    cryptography, microseconds
+      v                (QUARANTINED stops here; Phase F's own hold)
+attachment validation   magic bytes, size, dedupe -- first time bytes are read
+      v
+run_pipeline()          EXPENSIVE: OCR / LLM / PO match / decision / review
+```
+
+**Triage exists so the last stage is never reached by a newsletter.** A message
+with no PDF and nothing invoice-shaped in the subject costs one header parse
+and two dictionary lookups: no LLM, no OCR, no extraction quota, and not even a
+signature verification. This is enforced structurally (`ingest_message()`
+returns before the processing call) and **asserted directly**: the test suite
+replaces `extraction.extract_invoice` with a spy and fails if a filtered
+message ever reaches it.
+
+### 7b.2 Two axes, deliberately not one score
+
+`backend/email_triage.py` classifies every sender on two **independent** axes:
+
+| | |
+|---|---|
+| `sender_type` | `CORPORATE` / `PERSONAL` / `UNKNOWN` — what kind of address |
+| `trust_status` | `TRUSTED` / `UNTRUSTED` / `UNKNOWN` — whether we buy from them |
+
+```
+invoice@acme-office.example   CORPORATE + TRUSTED     (allowlisted)
+supplier@gmail.com            PERSONAL  + UNKNOWN     (not "untrusted")
+billing@never-heard-of.test   CORPORATE + UNKNOWN     (a company, just not one we know)
+```
+
+**A corporate sender is not automatically trusted** — a company domain costs an
+attacker nothing to register. **An unknown sender is not automatically
+hostile** — every genuine vendor was unknown once. **A personal address is not
+automatically refused** — a small supplier really does invoice from Gmail, and
+`PERSONAL + TRUSTED` is representable and tested.
+
+`trust_status` is read from **Phase F's existing `trusted_email_senders`
+allowlist**, which already links each entry to a `vendor_name`. There is no
+second vendor list. `sender_type` comes from `data/email_domain_policy.json`
+(corporate + free-mail domains), extendable through `EMAIL_CORPORATE_DOMAINS` /
+`EMAIL_PERSONAL_DOMAINS`. Neither is hard-coded in business logic.
+
+### 7b.3 Relevance, and the refusal to over-filter
+
+`HIGH` / `POSSIBLE` proceed; `LOW` / `IRRELEVANT` stop. The asymmetry is
+deliberate: a false "irrelevant" costs a missed invoice somebody has to chase,
+a false "possible" costs one LLM call — so **every doubt resolves upward**.
+
+A stopped message is **recorded, kept, and readable afterwards** with the
+reasons that stopped it, and its attachments are listed. Nothing is deleted.
+The claim triage makes is only ever *"not worth an LLM call without a person
+asking"*, never *"not an invoice"*.
+
+### 7b.4 The provider abstraction
+
+`backend/email_provider.py` is the only module in the codebase that knows a
+mailbox exists. Everything downstream takes raw RFC 5322 bytes and an id.
+
+- **`ImapEmailProvider`** — a real, working client on the stdlib's `imaplib`.
+  **No new dependency.** Always TLS (`IMAP4_SSL`), no plaintext option.
+  Authenticates with **SASL XOAUTH2 when `EMAIL_IMAP_OAUTH_TOKEN` is set**, and
+  falls back to a password only when it is not — a scoped short-lived token
+  beats a long-lived mailbox password in an environment variable. Gmail and
+  Microsoft 365 both accept this.
+- **`NullEmailProvider`** — the default. Ingestion off, nothing polled, no
+  outbound connection. Not a placeholder: it is the correct behaviour for an
+  install that does not want email.
+
+There is **no mock provider in `backend/`** — test doubles live in the test
+file, where no production configuration can select them.
+
+### 7b.5 Idempotency — the database, not Python
+
+**`UNIQUE (provider, provider_message_id)`** on `email_messages`, partial so
+Phase F rows with a NULL provider do not collide.
+
+Not a check-then-insert: two pollers, or two uvicorn workers, would both pass
+that before either wrote. The database refuses the second `INSERT` however the
+race is timed, and the loser reads its own answer back and reports a duplicate.
+Proved under 8 real threads racing one message — exactly one record, at most
+one run.
+
+`provider_message_id` prefers the RFC 5322 `Message-ID` over the IMAP UID,
+because a UID is unique only within one folder on one server: a message moved
+between folders, or a mailbox restored from backup, would otherwise reprocess.
+
+A second unique index, `(email_id, sha256)` on `email_attachments`, means the
+same PDF attached twice is stored and processed once, and a redelivery cannot
+append a second copy of every attachment.
+
+`mark_handled()` (the IMAP `\Seen` flag) is **an optimisation, never
+correctness** — and it is set only *after* the outcome is committed, so a crash
+mid-processing leaves the message to be re-offered and refused by the
+constraint.
+
+### 7b.6 One email is not one invoice
+
+`email_attachments` is one row per attachment with its own status and its own
+nullable `run_id` — the same shape of problem `runs.po_number` had before
+`run_allocations`, solved the same way. So:
+
+- an email with three invoices produces three runs;
+- an attachment that failed can be retried without reprocessing the ones that
+  succeeded (a `PROCESSED` row is skipped before its bytes are even read);
+- a deliberately skipped attachment records **why**, so "we ignored your
+  logo.png" is answerable later;
+- one corrupt PDF does not stop the good invoice beside it in the same email.
+
+`email_messages.run_id` still holds the *first* run, so Phase F's single-run
+link keeps working unchanged.
+
+### 7b.7 Phase F cannot be bypassed
+
+`process_message_attachments()` re-reads the **stored** security status and
+refuses anything that is not `ADMITTED` or `RELEASED`. It reads the database
+row, not a value the caller passed, so the gate holds across restarts, across
+processes, and regardless of how the function was reached. There is no argument
+that skips it. Both the quarantined and discarded cases are tested by calling
+the function directly and asserting the extraction spy stayed at zero.
+
+**Quarantine reuses Phase F entirely** — same statuses, same
+`/release` and `/discard` endpoints, same `invoice:review` scope. No second
+quarantine system.
+
+**A quarantined message's PDFs are preserved**, in the existing Phase C
+`DocumentStore`, keyed by a server-generated key exactly as invoice documents
+are — so releasing a message later actually has something to process, instead
+of making the vendor resend. The **message body is still never stored**; only
+the attachment, which is the invoice itself. Once an attachment becomes a run,
+the run's own document row owns a copy and the holding copy is deleted.
+
+### 7b.8 One pipeline, two doors
+
+`_run_invoice_pipeline()` consumes **`main.run_pipeline`** — the same async
+generator the browser drives — and reads the `final` frame it already emits.
+Every stage, the audit trail, the confidence gate, PO matching, the allocation
+ledger, document persistence and review routing are the ones a manual upload
+gets, because they *are* the ones a manual upload gets. `source="EMAIL"` is the
+value `config.DOCUMENT_SOURCES` has recognised since Phase C and that nothing
+wrote until now.
+
+A test asserts both doors produce runs with identical stage lists and identical
+audit-trail keys.
+
+### 7b.9 Failure handling
+
+Every failure is recorded and visible; nothing is silently dropped.
+
+| Failure | Behaviour |
+|---|---|
+| Provider unreachable / auth failure | `poll_once` returns `ok: False` with the reason; the endpoint answers **502**. Never an empty poll, which would look like "no new mail" |
+| Malformed message / MIME | Recorded with `ingest_status=FAILED`; the batch continues |
+| Oversized message | Recorded as `FAILED` with the size and the limit |
+| Corrupt PDF | That **attachment** fails; other attachments in the same email still process |
+| Attachment unreadable on release | `FAILED` with a distinct reason — our problem, not the sender's |
+| Database unavailable while recording | Reported, message left unmarked so the next poll re-offers it |
+| Pipeline crash | Caught per attachment, logged, recorded; loop continues |
+
+### 7b.10 Endpoints (no new scope)
+
+```
+GET  /api/email/ingestion                   [invoice:admin]    config + counts
+POST /api/email/ingestion/poll              [invoice:process]  run one pass now
+POST /api/email/messages/{id}/process       [invoice:process]  process an admitted/released message
+GET  /api/email/messages/{id}/attachments   [invoice:read]     what arrived, what it became
+```
+
+`/api/email/ingestion` is admin-scoped because it describes the mailbox
+connection, and it reports only whether a credential is **present** — never the
+password, never the token. A test greps the response body for both.
+
+**Release does not auto-process.** Phase F's `/release` means exactly what it
+meant before; `/process` is the explicit, separately-audited follow-up. That
+keeps the security model unchanged rather than quietly widening it.
+
+### 7b.11 Deployment
+
+The poller is an in-process asyncio task started at FastAPI startup when
+`EMAIL_INGEST_ENABLED=1` **and** a provider is configured, and cancelled on
+shutdown. It runs each pass in a worker thread (`asyncio.to_thread`), so
+blocking socket I/O and an LLM call never stall the event loop and every HTTP
+request with it. **No manually-run local script is involved.** Running several
+uvicorn workers is safe — see §7b.5.
+
+### 7b.12 Known limitations
+
+1. **IMAP is the only implemented provider.** The abstraction is real and a
+   second provider is a new class, but Gmail API and Microsoft Graph are *not*
+   implemented and are not claimed.
+2. **Polling, not webhooks.** IMAP has no webhook; `IDLE` is not implemented
+   either, so the worst-case latency is one `EMAIL_POLL_SECONDS` interval.
+3. **OAuth tokens are consumed, not obtained.** `EMAIL_IMAP_OAUTH_TOKEN` is
+   read from the environment; there is no refresh-token flow, so a short-lived
+   token must be refreshed by whatever issues it.
+4. **PDF only.** The extraction pipeline reads PDFs, so other formats are
+   recorded and skipped with a reason rather than half-processed.
+5. **No frontend.** These endpoints have no UI, the same restriction Phases
+   D, E and F worked under (§11).
+6. **The relevance filter is a heuristic**, deliberately biased toward
+   processing. It can pass junk through to an LLM call; it is built not to stop
+   a real invoice, and stopped messages are kept and re-runnable either way.
+7. **`test_email_ingestion.py` needs no network**, but its happy path signs
+   messages with a real generated key — an unsigned message is correctly
+   quarantined by Phase F and never reaches the pipeline.
+
 ## 8. Authentication, authorization
 
 - **OAuth 2.0 resource-server pattern.** `Authorization: Bearer <JWT>`,
@@ -876,16 +1114,13 @@ the original plan listed "SPF verification" as ordinary scope — that turned
 out to be impossible to compute from a stored message, and §7a.3 records the
 reason rather than the plan pretending otherwise.
 
-### Phase G — Email invoice ingestion & extraction (NEXT, not started)
+### Phase G — Email invoice ingestion & extraction (DONE)
 
-Actual ingestion, once Phase F's trust signal exists to gate it:
-connecting to an email provider, detecting incoming invoice emails,
-retrieving attachments, storing them (via the existing `DocumentStore`
-abstraction from Phase C — `config.DOCUMENT_SOURCES` already recognises
-`"EMAIL"` as a source value, unused until this phase), and feeding verified
-invoices through the existing pipeline (§3) unchanged.
+**Implemented, tested and verified — see [§7b](#7b-email-invoice-ingestion--extraction-phase-g)
+for what it does, and §7b.12 for what it deliberately does not.** This entry is
+a marker only; §7b is the authority.
 
-### H–M
+### H–M (NEXT is H)
 
 KPIs/analytics, logs/filters/grouping/exports, a client-facing portal, a
 read-only AP chatbot, multilingual support, and a final security/deployment
@@ -895,7 +1130,7 @@ hardening pass — all unstarted, all deferred until asked for individually.
 
 ## 10. Testing
 
-**638 tests, 21 files.** Both Groq and Gemini mocked at the HTTP transport
+**733 tests, 22 files.** Both Groq and Gemini mocked at the HTTP transport
 boundary — the suite needs no API key, no network, no quota, only a reachable
 PostgreSQL (`DATABASE_URL`). `test_samples.py` is the deliberate exception:
 it honours a live key and exercises the real routes end-to-end.
@@ -911,6 +1146,7 @@ signature verified, an actual signature actually verified.
 
 | File | Tests | Covers |
 |---|---|---|
+| `test_email_ingestion.py` | 95 | Phase G: sender/relevance triage, the no-LLM-for-junk guarantee (an extraction spy), provider failure, idempotency under 8 threads, attachment validation & path traversal, multi-invoice emails, the Phase F gate, quarantine→release→process, authorization, backwards compatibility |
 | `test_email_security.py` | 110 | Phase F: real DKIM verification (all four canonicalisations, tampered signature/body, revoked key), DMARC alignment, discarded/forged Authentication-Results, spoofed From, conflicting signals, unavailable-vs-failed, S/MIME + PGP detection, malformed/hostile headers, quarantine gate, 10-thread ruling race, authorization, backwards compatibility |
 | `test_api_security.py` | 59 | authn, authz, rate limits, secrets, input, errors |
 | `test_review_collaboration.py` | 48 | Phase D (claiming, 10-thread claim race, stale-claim recovery, activity, HTTP auth) + Phase E (decision-atomicity races, unknown-run-release, HTTP duplicate submission) |
@@ -940,6 +1176,22 @@ copied from an old table.)
 `threading.Barrier` so every thread starts simultaneously, then asserts the
 outcome (exactly one winner, the balance never over budget), not the
 mechanism. Not mocked, not sleep-based.
+
+**Verified state at the end of Phase G** (2026-08-21). `tests/test_email_ingestion.py`
+alone: **95 passed.** Full suite with `GEMINI_API_KEY`/`GROQ_API_KEY` unset:
+**729 passed, 4 failed** — the 4 being exactly the pre-existing
+`test_extraction_routing.py` cases below, which pass **23/23** when that file
+runs alone. No Phase A–F regression.
+
+Those 95 were checked against passing vacuously by mutation: disabling the
+relevance filter broke exactly the 4 cheap-filter tests, removing the Phase F
+gate broke exactly the 2 bypass tests, and downgrading the idempotency index
+from UNIQUE broke exactly the 8-thread race. All reverted and re-verified.
+
+Two real bugs were found by these tests during development and fixed: an
+already-processed attachment was being re-read on a second pass and marked
+FAILED (overwriting a good result), and `ingest_message` returned without a
+`duplicate` key on one branch.
 
 **Verified state at the end of Phase F** (runs on 2026-08-21, after the work
 described in §7a). `tests/test_email_security.py` alone: **110 passed.**
@@ -1062,7 +1314,7 @@ is already configured.
 
 ```powershell
 .\start.ps1                 # installs deps, generates samples, starts server, opens browser
-.\venv\Scripts\python.exe -m pytest tests\ -q      # 638 tests, no key/network needed
+.\venv\Scripts\python.exe -m pytest tests\ -q      # 733 tests, no key/network needed
 .\reset-demo.ps1             # clear run history (samples are order-dependent)
 .\reset-demo.ps1 -Replay     # clear, then drive all 10 samples through the API
 ```
@@ -1092,20 +1344,21 @@ is already configured.
 
 ## 13. Git / handoff state
 
-**Latest completed phase: F (email security & trusted-source verification),
-§7a — implemented, tested, and committed as its own commit (the most recent
-one; `git log --oneline -1` names it).**
-**Phase G has NOT been implemented — do not start it without being
+**Latest completed phase: G (email invoice ingestion & extraction), §7b —
+implemented, tested, and committed as its own commit (the most recent one;
+`git log --oneline -1` names it).**
+**Phase H has NOT been implemented — do not start it without being
 explicitly asked.**
 
-Phase F was staged **by name** — `backend/config.py`,
-`backend/email_security.py`, `backend/email_signature.py`, `backend/main.py`,
-`backend/storage.py`, `data/trusted_email_senders.json`,
-`tests/test_email_security.py`, `requirements.txt`, `.env.example`,
-`CLAUDE.md`, `README.md` — never `git add -A`, so the unrelated frontend
-redesign (§11) stayed in the working tree untouched. Verified after the fact:
-the frontend diff is byte-identical to what it was before the phase began.
-**Do the same for Phase G.**
+Phases F and G were each staged **by name** — never `git add -A` — so the
+unrelated frontend redesign (§11) stayed in the working tree untouched.
+Verified after the fact both times: the frontend diff is byte-identical to what
+it was before the phase began. Phase G's files were
+`backend/config.py`, `backend/email_ingest.py`, `backend/email_provider.py`,
+`backend/email_security.py`, `backend/email_triage.py`, `backend/main.py`,
+`backend/storage.py`, `data/email_domain_policy.json`,
+`tests/test_email_ingestion.py`, `.env.example`, `CLAUDE.md`, `README.md`.
+**Do the same for Phase H.**
 
 Recent commits (`git log --oneline -6`):
 ```
@@ -1132,7 +1385,7 @@ the code, verify against the code directly rather than trusting either.
 2. `git status` and `git log --oneline -10` — confirm nothing has moved
    since §11/§13 above were written.
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
-4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect 638 passed (or
-   634 + the 4 known `test_extraction_routing.py` cases, see §10).
-5. Ask what to work on next. Do not start Phase G or later without being
+4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect 733 passed (or
+   729 + the 4 known `test_extraction_routing.py` cases, see §10).
+5. Ask what to work on next. Do not start Phase H or later without being
    asked (§2, §9).

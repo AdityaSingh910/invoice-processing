@@ -21,13 +21,14 @@ suite is green.**
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light-first enterprise design with an explicit dark-mode toggle |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **638 passing** deterministically, 21 files, no live API calls |
+| Automated tests | **733 passing** deterministically, 22 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
-| Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine — **verification only; nothing connects to a mailbox yet** |
+| Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine |
+| Email invoice ingestion | IMAP mailbox → cheap sender/relevance filter → security verification → the same invoice pipeline a browser upload uses |
 | Document storage | Uploaded PDFs persist after processing — metadata in Postgres, bytes behind a swappable local/S3 store |
 | Non-invoice detection | Rejects documents that contain no invoice, saying so |
 | Demo reset | One click for an admin, or `.\reset-demo.ps1` |
@@ -769,6 +770,76 @@ attachments through the pipeline, is the next phase. The database stores
 authentication evidence and attachment metadata — never the message body, and
 never attachment bytes.
 
+### Email invoice ingestion
+
+Phase F verifies a message handed to the application. This is the part that
+goes and **gets** one, and connects it to the pipeline that already existed.
+
+```
+IMAP mailbox
+  -> seen this message id before?          one indexed lookup, then stop
+  -> parse headers + MIME structure        cheap; no attachment opened
+  -> CHEAP FILTER: who sent it, is it relevant?     <- no LLM, ever
+  -> email security verification (above)
+  -> attachment validation                 magic bytes, size, duplicates
+  -> the same invoice pipeline as a browser upload
+```
+
+**The cheap filter is there to protect the expensive part.** Reading an invoice
+costs an LLM call or a vision call; most of what lands in a shared mailbox is
+not an invoice. A newsletter with no PDF costs one header parse and two
+dictionary lookups, and never reaches extraction, OCR, or the daily budget. The
+test suite asserts this directly rather than claiming it: it replaces the
+extraction function with a spy and fails if a filtered message ever reaches it.
+
+**Two questions, kept apart.** Every sender is classified on two independent
+axes — what *kind* of address it is, and whether we have decided to do business
+with them:
+
+| Sender | Type | Trust |
+|---|---|---|
+| `invoice@acme-office.example` | CORPORATE | TRUSTED (allowlisted) |
+| `supplier@gmail.com` | PERSONAL | UNKNOWN — *not* "untrusted" |
+| `billing@never-heard-of.test` | CORPORATE | UNKNOWN |
+
+A corporate domain is not automatically trusted; a company domain costs an
+attacker nothing to register. An unknown sender is not automatically hostile;
+every vendor was unknown once. And a free-mail address is not automatically
+refused — a small supplier really does invoice from Gmail, so `PERSONAL` plus a
+PDF still goes through the whole pipeline.
+
+**It does not over-filter.** Doubt resolves upward: a false "irrelevant" costs
+a missed invoice somebody has to chase, a false "possible" costs one LLM call.
+Anything stopped is recorded, kept, and readable afterwards with the reasons —
+nothing is deleted, and the claim is only ever *"not worth an LLM call without
+a person asking"*.
+
+**One email is not one invoice.** Each attachment gets its own row, its own
+status and its own run, so an email carrying three invoices produces three
+runs, a retry re-runs only what failed, and one corrupt PDF does not stop the
+good invoice beside it.
+
+**The same message cannot become two invoices.** Idempotency is a `UNIQUE`
+constraint on `(provider, provider_message_id)` in PostgreSQL, not a check in
+Python — so retries, overlapping polls, restarts and redelivery all collapse
+onto one row no matter how the race is timed. Proved under eight real threads.
+
+**Quarantine is Phase F's, not a second system.** A message that fails
+verification is held, its invoice PDF is preserved in the same document store
+everything else uses, and a reviewer releases or discards it with the same
+permission that accepts a held invoice. Processing re-reads the *stored*
+security status, so there is no argument a caller can pass that gets around it.
+
+**The provider is replaceable.** IMAP is implemented — real, TLS-only, on the
+standard library, preferring an OAuth2 token over a mailbox password. Anything
+else is a new class behind the same small interface; nothing downstream knows a
+mailbox exists.
+
+**What it does not do:** Gmail API and Microsoft Graph are not implemented.
+There are no webhooks (IMAP has none) and no `IDLE`, so latency is one poll
+interval. OAuth tokens are consumed from configuration, not refreshed. PDFs
+only — other formats are recorded and skipped with a reason.
+
 ### API security
 
 The frontend is treated as an untrusted client. CORS is configured but is not a
@@ -863,6 +934,10 @@ GET  /api/email/messages/{id}    one message + its auth evidence   [invoice:read
 POST /api/email/messages/{id}/release  release from quarantine     [invoice:review]
 POST /api/email/messages/{id}/discard  discard a held message      [invoice:review]
 GET  /api/email/trusted-senders  allowlist + verification setup    [invoice:read]
+GET  /api/email/ingestion        ingestion config + counts         [invoice:admin]
+POST /api/email/ingestion/poll   fetch the mailbox now             [invoice:process]
+POST /api/email/messages/{id}/process   run an admitted message    [invoice:process]
+GET  /api/email/messages/{id}/attachments  what arrived            [invoice:read]
 GET  /api/reference              POs + approved vendors            [invoice:read]
 GET  /api/sample-invoices        the bundled scenarios             [invoice:read]
 GET  /api/sample-invoices/{name} one sample PDF                    [invoice:read]
@@ -914,6 +989,15 @@ EMAIL_TRUSTED_AUTHSERV_IDS=   # authserv-ids whose Authentication-Results are be
 EMAIL_DNS_RESOLVER=none       # none | dnspython -- where DKIM public keys come from
 EMAIL_SIGNATURE_VERIFIER=none # only "none" is implemented (detect, never verify)
 EMAIL_MAX_MESSAGE_BYTES=      # defaults to twice MAX_UPLOAD_BYTES
+EMAIL_INGEST_ENABLED=         # 1 turns email ingestion on (off by default)
+EMAIL_PROVIDER=none           # imap | none
+EMAIL_POLL_SECONDS=120        # background poll interval
+EMAIL_IMAP_HOST=              # always TLS; no plaintext option
+EMAIL_IMAP_USER=
+EMAIL_IMAP_OAUTH_TOKEN=       # PREFERRED over a password when the provider supports it
+EMAIL_IMAP_PASSWORD=          # fallback only; never commit a real value
+EMAIL_CORPORATE_DOMAINS=      # adds to data/email_domain_policy.json
+EMAIL_PERSONAL_DOMAINS=
 ```
 
 ---
@@ -1000,6 +1084,12 @@ backend/
                   SPF/DMARC evidence, alignment, deterministic classification
   email_signature.py  S/MIME + PGP detection, and the interface a real
                   verifier would plug into -- detection only, never a fake pass
+  email_provider.py   Where messages come FROM: the provider interface, and a
+                  real IMAP client (stdlib, TLS, OAuth2 preferred)
+  email_triage.py     The cheap pre-filter: sender type vs trust, relevance.
+                  Deterministic, and never calls a model
+  email_ingest.py     Orchestration + the background poller. Wires the above
+                  into the EXISTING invoice pipeline; holds no rules of its own
   auth.py         OAuth 2.0 bearer tokens, scopes, production config checks
   ratelimit.py    Per-user / per-IP sliding-window limits
   quota.py        Daily per-provider extraction budget (circuit breaker)
@@ -1022,7 +1112,7 @@ sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
 docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            21 files, 638 tests, both providers mocked
+tests/            22 files, 733 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

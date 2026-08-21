@@ -823,6 +823,28 @@ def parse_message(raw: bytes) -> dict:
 
     message_id = _decoded_header(msg, "Message-ID") if msg is not None else None
 
+    # Reply-To and the recipient list are carried for Phase G's triage and for
+    # the ingestion record. They are DESCRIPTIVE only and contribute nothing to
+    # the classification below -- a Reply-To pointing elsewhere is normal for a
+    # mailing list and is also how a reply gets redirected to an attacker, so
+    # it is a signal for a human, never a verdict.
+    reply_to_raw = _decoded_header(msg, "Reply-To") if msg is not None else None
+    reply_to = ""
+    if reply_to_raw:
+        try:
+            reply_to = email.utils.parseaddr(reply_to_raw)[1]
+        except Exception:
+            reply_to = ""
+    recipients = []
+    for header in ("To", "Cc"):
+        value = _decoded_header(msg, header) if msg is not None else None
+        if not value:
+            continue
+        try:
+            recipients.extend(a for _, a in email.utils.getaddresses([value]) if a)
+        except Exception:
+            continue
+
     attachments = _attachments(msg) if msg is not None else []
 
     return {
@@ -836,6 +858,8 @@ def parse_message(raw: bytes) -> dict:
         "from_header_count": len(from_fields),
         "envelope_from": (envelope_from or "").strip().lower()[:320] or None,
         "envelope_from_domain": domain_of(envelope_from) or None,
+        "reply_to": (reply_to or "").strip().lower()[:320] or None,
+        "recipients": [r.strip().lower()[:320] for r in recipients][:50],
         "subject": (subject or "").strip()[:500] or None,
         "attachments": attachments,
         "attachment_count": len(attachments),

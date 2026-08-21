@@ -423,6 +423,149 @@ def email_max_message_bytes() -> int:
         return EMAIL_MAX_MESSAGE_BYTES_DEFAULT
 
 
+# --------------------------------------------------------------------------
+# Email invoice ingestion (Phase G)
+#
+# Phase F verifies a message that is HANDED to the application. This is the
+# part that goes and gets one. The two stay separate on purpose: the verifier
+# depends only on bytes and configuration, so whatever fetches a message --
+# IMAP today, a webhook later -- gets the same verdict from the same code.
+#
+# DISABLED BY DEFAULT. Nothing polls a mailbox until EMAIL_INGEST_ENABLED is
+# set AND a provider is configured, so an install that does not want email
+# ingestion never opens an outbound connection.
+# --------------------------------------------------------------------------
+EMAIL_INGEST_ENABLED_ENV = "EMAIL_INGEST_ENABLED"
+EMAIL_PROVIDER_ENV = "EMAIL_PROVIDER"
+EMAIL_POLL_INTERVAL_ENV = "EMAIL_POLL_SECONDS"
+EMAIL_POLL_BATCH_ENV = "EMAIL_POLL_BATCH"
+
+# IMAP connection. Credentials come from the environment ONLY -- never from a
+# file in the repository, never from the database, never logged.
+IMAP_HOST_ENV = "EMAIL_IMAP_HOST"
+IMAP_PORT_ENV = "EMAIL_IMAP_PORT"
+IMAP_USER_ENV = "EMAIL_IMAP_USER"
+IMAP_PASSWORD_ENV = "EMAIL_IMAP_PASSWORD"
+IMAP_OAUTH_TOKEN_ENV = "EMAIL_IMAP_OAUTH_TOKEN"   # preferred over a password
+IMAP_FOLDER_ENV = "EMAIL_IMAP_FOLDER"
+IMAP_SEARCH_ENV = "EMAIL_IMAP_SEARCH"
+
+# How a handled message is marked so the next poll does not see it again.
+# This is belt-and-braces only: correctness comes from the UNIQUE constraint
+# on (provider, provider_message_id) in the database, not from mailbox flags,
+# which can silently fail to persist on some servers.
+IMAP_MARK_SEEN_ENV = "EMAIL_IMAP_MARK_SEEN"
+
+# Domain policy for the cheap triage stage (Phase G). Reference data, so it
+# lives in a JSON file reloaded on startup exactly like purchase_orders and
+# approved_vendors -- NOT hard-coded in business logic, and NOT a second copy
+# of the vendor list (a vendor's own domain comes from Phase F's
+# trusted_email_senders, which already links each entry to a vendor_name).
+EMAIL_DOMAIN_POLICY_SEED = os.path.join(ROOT, "data", "email_domain_policy.json")
+
+# Extra domains an operator can add without editing the JSON file.
+EMAIL_CORPORATE_DOMAINS_ENV = "EMAIL_CORPORATE_DOMAINS"
+EMAIL_PERSONAL_DOMAINS_ENV = "EMAIL_PERSONAL_DOMAINS"
+
+# How an incoming message is classified BEFORE anything expensive runs.
+#
+# Two independent axes, deliberately not collapsed into one score:
+#   sender_type  -- what KIND of address this is
+#   trust_status -- whether we have decided to do business with it
+# A corporate sender is not automatically trusted, and an unknown sender is
+# not automatically hostile. See backend/email_triage.py.
+EMAIL_SENDER_TYPES = ("CORPORATE", "PERSONAL", "UNKNOWN")
+EMAIL_TRUST_STATUSES = ("TRUSTED", "UNTRUSTED", "UNKNOWN")
+
+# What the cheap filter concluded about whether this is worth processing.
+# Only HIGH and POSSIBLE go on to security verification and extraction;
+# LOW and IRRELEVANT stop, are recorded, and are still readable afterwards --
+# nothing is deleted, because "not worth spending an LLM call on" is not the
+# same claim as "definitely not an invoice".
+EMAIL_RELEVANCE = ("HIGH", "POSSIBLE", "LOW", "IRRELEVANT")
+
+# Where a message got to. Every terminal state is explicit so a message can
+# never simply vanish between the mailbox and the run history.
+EMAIL_INGEST_STATUSES = ("RECEIVED", "FILTERED_OUT", "QUARANTINED", "PROCESSED",
+                         "PARTIAL", "NO_ATTACHMENTS", "FAILED")
+
+# Per-attachment outcome (email_attachments table).
+EMAIL_ATTACHMENT_STATUSES = ("PENDING", "PROCESSED", "SKIPPED", "FAILED")
+
+# Attachment content types treated as a possible invoice. Deliberately just
+# PDF: that is what the extraction pipeline reads (backend/extraction.py), and
+# claiming to accept a format the pipeline cannot parse would turn a clear
+# "skipped, unsupported" into a confusing failed run.
+EMAIL_INVOICE_CONTENT_TYPES = ("application/pdf", "application/x-pdf",
+                               "application/octet-stream")
+
+# Subject words that make a message look like it carries an invoice. Cheap,
+# deterministic, and only ever used to RAISE relevance -- never to reject,
+# because a legitimate invoice may well have an unhelpful subject line.
+EMAIL_INVOICE_SUBJECT_HINTS = (
+    "invoice", "inv#", "inv #", "inv-", "bill", "billing", "statement",
+    "receipt", "payment due", "remittance", "purchase order", "po#", "po #",
+    "tax invoice", "credit note", "debit note", "account statement",
+)
+
+
+def email_ingest_enabled() -> bool:
+    return os.environ.get(EMAIL_INGEST_ENABLED_ENV, "").strip() in ("1", "true", "True", "yes")
+
+
+def email_provider() -> str:
+    """'none' (the default) or 'imap'. Read at call time like everything else."""
+    choice = os.environ.get(EMAIL_PROVIDER_ENV, "none").strip().lower()
+    return choice if choice in ("none", "imap") else "none"
+
+
+def email_poll_seconds() -> int:
+    try:
+        return max(15, int(os.environ.get(EMAIL_POLL_INTERVAL_ENV, "") or 120))
+    except ValueError:
+        return 120
+
+
+def email_poll_batch() -> int:
+    try:
+        return max(1, min(200, int(os.environ.get(EMAIL_POLL_BATCH_ENV, "") or 25)))
+    except ValueError:
+        return 25
+
+
+def imap_settings() -> dict:
+    """Connection settings, read fresh from the environment.
+
+    The password/token is returned here because the provider needs it, and is
+    never stored, echoed into a response, or written to the database. Anything
+    that reports configuration (see main.py's ingestion-status endpoint)
+    reports only whether a credential is PRESENT.
+    """
+    return {
+        "host": os.environ.get(IMAP_HOST_ENV, "").strip(),
+        "port": int(os.environ.get(IMAP_PORT_ENV, "") or 993),
+        "username": os.environ.get(IMAP_USER_ENV, "").strip(),
+        "password": os.environ.get(IMAP_PASSWORD_ENV, ""),
+        "oauth_token": os.environ.get(IMAP_OAUTH_TOKEN_ENV, "").strip(),
+        "folder": os.environ.get(IMAP_FOLDER_ENV, "").strip() or "INBOX",
+        "search": os.environ.get(IMAP_SEARCH_ENV, "").strip() or "UNSEEN",
+        "mark_seen": os.environ.get(IMAP_MARK_SEEN_ENV, "1").strip() not in ("0", "false", "False"),
+    }
+
+
+def _env_domains(var: str) -> tuple:
+    raw = os.environ.get(var, "")
+    return tuple(d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip())
+
+
+def email_corporate_domains() -> tuple:
+    return _env_domains(EMAIL_CORPORATE_DOMAINS_ENV)
+
+
+def email_personal_domains() -> tuple:
+    return _env_domains(EMAIL_PERSONAL_DOMAINS_ENV)
+
+
 def load_dotenv():
     """Minimal .env loader (KEY=VALUE per line). Real environment wins."""
     if not os.path.isfile(ENV_PATH):

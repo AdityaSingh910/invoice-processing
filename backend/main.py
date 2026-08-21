@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 import auth
 import config
 import documents
+import email_ingest
 import email_security
 import extraction
 import matching
@@ -98,6 +99,26 @@ def _startup():
     if config.is_production():
         print(f"[startup] {config.APP_ENV_VAR}={config.app_env()} — production "
               f"configuration checks passed.", file=sys.stderr)
+    # Phase G. Starts only when EMAIL_INGEST_ENABLED is set AND a provider is
+    # configured, so an install that does not want email ingestion opens no
+    # outbound connection. Safe in every uvicorn worker: duplicate suppression
+    # is the database's UNIQUE (provider, provider_message_id), not
+    # coordination between pollers.
+    try:
+        if email_ingest.start_poller():
+            print(f"[startup] email ingestion polling every "
+                  f"{config.email_poll_seconds()}s via {config.email_provider()}",
+                  file=sys.stderr)
+    except Exception as exc:
+        # A misconfigured mailbox must not stop the API serving invoices that
+        # arrive by upload. It is reported and left off.
+        print(f"[startup] email ingestion not started: {exc.__class__.__name__}: {exc}",
+              file=sys.stderr)
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    email_ingest.stop_poller()
 
 
 def sse(event_type, payload):
@@ -1017,6 +1038,106 @@ def get_trusted_senders(principal: auth.Principal = Security(auth.current_princi
             "statuses": list(config.EMAIL_STATUSES),
         },
     }
+
+
+# --------------------------------------------------------------------------
+# Email invoice ingestion (Phase G)
+#
+# Phase F verifies a message handed to the application. These endpoints are
+# about messages the application went and FETCHED, and about what happened to
+# them afterwards. The security model is Phase F's, unchanged: a quarantined
+# message is released or discarded through the Phase F endpoints above, and
+# only then can it be processed.
+#
+# Scopes are the existing ones again -- no Phase G scope was created. Reading
+# ingestion state is reading invoice data (invoice:read); triggering a poll or
+# processing a message is ingestion (invoice:process); operational
+# configuration is admin (invoice:admin).
+# --------------------------------------------------------------------------
+@app.get("/api/email/ingestion")
+def get_ingestion_status(principal: auth.Principal = Security(auth.current_principal,
+                                                              scopes=["invoice:admin"])):
+    """Whether ingestion is running, how it is configured, and what it has done.
+
+    Scoped to admin because it describes the mailbox connection. It reports
+    only whether a credential is PRESENT -- never the password, never the OAuth
+    token, never anything derived from either.
+    """
+    return email_ingest.ingestion_status()
+
+
+@app.post("/api/email/ingestion/poll")
+def trigger_ingestion_poll(principal: auth.Principal = Depends(ratelimit.rate_limit_processing)):
+    """Run one polling pass now, instead of waiting for the timer.
+
+    Rate limited and scoped exactly like invoice processing, because that is
+    what it can cause. Safe to call while the background poller is also
+    running: both go through the same unique constraint, so the worst case is
+    one of them being told a message was already ingested.
+    """
+    if not config.email_ingest_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Email ingestion is disabled. Set {config.EMAIL_INGEST_ENABLED_ENV}=1 "
+                   f"and configure {config.EMAIL_PROVIDER_ENV}.")
+    result = email_ingest.poll_once(actor=principal.username)
+    if not result.get("ok"):
+        # A provider that is unreachable or refusing credentials is a 502: the
+        # request was fine, the upstream mailbox was not.
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=result.get("error", "the mail provider could not be reached"))
+    return result
+
+
+@app.post("/api/email/messages/{email_id}/process")
+def process_email_message(email_id: int,
+                          principal: auth.Principal = Depends(ratelimit.rate_limit_processing)):
+    """Put an admitted or released message's PDF attachments through the pipeline.
+
+    Deliberately a separate, explicit step rather than something `/release`
+    does implicitly: releasing a message is a security ruling, and Phase F's
+    endpoint means exactly what it meant before this phase. This is the
+    follow-up action, and it is the ONLY way a quarantined message can ever
+    reach the pipeline -- `process_message_attachments` re-reads the stored
+    security status and refuses anything not ADMITTED or RELEASED, so the gate
+    cannot be argued around by a caller.
+
+    The attachments are read back from the holding copy written when the
+    message was quarantined -- the invoice PDF is preserved through a
+    quarantine (in the existing DocumentStore), even though the message body
+    never is. An attachment already processed is skipped rather than run
+    twice, so calling this repeatedly is safe.
+    """
+    message = storage.get_email_message(email_id)
+    if not message:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    if message.get("status") not in ("ADMITTED", "RELEASED"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A message with security status {str(message.get('status')).lower()} may "
+                   f"not be processed; release it first.")
+    result = email_ingest.process_message_attachments(email_id, actor=principal.username)
+    if not result.get("ok"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=result.get("error", "the message could not be processed"))
+    return result
+
+
+@app.get("/api/email/messages/{email_id}/attachments")
+def get_email_attachments(email_id: int,
+                          principal: auth.Principal = Security(auth.current_principal,
+                                                               scopes=["invoice:read"])):
+    """What arrived with a message, and what each attachment became.
+
+    Metadata only -- filename, type, size, hash, and the run it produced (or
+    why it did not). The attachment bytes are never served from here: once an
+    attachment becomes a run, its PDF is reachable through the existing
+    document endpoints, under the same permission, rather than through a
+    second download path with its own rules.
+    """
+    if not storage.get_email_message(email_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    return {"email_id": email_id, "attachments": storage.list_email_attachments(email_id)}
 
 
 @app.get("/api/reference")

@@ -897,6 +897,108 @@ def init_db(reset_runs: bool = False):
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_email_activity_email_id ON email_activity(email_id)")
 
+            # INGESTION STATE (Phase G) -- added to the Phase F table rather
+            # than a parallel one, because it is the same subject: one row per
+            # incoming message. `_ensure_columns` is how every earlier phase
+            # has extended an existing table, and it is what makes this work on
+            # a database that already has Phase F rows in it.
+            _ensure_columns(conn, "email_messages", {
+                "provider": "TEXT",
+                "provider_message_id": "TEXT",
+                "provider_received_at": "TEXT",
+                "reply_to": "TEXT",
+                "recipients_json": "TEXT",
+                "sender_type": "TEXT",
+                "trust_status": "TEXT",
+                "relevance": "TEXT",
+                "triage_json": "TEXT",
+                "ingest_status": "TEXT",
+                "ingest_error": "TEXT",
+                "processed_at": "TEXT",
+            })
+            # THE IDEMPOTENCY MECHANISM.
+            #
+            # Not a check-then-insert in Python, which two concurrent pollers
+            # (or two uvicorn workers) would both pass before either wrote.
+            # A UNIQUE INDEX means the database refuses the second write no
+            # matter how the race is timed, and the ingestion layer treats that
+            # refusal as "already seen" rather than as an error. Partial, so
+            # Phase F rows that predate ingestion (NULL provider) do not all
+            # collide on a single NULL key.
+            cur.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_email_provider_msg
+                   ON email_messages(provider, provider_message_id)
+                   WHERE provider IS NOT NULL AND provider_message_id IS NOT NULL""")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_email_ingest_status "
+                "ON email_messages(ingest_status)")
+
+            # ONE ROW PER ATTACHMENT (Phase G).
+            #
+            # `email_messages.run_id` holds ONE run, which cannot describe an
+            # email carrying three invoices -- the same shape of problem
+            # `runs.po_number` had before `run_allocations` existed, and solved
+            # the same way. Each attachment gets its own row, its own status and
+            # its own nullable run_id, so:
+            #
+            #   * one email can produce several runs,
+            #   * an attachment that failed can be retried without reprocessing
+            #     the ones that already succeeded (the retry skips any row that
+            #     is already PROCESSED),
+            #   * and an attachment deliberately skipped records WHY, so
+            #     "we ignored your logo.png" is answerable later.
+            #
+            # The bytes are not here. They go to the DocumentStore through the
+            # existing pipeline, exactly as a browser upload does.
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS email_attachments (
+                    id SERIAL PRIMARY KEY,
+                    email_id INTEGER NOT NULL,
+                    seq INTEGER NOT NULL DEFAULT 0,
+                    filename TEXT,
+                    content_type TEXT,
+                    size_bytes INTEGER,
+                    sha256 TEXT,
+                    is_invoice_candidate BOOLEAN,
+                    status TEXT NOT NULL,
+                    skip_reason TEXT,
+                    run_id INTEGER,
+                    run_status TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    processed_at TEXT,
+                    storage_backend TEXT,
+                    storage_key TEXT,
+                    FOREIGN KEY (email_id) REFERENCES email_messages(id),
+                    FOREIGN KEY (run_id) REFERENCES runs(id)
+                )"""
+            )
+            # A QUARANTINED message's PDF is held in the existing DocumentStore
+            # (Phase C) so that releasing it later actually has something to
+            # process. Only the attachment is kept -- never the message body,
+            # which Phase F deliberately does not store and this phase does not
+            # start storing. The key is server-generated
+            # (documents.new_storage_key), never derived from the sender's
+            # filename, so the same path-safety argument Phase C made applies
+            # unchanged. Once the attachment becomes a run, the run's own
+            # document row owns a copy and this holding copy is deleted.
+            _ensure_columns(conn, "email_attachments", {
+                "storage_backend": "TEXT",
+                "storage_key": "TEXT",
+            })
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_email_att_email "
+                        "ON email_attachments(email_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_email_att_run "
+                        "ON email_attachments(run_id)")
+            # An attachment is identified within its message by content hash,
+            # so the same PDF attached twice to one email is stored once and
+            # processed once -- and a redelivery of the whole message cannot
+            # append a second copy of every attachment.
+            cur.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_email_att_unique
+                   ON email_attachments(email_id, sha256)
+                   WHERE sha256 IS NOT NULL""")
+
             # Read heavily by find_duplicate() (invoice_number equality) and by every
             # ledger query that filters on status -- neither existed as an index under
             # SQLite because a single-file database at this volume never needed one;
@@ -1733,6 +1835,14 @@ def save_email_message(record: dict, submitted_by: str = None, source: str = "SU
 def _hydrate_email(row: dict) -> dict:
     row["reasons"] = json.loads(row.pop("reasons_json")) if row.get("reasons_json") else []
     row["audit"] = json.loads(row.pop("auth_json")) if row.get("auth_json") else None
+    # Phase G columns. Popped the same way so a caller never has to know which
+    # of these are stored as JSON text, and so `reasons_json`-style keys never
+    # leak into an API response.
+    row["triage"] = json.loads(row.pop("triage_json")) if row.get("triage_json") else None
+    row["recipients"] = (json.loads(row.pop("recipients_json"))
+                         if row.get("recipients_json") else [])
+    row.pop("triage_json", None)
+    row.pop("recipients_json", None)
     return row
 
 
@@ -1857,6 +1967,295 @@ def link_email_to_run(email_id: int, run_id: int):
     return {"ok": True, "id": email_id, "run_id": run_id}
 
 
+# --------------------------------------------------------------------------
+# Email ingestion state (Phase G)
+#
+# Phase F recorded what could be PROVEN about a message. This records what
+# HAPPENED to it: whether we had seen it before, whether it was worth
+# processing, and what each attachment became.
+# --------------------------------------------------------------------------
+def claim_incoming_message(provider: str, provider_message_id: str, record: dict,
+                           triage: dict, ingest_status: str,
+                           provider_received_at: str = None,
+                           submitted_by: str = None):
+    """Record a newly-arrived message, or report that it is a duplicate.
+
+    THE IDEMPOTENCY CHOKE POINT. Returns
+    `{"created": True, "id": n}` for a message never seen before, or
+    `{"created": False, "id": n, "duplicate": True}` when this provider has
+    already delivered this message id.
+
+    The duplicate test is the UNIQUE INDEX, not a SELECT: two pollers racing
+    the same message would both pass a check-then-insert, and both would write.
+    Here the loser's INSERT is refused by the database however the race is
+    timed, and it reads its own answer back. A savepoint is used so that
+    refusal does not poison the caller's surrounding transaction.
+    """
+    audit = record.get("audit") or {}
+    now = datetime.now(timezone.utc).isoformat()
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SAVEPOINT claim_incoming")
+            try:
+                cur.execute(
+                    """INSERT INTO email_messages
+                       (run_id, sha256, message_id, received_at, submitted_by, source,
+                        from_address, from_domain, from_display_name, envelope_from, subject,
+                        size_bytes, attachment_count, has_pdf_attachment,
+                        spf_result, dkim_result, dmarc_result, dmarc_aligned,
+                        signature_kind, signature_result, trusted_sender,
+                        classification, status, reasons_json, auth_json,
+                        provider, provider_message_id, provider_received_at,
+                        reply_to, recipients_json, sender_type, trust_status,
+                        relevance, triage_json, ingest_status)
+                       VALUES (NULL,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                               %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       RETURNING id""",
+                    (record.get("sha256"), record.get("message_id"), now, submitted_by,
+                     "EMAIL",
+                     record.get("from_address"), record.get("from_domain"),
+                     record.get("from_display_name"), record.get("envelope_from"),
+                     record.get("subject"), record.get("size_bytes"),
+                     record.get("attachment_count"), bool(record.get("has_pdf_attachment")),
+                     record.get("spf_result"), record.get("dkim_result"),
+                     record.get("dmarc_result"), bool(record.get("dmarc_aligned")),
+                     record.get("signature_kind"), record.get("signature_result"),
+                     bool(record.get("trusted_sender")),
+                     record.get("classification") or "UNVERIFIED",
+                     record.get("status") or "QUARANTINED",
+                     json.dumps(record.get("reasons") or []), json.dumps(audit),
+                     provider, provider_message_id, provider_received_at,
+                     record.get("reply_to"), json.dumps(record.get("recipients") or []),
+                     (triage.get("sender") or {}).get("sender_type"),
+                     (triage.get("sender") or {}).get("trust_status"),
+                     (triage.get("relevance") or {}).get("relevance"),
+                     json.dumps(triage), ingest_status),
+                )
+                email_id = cur.fetchone()["id"]
+            except psycopg2.IntegrityError:
+                # Somebody got here first. Roll back only the failed INSERT.
+                cur.execute("ROLLBACK TO SAVEPOINT claim_incoming")
+                cur.execute(
+                    """SELECT id FROM email_messages
+                       WHERE provider=%s AND provider_message_id=%s""",
+                    (provider, provider_message_id))
+                row = cur.fetchone()
+                if row:
+                    _insert_email_activity(
+                        cur, row["id"], "DUPLICATE_DELIVERY", submitted_by,
+                        note="the provider delivered this message again; it was not reprocessed",
+                        metadata={"provider": provider,
+                                  "provider_message_id": provider_message_id})
+                    return {"created": False, "duplicate": True, "id": row["id"]}
+                raise
+            cur.execute("RELEASE SAVEPOINT claim_incoming")
+            _insert_email_activity(
+                cur, email_id, "MESSAGE_RECEIVED", submitted_by,
+                metadata={"provider": provider, "provider_message_id": provider_message_id,
+                          "source": "EMAIL"})
+            _insert_email_activity(
+                cur, email_id, "TRIAGED", None,
+                note="; ".join((triage.get("relevance") or {}).get("reasons") or [])[:2000] or None,
+                metadata={"sender_type": (triage.get("sender") or {}).get("sender_type"),
+                          "trust_status": (triage.get("sender") or {}).get("trust_status"),
+                          "relevance": (triage.get("relevance") or {}).get("relevance"),
+                          "proceed": triage.get("proceed")})
+            if record.get("classification"):
+                _insert_email_activity(
+                    cur, email_id, "AUTHENTICATION_EVALUATED", None,
+                    note="; ".join(record.get("reasons") or [])[:2000] or None,
+                    metadata={"classification": record.get("classification"),
+                              "spf": record.get("spf_result"),
+                              "dkim": record.get("dkim_result"),
+                              "dmarc": record.get("dmarc_result"),
+                              "signature": record.get("signature_result")})
+            _insert_email_activity(cur, email_id, ingest_status, None,
+                                   metadata={"ingest_status": ingest_status})
+    return {"created": True, "duplicate": False, "id": email_id}
+
+
+def set_ingest_status(email_id: int, ingest_status: str, error: str = None,
+                      actor: str = None, note: str = None, event: str = None):
+    """Move a message's ingestion state, recording the move in its history.
+
+    Separate from `set_email_status()`, which owns the SECURITY status
+    (quarantine, release, discard). Those are different questions -- "may this
+    be processed" versus "how far did processing get" -- and merging them would
+    let an ingestion retry quietly overwrite a reviewer's ruling.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM email_messages WHERE id=%s FOR UPDATE", (email_id,))
+            if not cur.fetchone():
+                return {"ok": False, "error": "unknown message"}
+            cur.execute(
+                """UPDATE email_messages SET ingest_status=%s, ingest_error=%s,
+                       processed_at=CASE WHEN %s IN ('PROCESSED','PARTIAL','FAILED')
+                                         THEN %s ELSE processed_at END
+                   WHERE id=%s""",
+                (ingest_status, error, ingest_status,
+                 datetime.now(timezone.utc).isoformat(), email_id))
+            _insert_email_activity(cur, email_id, event or ingest_status, actor,
+                                   note=note or error,
+                                   metadata={"ingest_status": ingest_status})
+    return {"ok": True, "id": email_id, "ingest_status": ingest_status}
+
+
+def record_attachments(email_id: int, attachments: list):
+    """Register what arrived with the message. Idempotent.
+
+    `ON CONFLICT DO NOTHING` against the (email_id, sha256) unique index: a
+    redelivery, or a retry after a partial failure, must not append a second
+    copy of every attachment, and must not reset the status of one that has
+    already been processed.
+    """
+    out = []
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            now = datetime.now(timezone.utc).isoformat()
+            for seq, att in enumerate(attachments or []):
+                cur.execute(
+                    """INSERT INTO email_attachments
+                       (email_id, seq, filename, content_type, size_bytes, sha256,
+                        is_invoice_candidate, status, skip_reason, created_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (email_id, sha256) WHERE sha256 IS NOT NULL
+                       DO NOTHING
+                       RETURNING id""",
+                    (email_id, seq, att.get("filename"), att.get("content_type"),
+                     att.get("size_bytes"), att.get("sha256"),
+                     bool(att.get("is_invoice_candidate")),
+                     att.get("status") or "PENDING", att.get("skip_reason"), now))
+                row = cur.fetchone()
+                out.append(row["id"] if row else None)
+    return out
+
+
+def list_email_attachments(email_id: int):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT * FROM email_attachments WHERE email_id=%s
+                           ORDER BY seq, id""", (email_id,))
+            return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def set_attachment_storage(attachment_id: int, storage_backend: str, storage_key: str):
+    """Record where a held attachment's bytes are kept (or clear it)."""
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE email_attachments SET storage_backend=%s, storage_key=%s
+                           WHERE id=%s""", (storage_backend, storage_key, attachment_id))
+    return {"ok": True, "id": attachment_id}
+
+
+def claim_attachment_for_processing(attachment_id: int):
+    """Take an attachment for processing, or report that it is already done.
+
+    Locks the row, so two concurrent ingestion passes over the same message
+    cannot both start work on the same attachment and produce two runs from one
+    PDF. Returns False when the row is already PROCESSED -- which is what makes
+    a retry after a partial failure resume rather than duplicate.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, status, run_id FROM email_attachments WHERE id=%s "
+                        "FOR UPDATE", (attachment_id,))
+            row = cur.fetchone()
+            if not row:
+                return {"ok": False, "error": "unknown attachment"}
+            if row["status"] == "PROCESSED":
+                return {"ok": False, "already": True, "run_id": row["run_id"]}
+            return {"ok": True, "id": attachment_id}
+
+
+def complete_attachment(attachment_id: int, status: str, run_id: int = None,
+                        run_status: str = None, error: str = None,
+                        skip_reason: str = None):
+    """Record what an attachment became. Also links the run back to the message.
+
+    The FIRST run an email produces is also written to `email_messages.run_id`,
+    so Phase F's single-run link keeps working unchanged; every run, including
+    that first one, is on its own `email_attachments` row, which is what makes
+    an email with three invoices representable at all.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE email_attachments
+                   SET status=%s, run_id=%s, run_status=%s, error=%s,
+                       skip_reason=COALESCE(%s, skip_reason), processed_at=%s
+                   WHERE id=%s RETURNING email_id""",
+                (status, run_id, run_status, error, skip_reason,
+                 datetime.now(timezone.utc).isoformat(), attachment_id))
+            row = cur.fetchone()
+            if not row:
+                return {"ok": False, "error": "unknown attachment"}
+            email_id = row["email_id"]
+            if run_id is not None:
+                cur.execute(
+                    "UPDATE email_messages SET run_id=%s WHERE id=%s AND run_id IS NULL",
+                    (run_id, email_id))
+                _insert_email_activity(
+                    cur, email_id, "INVOICE_RUN_CREATED", None,
+                    metadata={"run_id": run_id, "run_status": run_status,
+                              "attachment_id": attachment_id})
+            elif status in ("SKIPPED", "FAILED"):
+                _insert_email_activity(
+                    cur, email_id,
+                    "ATTACHMENT_SKIPPED" if status == "SKIPPED" else "ATTACHMENT_FAILED",
+                    None, note=(skip_reason or error),
+                    metadata={"attachment_id": attachment_id})
+    return {"ok": True, "id": attachment_id, "email_id": email_id}
+
+
+def email_for_provider_message(provider: str, provider_message_id: str):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT * FROM email_messages
+                           WHERE provider=%s AND provider_message_id=%s""",
+                        (provider, provider_message_id))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return _hydrate_email(dict(row)) if row else None
+
+
+def ingestion_summary():
+    """Counts by ingestion state and by relevance, for the admin view.
+
+    Aggregated in the database rather than by reading every row: this is the
+    one query an operations screen refreshes, and it should stay cheap however
+    many messages have accumulated.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT COALESCE(ingest_status,'(none)') k, COUNT(*) n
+                           FROM email_messages GROUP BY 1 ORDER BY 1""")
+            by_status = {r["k"]: r["n"] for r in cur.fetchall()}
+            cur.execute("""SELECT COALESCE(relevance,'(none)') k, COUNT(*) n
+                           FROM email_messages GROUP BY 1 ORDER BY 1""")
+            by_relevance = {r["k"]: r["n"] for r in cur.fetchall()}
+            cur.execute("""SELECT COALESCE(classification,'(none)') k, COUNT(*) n
+                           FROM email_messages GROUP BY 1 ORDER BY 1""")
+            by_classification = {r["k"]: r["n"] for r in cur.fetchall()}
+            cur.execute("""SELECT COALESCE(status,'(none)') k, COUNT(*) n
+                           FROM email_messages GROUP BY 1 ORDER BY 1""")
+            by_security_status = {r["k"]: r["n"] for r in cur.fetchall()}
+            cur.execute("SELECT COUNT(*) n FROM email_attachments WHERE run_id IS NOT NULL")
+            runs_created = cur.fetchone()["n"]
+    finally:
+        conn.close()
+    return {"by_ingest_status": by_status, "by_relevance": by_relevance,
+            "by_classification": by_classification,
+            "by_security_status": by_security_status,
+            "invoice_runs_created": runs_created}
+
+
 def clear_run_history():
     """Delete every processed run, leaving reference data untouched.
 
@@ -1901,6 +2300,20 @@ def clear_run_history():
             # at is about to stop existing, and the foreign key would refuse
             # the delete otherwise) and the record itself is kept.
             cur.execute("UPDATE email_messages SET run_id=NULL WHERE run_id IS NOT NULL")
+            # Phase G: same reasoning one level down. The attachment record --
+            # what arrived, whether it was a usable PDF, why it was skipped --
+            # is ingestion history, not run history, and survives. Only the
+            # pointer to the vanishing run is dropped, and the row is put back
+            # to PENDING so a demo replay can process it again rather than
+            # believing it is already done.
+            cur.execute("""UPDATE email_attachments
+                           SET run_id=NULL, run_status=NULL,
+                               status=CASE WHEN status='PROCESSED' THEN 'PENDING' ELSE status END
+                           WHERE run_id IS NOT NULL""")
+            cur.execute("""UPDATE email_messages
+                           SET ingest_status=CASE WHEN ingest_status IN ('PROCESSED','PARTIAL')
+                                                  THEN 'RECEIVED' ELSE ingest_status END
+                           WHERE ingest_status IS NOT NULL""")
             cur.execute("DELETE FROM runs")
             deleted = cur.rowcount
 
