@@ -9,9 +9,10 @@
 # NEEDS_REVIEW correctly, but for reasons that have nothing to do with what
 # each sample is meant to demonstrate.
 #
-# This deletes data/app.db. Reference data (purchase orders, vendors, users)
-# lives in data/*.json and is re-seeded on startup, so nothing that matters is
-# lost -- only the run history.
+# Clears the `runs` and `run_allocations` tables in Postgres (DATABASE_URL).
+# Reference data (purchase orders, vendors, users) lives in data/*.json and is
+# re-seeded on startup, so nothing that matters is lost -- only the run
+# history.
 #
 #   .\reset-demo.ps1            reset, leaving an empty dashboard to demo into
 #   .\reset-demo.ps1 -Replay    reset, then run all seven samples in order
@@ -21,22 +22,21 @@ param([switch]$Replay)
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-# The server holds app.db open; it has to stop before the file can be removed.
-$listening = netstat -ano | Select-String ":8000\s+.*LISTENING"
-$pids = $listening | ForEach-Object { ($_ -split '\s+')[-1] } | Sort-Object -Unique
-foreach ($processId in $pids) {
-    Write-Host "Stopping server (pid $processId)..."
-    taskkill /F /PID $processId 2>&1 | Out-Null
-}
-if ($pids) { Start-Sleep -Seconds 2 }
-
-if (Test-Path ".\data\app.db") {
-    Copy-Item ".\data\app.db" ".\data\app.db.bak" -Force
-    Remove-Item ".\data\app.db" -Force
-    Write-Host "Run history cleared (previous database kept as data\app.db.bak)." -ForegroundColor Green
-} else {
-    Write-Host "No database to clear." -ForegroundColor Yellow
-}
+# Reuses storage.clear_run_history() -- the exact function POST
+# /api/admin/reset-demo calls -- rather than reimplementing the SQL by hand,
+# so this script and the API endpoint can never disagree about what "reset"
+# means. Postgres has no equivalent to SQLite's exclusive file lock, so unlike
+# the old version this does not need to stop the server first: the clear runs
+# in its own short-lived connection regardless of whether uvicorn is up.
+& .\venv\Scripts\python.exe -c @"
+import sys
+sys.path.insert(0, 'backend')
+import config
+config.load_dotenv()
+import storage
+deleted = storage.clear_run_history()
+print(f'Run history cleared ({deleted} run(s) removed).')
+"@
 
 if (-not $Replay) {
     Write-Host ""

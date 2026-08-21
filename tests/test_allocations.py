@@ -21,27 +21,45 @@ The invariant every test here leans on: **the allocations for a run sum to that
 run's total.** If that breaks, the ledger is describing money nobody billed.
 """
 import os
-import sqlite3
 import sys
 
+import psycopg2
+import psycopg2.extras
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
-if BACKEND not in sys.path:
-    sys.path.insert(0, BACKEND)
+TESTS = os.path.dirname(os.path.abspath(__file__))
+for p in (BACKEND, TESTS):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
+import config      # noqa: E402
 import matching    # noqa: E402
 import storage     # noqa: E402
+import pg_schema   # noqa: E402
 
 VENDOR = "Globex Logistics"
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "DB_PATH", str(tmp_path / "alloc.db"))
-    storage.init_db(reset_runs=True)
-    return storage.DB_PATH
+def db(monkeypatch):
+    schema = pg_schema.fresh_schema(monkeypatch)
+    yield schema
+    pg_schema.drop_schema(schema)
+
+
+def _raw_conn(schema):
+    """A connection independent of `storage.PG_SCHEMA`'s current value --
+    the Postgres analogue of the old `sqlite3.connect(db_path)`, which let a
+    test verify a specific database file's contents regardless of what
+    `storage.DB_PATH` happened to be pointed at elsewhere. Schema-qualifies
+    every table reference instead of relying on search_path, for the same
+    reason: this must stay correct no matter what the ambient PG_SCHEMA is."""
+    conn = psycopg2.connect(config.database_url(), cursor_factory=psycopg2.extras.RealDictCursor)
+    with conn.cursor() as cur:
+        cur.execute(f'SET search_path TO "{schema}"')
+    return conn
 
 
 def _save(po_number, total, status="APPROVED", filename="x.pdf", allocations=None):
@@ -56,13 +74,15 @@ def _save(po_number, total, status="APPROVED", filename="x.pdf", allocations=Non
     return run_id
 
 
-def _rows(db_path):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    out = [dict(r) for r in conn.execute(
-        "SELECT run_id, po_number, amount, seq FROM run_allocations ORDER BY run_id, seq")]
-    conn.close()
-    return out
+def _rows(schema):
+    conn = _raw_conn(schema)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT run_id, po_number, amount, seq FROM run_allocations ORDER BY run_id, seq")
+            return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------
@@ -134,52 +154,58 @@ def test_excluding_a_run_excludes_all_of_its_allocations(db):
 # migration: a database written before this table existed
 # --------------------------------------------------------------------------
 
-def _legacy_db(path):
+def _legacy_db(schema):
     """A database in the pre-allocation shape: charges live in (po_number, total)."""
-    storage.DB_PATH = path
     storage.init_db(reset_runs=True)
-    conn = sqlite3.connect(path)
-    conn.execute("DROP TABLE run_allocations")
-    for fn, st, po, total in [
-        ("a.pdf", "APPROVED", "PO-1002", 3000.0),
-        ("b.pdf", "APPROVED", "PO-1002", 2000.0),
-        ("c.pdf", "NEEDS_REVIEW", "PO-1002", 2500.0),
-        ("d.pdf", "REJECTED", "PO-1001", 1240.0),
-        ("e.pdf", "NEEDS_REVIEW", None, 999.0),
-    ]:
-        conn.execute("INSERT INTO runs (filename, status, created_at, total, po_number) "
-                     "VALUES (?,?,?,?,?)", (fn, st, "2026-08-01T00:00:00Z", total, po))
-    conn.commit()
-    conn.close()
+    conn = _raw_conn(schema)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DROP TABLE run_allocations")
+            for fn, st, po, total in [
+                ("a.pdf", "APPROVED", "PO-1002", 3000.0),
+                ("b.pdf", "APPROVED", "PO-1002", 2000.0),
+                ("c.pdf", "NEEDS_REVIEW", "PO-1002", 2500.0),
+                ("d.pdf", "REJECTED", "PO-1001", 1240.0),
+                ("e.pdf", "NEEDS_REVIEW", None, 999.0),
+            ]:
+                cur.execute("INSERT INTO runs (filename, status, created_at, total, po_number) "
+                           "VALUES (%s,%s,%s,%s,%s)", (fn, st, "2026-08-01T00:00:00Z", total, po))
+        conn.commit()
+    finally:
+        conn.close()
 
 
-def test_migration_backfills_legacy_runs_without_moving_a_balance(tmp_path, monkeypatch):
-    path = str(tmp_path / "legacy.db")
-    monkeypatch.setattr(storage, "DB_PATH", path)
-    _legacy_db(path)
+def test_migration_backfills_legacy_runs_without_moving_a_balance(monkeypatch):
+    schema = pg_schema.fresh_schema(monkeypatch)
+    try:
+        _legacy_db(schema)
 
-    storage.init_db()
+        storage.init_db()
 
-    # Exactly what the old query would have said.
-    assert storage.consumed_amount_for_po("PO-1002") == 5000.0
-    assert storage.consumed_amount_for_po("PO-1001") == 0.0     # the run was REJECTED
-    # One row per legacy run that named a PO; the PO-less run gets none.
-    assert len(_rows(path)) == 4
+        # Exactly what the old query would have said.
+        assert storage.consumed_amount_for_po("PO-1002") == 5000.0
+        assert storage.consumed_amount_for_po("PO-1001") == 0.0     # the run was REJECTED
+        # One row per legacy run that named a PO; the PO-less run gets none.
+        assert len(_rows(schema)) == 4
+    finally:
+        pg_schema.drop_schema(schema)
 
 
-def test_migration_is_idempotent(tmp_path, monkeypatch):
+def test_migration_is_idempotent(monkeypatch):
     """It runs on every startup. A second pass must not top up a run's charge."""
-    path = str(tmp_path / "legacy.db")
-    monkeypatch.setattr(storage, "DB_PATH", path)
-    _legacy_db(path)
+    schema = pg_schema.fresh_schema(monkeypatch)
+    try:
+        _legacy_db(schema)
 
-    storage.init_db()
-    once = _rows(path)
-    storage.init_db()
-    storage.init_db()
+        storage.init_db()
+        once = _rows(schema)
+        storage.init_db()
+        storage.init_db()
 
-    assert _rows(path) == once
-    assert storage.consumed_amount_for_po("PO-1002") == 5000.0
+        assert _rows(schema) == once
+        assert storage.consumed_amount_for_po("PO-1002") == 5000.0
+    finally:
+        pg_schema.drop_schema(schema)
 
 
 def test_migration_never_tops_up_a_run_that_already_has_allocations(db):

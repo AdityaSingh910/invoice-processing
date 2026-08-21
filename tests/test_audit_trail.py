@@ -25,20 +25,24 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
+TESTS = os.path.dirname(os.path.abspath(__file__))
+if TESTS not in sys.path:
+    sys.path.insert(0, TESTS)
 
 import matching    # noqa: E402
 import rules       # noqa: E402
 import storage     # noqa: E402
+import pg_schema   # noqa: E402
 
 VENDOR = "Globex Logistics"     # approved, holds PO-1002 at $5,000
 PO = "PO-1002"
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "DB_PATH", str(tmp_path / "audit.db"))
-    storage.init_db(reset_runs=True)
-    return storage.DB_PATH
+def db(monkeypatch):
+    schema = pg_schema.fresh_schema(monkeypatch)
+    yield schema
+    pg_schema.drop_schema(schema)
 
 
 def evaluate(total, invoice_number="INV-1", po=PO, vendor=VENDOR, **over):
@@ -229,7 +233,7 @@ def test_row_number_is_never_fabricated(db):
     conn.execute(
         """INSERT INTO purchase_orders
            (po_number, vendor, amount, currency, issued_date, status, description)
-           VALUES (?,?,?,?,?,?,?)""",
+           VALUES (%s,%s,%s,%s,%s,%s,%s)""",
         ("PO-NOSRC", VENDOR, 4000.0, "USD", "2026-01-01", "open", "no provenance"))
     conn.commit()
     conn.close()

@@ -15,9 +15,12 @@ def tolerance_for(amount: float) -> float:
 def _row_get(row, key):
     """Read an optional column from a PO row.
 
-    `sqlite3.Row` raises IndexError on an unknown key rather than returning
-    None, and a database created before the provenance columns existed will not
-    have them. Missing provenance must read as "unknown", never as a crash.
+    Both row types this project has used raise rather than return None on an
+    unknown key -- sqlite3.Row raises IndexError, psycopg2's RealDictRow (a
+    dict subclass) raises KeyError -- and a database created before the
+    provenance columns existed will not have them. Missing provenance must
+    read as "unknown", never as a crash, regardless of which driver produced
+    the row.
     """
     try:
         return row[key]

@@ -1,0 +1,29 @@
+# Local development database. `docker-compose up -d` gives a fresh
+# PostgreSQL instance matching .env.example's DATABASE_URL, with no manual
+# password reset or service configuration needed -- the one-time dance this
+# project's own history needed on a machine with no Docker available.
+#
+# NOT used in production. A production deployment points DATABASE_URL at a
+# managed Postgres instance (RDS, Cloud SQL, a managed host's own Postgres
+# add-on, etc.); this file exists purely to make `git clone && docker-compose
+# up -d` a working local setup.
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: invoice_app
+      POSTGRES_PASSWORD: devpassword_app
+      POSTGRES_DB: invoice_processing
+    ports:
+      - "5432:5432"
+    volumes:
+      - invoice_processing_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U invoice_app -d invoice_processing"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  invoice_processing_pgdata:

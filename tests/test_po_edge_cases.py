@@ -37,21 +37,24 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
+TESTS = os.path.dirname(os.path.abspath(__file__))
+if TESTS not in sys.path:
+    sys.path.insert(0, TESTS)
 
 import config      # noqa: E402
 import matching    # noqa: E402
 import rules       # noqa: E402
 import storage     # noqa: E402
+import pg_schema   # noqa: E402
 
 BIG_PO = "PO-9001"
 VENDOR = "Acme Office Supplies"     # already on the approved seed list
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
+def db(monkeypatch):
     """An isolated ledger with one $1,000,000 PO on top of the normal seed data."""
-    monkeypatch.setattr(storage, "DB_PATH", str(tmp_path / "po_edge.db"))
-    storage.init_db(reset_runs=True)
+    schema = pg_schema.fresh_schema(monkeypatch)
     conn = storage.get_conn()
     # Columns named rather than positional: a bare VALUES(...) breaks the moment
     # the schema grows, which is exactly what happened when PO provenance was
@@ -59,11 +62,12 @@ def db(tmp_path, monkeypatch):
     conn.execute(
         """INSERT INTO purchase_orders
            (po_number, vendor, amount, currency, issued_date, status, description)
-           VALUES (?,?,?,?,?,?,?)""",
+           VALUES (%s,%s,%s,%s,%s,%s,%s)""",
         (BIG_PO, VENDOR, 1_000_000.0, "USD", "2026-01-01", "open", "Large works order"))
     conn.commit()
     conn.close()
-    return storage.DB_PATH
+    yield schema
+    pg_schema.drop_schema(schema)
 
 
 def submit(total, invoice_number, po=BIG_PO, filename=None):
@@ -326,16 +330,24 @@ def test_concurrent_invoices_cannot_overspend_a_po(db):
     five can be funded. Before the transaction boundary existed, all eight
     approved and the PO was overspent by $6,000.
 
-    SQLite serialises writers, so a busy connection raises rather than queues
-    past its timeout; the retry loop is what a caller must do, and is part of
-    what is being asserted.
+    Under Postgres, `save_run_checked` takes `SELECT ... FOR UPDATE` on the
+    PO-RACE row, so a thread that loses the race simply BLOCKS until the
+    winner commits or rolls back, then proceeds against the now-current
+    balance -- it does not raise. The retry loop below is inherited from the
+    SQLite version, where a busy connection could raise "database is locked"
+    rather than queue past its timeout; it is kept because it is still
+    correct (a loop that never needs to retry is a harmless no-op) and because
+    a self-hosted Postgres under real contention CAN still raise on rare
+    occasions (a deadlock across multiple locked rows, a statement timeout) --
+    this asserts the OUTCOME (never over $10,000, exactly five approved), not
+    the mechanism by which each thread got there.
     """
     import threading
 
     conn = storage.get_conn()
     conn.execute("""INSERT INTO purchase_orders
            (po_number, vendor, amount, currency, issued_date, status, description)
-           VALUES (?,?,?,?,?,?,?)""",
+           VALUES (%s,%s,%s,%s,%s,%s,%s)""",
                  ("PO-RACE", VENDOR, 10_000.0, "USD", "2026-01-01", "open", "race"))
     conn.commit()
     conn.close()

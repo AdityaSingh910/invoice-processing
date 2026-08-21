@@ -45,7 +45,8 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Human review | ✅ Accept/reject, recorded beside the automated decision |
 | API security | ✅ OAuth2 bearer tokens, scopes, rate limits, input validation |
 | Production safety | ✅ `APP_ENV=production` refuses demo creds / missing secret |
-| Daily AI budget | ✅ Per-provider circuit breaker, SQLite-backed |
+| Daily AI budget | ✅ Per-provider circuit breaker, PostgreSQL-backed |
+| Database | ✅ **Migrated SQLite → PostgreSQL** (2026-08-21) — `DATABASE_URL`, same schema shape, row-level locking replaces SQLite's whole-file lock |
 | Non-invoice detection | ✅ Rejects documents containing no invoice, saying so |
 | Multi-PO invoices | ✅ `run_allocations` ledger; split calculated, always held |
 | Currency mismatch + FX | ✅ Pinned-rate conversion; same-number collision rejects |
@@ -60,11 +61,7 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Demo video | ❌ Not recorded |
 
 **Git:** 47 commits on `main`, pushed to
-<https://github.com/AdityaSingh910/invoice-processing> (public). Working tree
-clean, local and remote identical. Verified at push time that `.env`,
-`data/app.db` and `data/app.db.bak` are absent from the published tree, that
-`frontend-next/node_modules`, `.next/` and `out/` are ignored, and that no key
-material appears in any commit. Recent:
+<https://github.com/AdityaSingh910/invoice-processing> (public). **Working tree has uncommitted changes** — frontend redesign + dark-mode toggle + two new components. Local and remote `main` are identical. Verified at push time that `.env`, `data/app.db` and `data/app.db.bak` are absent from the published tree, that `frontend-next/node_modules`, `.next/` and `out/` are ignored, and that no key material appears in any commit. Recent:
 
 ```
 2a8f5c7 Add an explicit dark-mode toggle to the sidebar
@@ -113,7 +110,57 @@ asked.
 
 ---
 
+## 3a. Deployment-prep initiative — a SEPARATE phase table, do not conflate with §8
+
+Started 2026-08-21, on explicit request: turn this from a case-study demo into
+a deployable, collaborative, multi-user AP platform. Its own phase lettering
+(A–L) is deliberately distinct from the case-study's Phase 2–7 numbering above
+— they are two different bodies of work, tracked separately, and "Phase B" in
+this context never means Phase 2 above.
+
+| Phase | Work | State |
+|---|---|---|
+| A | Understand the current architecture before changing anything | ✅ done |
+| B | SQLite → PostgreSQL migration | ✅ **done and verified** — see §Stack. 447/447 tests pass against real Postgres; the live server was started against it, all 10 samples replayed through the real HTTP pipeline with correct verdicts, the PO ledger derivation checked against documented figures, a human review + cascade exercised end to end (multi-PO accept → both POs to $0.00), and auth boundaries (401/403/200) checked against the live server, not just TestClient. |
+| C | Persistent invoice PDF storage | ⬜ not started |
+| D | Collaborative multi-user activity/history | ⬜ not started |
+| E | Review claim/locking system | ⬜ not started |
+| F | Analytics/KPIs backend | ⬜ not started |
+| G | Filtering/grouping/export | ⬜ not started |
+| H | Client-facing authorization/data APIs | ⬜ not started |
+| I | Read-only Invoice/AP Assistant (chatbot) | ⬜ not started |
+| J | Email ingestion abstraction | ⬜ not started |
+| K | Multilingual backend support | ⬜ not started |
+| L | Deployment/security review | ⬜ not started |
+
+**Stopped after Phase B on explicit instruction** ("STOP and report the result
+before proceeding to the next major phase"). Do not start Phase C or later
+without being asked, for the same reason §3 above applies to the case-study
+phases: this is deliberately incremental, one verified phase at a time.
+
+Environment needed for local development now: PostgreSQL reachable via
+`DATABASE_URL` (see §4, §Stack). The dev machine this was built on had no
+Docker and no local Postgres; `docker-compose.yml` is provided for a clone
+that has Docker, and a `winget install PostgreSQL.PostgreSQL.16` local service
+is the alternative this project's own instance actually uses — either is
+fine, only `DATABASE_URL` matters to the application.
+
+---
+
 ## 4. Running it
+
+**Requires PostgreSQL first** — `DATABASE_URL` in `.env`, pointed at a
+reachable instance. Two ways to get one:
+
+```powershell
+docker-compose up -d          # local instance matching .env.example, if Docker is available
+```
+
+or install PostgreSQL directly (what this machine actually has, since Docker
+was not available when this was set up): `winget install
+PostgreSQL.PostgreSQL.16`, then create a dedicated app role/database rather
+than using the `postgres` superuser directly — see §Stack for exactly what
+this project's own local instance looks like.
 
 ```powershell
 .\start.ps1          # installs deps, generates samples, starts server, opens browser
@@ -153,13 +200,13 @@ listening on 8000 before assuming the app broke.
 generated per process, so any server restart silently invalidates the token in
 the browser and forces a re-login mid-recording.
 
-**The server holds `data/app.db` open.** Kill it before deleting:
-
-```bash
-netstat -ano | grep ":8000" | grep LISTENING | awk '{print $5}' \
-  | while read pid; do taskkill //F //PID $pid >/dev/null 2>&1; done
-sleep 1.5 && rm -f data/app.db
-```
+**The database is now PostgreSQL, not a SQLite file.** `data/app.db` /
+`data/app.db.bak` are vestigial — no code reads or writes them any more, and
+`.\reset-demo.ps1` no longer needs to stop the server first (Postgres has no
+file lock to fight, unlike SQLite). `DATABASE_URL` (in `.env`, gitignored)
+points at a local Postgres instance; see §Architecture > Stack for how it got
+there and `scripts/migrate_sqlite_to_postgres.py` if an old `data/app.db`
+still has run history worth carrying over.
 
 **Tests that drive the API must authenticate.** `tests/conftest.py` provides
 `auth_headers(role)`; pass it to `TestClient(main.app, headers=...)`.
@@ -506,7 +553,7 @@ boundary — a script ignores it.
 - **Daily AI budget** (`quota.py`) — a slower breaker. Twenty polite requests an
   hour apart never trip a per-minute limit and would still exhaust Gemini for the
   day. When spent, the provider is **not called** and extraction takes its
-  existing safe fallback. Counter lives in SQLite so it survives a restart.
+  existing safe fallback. Counter lives in Postgres so it survives a restart.
   Deliberately **fails open** if its own table breaks — it is a cost guard, not a
   security control; the security controls all fail closed.
 - **Input** — uploads read in capped chunks (not buffered then measured), PDFs
@@ -546,10 +593,57 @@ Services" trains clerks to click through warnings, which is worse than no guard.
 
 ### Stack
 
-FastAPI + SQLite + **Next.js 15 / React 19 / Tailwind v4 / TypeScript**.
+FastAPI + **PostgreSQL** + **Next.js 15 / React 19 / Tailwind v4 / TypeScript**.
 `POST /api/runs/stream` streams stages over SSE, read with `fetch()` and a
 `ReadableStream` reader. `pyjwt` for tokens; PBKDF2-HMAC-SHA256 password hashing
 from the stdlib.
+
+**Migrated from SQLite to PostgreSQL** (2026-08-21), to prepare for real
+deployment and concurrent multi-user access. `psycopg2-binary`, no ORM — same
+philosophy as before (raw parameterised SQL, `storage.py` as the one place
+that touches it). `DATABASE_URL` (env var, read at call time like every other
+secret in this project) is required in every environment; there is no SQLite
+fallback anywhere, dev included. `docker-compose up -d` gives a matching local
+instance; the actual dev machine this was built on had no Docker, so the
+first local instance was a `winget install PostgreSQL.PostgreSQL.16` service
+instead — either works, `DATABASE_URL` is all that matters.
+
+What changed and what didn't: table names, column names, and every business
+rule are byte-for-byte the same — this was a dialect and connection-management
+migration, not a schema redesign (`?`→`%s`, `AUTOINCREMENT`→`SERIAL`,
+`PRAGMA table_info`→`information_schema.columns`, `RealDictCursor` in place of
+`sqlite3.Row`). The one thing that's genuinely different, not just translated,
+is locking: SQLite's `BEGIN IMMEDIATE` took a lock over the *whole database*
+for every ledger write; Postgres uses `SELECT ... FOR UPDATE` on just the
+specific `purchase_orders` row(s) an invoice charges, inside `save_run_checked`.
+Same safety guarantee (two invoices racing the same PO still serialise
+correctly — proved by `test_concurrent_invoices_cannot_overspend_a_po`, 8
+threads racing a $10,000 PO, still resolves to exactly 5 approved / 3 held),
+strictly better concurrency (invoices against *different* POs no longer block
+each other at all, which one SQLite file could never offer). `quota.py`'s
+`try_consume()` got the same treatment, for the same reason — its own
+read-then-increment needed a row lock once the database-wide lock could no
+longer be relied on to serialise it for free.
+
+Connection pooling: `storage.get_conn()` returns a `_PooledConnection` (thin
+proxy around a `psycopg2.pool.ThreadedConnectionPool` member) whose `.close()`
+returns the connection to the pool instead of tearing down the socket —
+psycopg2's C-level connection type refuses `conn.close = ...` directly
+(`AttributeError: attribute 'close' is read-only`), which is the whole reason
+the proxy exists. Every one of storage.py's ~30 `conn = get_conn(); ...;
+conn.close()` call sites needed zero changes.
+
+Test isolation: every `db(tmp_path, monkeypatch)` fixture that used to
+monkeypatch `storage.DB_PATH` to a fresh SQLite file now monkeypatches
+`storage.PG_SCHEMA` to a fresh, uniquely-named Postgres schema
+(`tests/pg_schema.py`), created and dropped per test against one shared
+database. Same isolation guarantee, same fixture shape, twelve files' worth of
+one-line-per-fixture changes rather than a rewrite.
+
+`scripts/migrate_sqlite_to_postgres.py` is a one-time, idempotent import for
+carrying `runs`/`run_allocations` history out of an old `data/app.db` — POs
+and vendors are never migrated this way, since they reload from `data/*.json`
+on every startup regardless of which database engine is under them.
 
 **The UI ships as a static export**, not a Node server. `npm run build` in
 `frontend-next/` emits plain HTML/JS into `out/`, and `backend/main.py` mounts
@@ -619,64 +713,168 @@ completely instead of guessing.
 
 ---
 
-## 6. Files
+## 6. Files and Architecture
+
+### Backend (`backend/` — Python + FastAPI)
+
+The backend is a single-process FastAPI app that:
+1. Streams the 9-stage pipeline over SSE to the browser
+2. Enforces OAuth2 auth, scopes, rate limits
+3. Holds the deterministic decision engine (no model output in verdicts)
+4. Manages a PostgreSQL ledger that derives balances from run history
+
+**Core modules:**
+
+| Module | Role |
+|---|---|
+| `main.py` | FastAPI app, async pipeline generator, SSE streaming, auth endpoints, error handlers. `POST /api/runs/stream` is the live run view. |
+| `extraction.py` | PDF → structured fields. Routes by document type (text vs scanned). Groq (text) → Gemini (vision) → regex → empty (none). **The ONLY module calling a model.** Captures confidence + evidence per field. Both provider SDKs imported lazily. |
+| `rules.py` | Deterministic decision engine: `decide(extracted, po_match, ...) → (verdict, reasons, audit_trail)`. Emits audit as it evaluates, never a second pass. Handles vendor tri-state, is_not_an_invoice(), duplicates, confidence gate. No model, no approximation. |
+| `matching.py` | PO lookup (exact + fuzzy). Tolerance (one-sided). Multi-PO binding + `split_across()` ledger math. Currency detection + `fx_convert()` at pinned rates. All deterministic. |
+| `storage.py` | PostgreSQL schema, seed data load, ledger queries, write transactions (`SELECT ... FOR UPDATE` on the specific PO row(s) for race safety), human review recording, run clearing, `run_allocations` migration. Balances derived per run by summing APPROVED allocations. Pooled connections via `psycopg2.pool`. |
+| `auth.py` | OAuth2 resource-server: JWT validation (pyjwt), scopes, password grant, production mode enforcement (no demo creds, no missing secret). |
+| `config.py` | .env loader, `APP_ENV` switch, provider model IDs, business thresholds (PO_TOLERANCE_PERCENT, CONFIDENCE_THRESHOLD, DAILY_QUOTA_VISION, FX_RATES + version). |
+| `quota.py` | Per-provider daily extraction budget, PostgreSQL-backed counter (`extraction_quota` table). Fails open (cost guard, not security). |
+| `ratelimit.py` | Sliding-window per user/IP (per-process, not shared across workers). |
+| `schemas.py` | Pydantic dataclasses: `ExtractedInvoice` (fields + provenance dict), `LineItem`, `StageLog`, `RunResult`. |
+
+**Database schema** (PostgreSQL, `DATABASE_URL`) — corrected here against the
+actual code in `storage.py`/`quota.py`, not assumed; the previous version of
+this table had drifted from reality in several places (wrong PK, wrong column
+names, two tables that do not exist) before this pass:
 
 ```
-backend/
-  main.py         675 lines. FastAPI app, 9-stage pipeline as an async generator,
-                  auth endpoints, error handlers, upload validation,
-                  /api/admin/reset-demo, no-store on the HTML shell.
-  extraction.py   744 lines. PDF → text → fields. Groq/Gemini/regex/none,
-                  SCHEMA_PROMPT, injection guard. The ONLY module that talks
-                  to a model; both SDKs imported lazily.
-  rules.py        655 lines. Validation, vendor tri-state, duplicates,
-                  is_not_an_invoice(), decide() and build_audit().
-                  The only place a verdict is produced.
-  storage.py      SQLite, ledger, write_txn(), save_run_checked(),
-                  record_human_review(), clear_run_history(), run_allocations
-                  + its backfill, migrations via _ensure_columns().
-  auth.py         324 lines. OAuth2 bearer tokens, scopes, user store,
-                  production config enforcement.
-  config.py       .env loader, APP_ENV, provider settings, tolerances, rate
-                  limits, daily quotas, FX_RATES + FX_RATES_VERSION (pinned).
-  matching.py     PO lookup, tolerance_for(), split-PO maths, currency,
-                  multi-PO binding, split_across(), fx_convert().
-  quota.py        142 lines. Daily per-provider budget, SQLite-backed.
-  ratelimit.py    130 lines. Sliding-window per user/IP.
-  schemas.py       65 lines. ExtractedInvoice, LineItem, StageLog, RunResult.
-frontend-next/    ~6,400 lines across 28 source files. Next.js 15 + React 19 +
-                  Tailwind v4 + TypeScript. Built to a STATIC EXPORT in out/.
-  app/            layout.tsx (IBM Plex via next/font, theme bootstrap script),
-                  page.tsx (auth gate + section switch), globals.css (the
-                  whole design system: light tokens, dark tokens, type scale,
-                  motion).
-  components/
-    layout/       AppShell.tsx — sidebar, page chrome, mobile drawer, the
-                  dark-mode toggle.
-    pages/        OverviewPage, ProcessPage, InvoicesPage, ReferencePage.
-    invoice/      RunDetail, StageList (+PhaseStepper), PoMatchPanel,
-                  Panels (verdict/extraction/reasons), AuditTrail, ReviewBar.
-    ui/           index.tsx (primitives), Modal.tsx (focus trap),
-                  Toast.tsx, icons.tsx (16px/1.5-stroke set, incl. sun/moon).
-    ResetDemoButton.tsx, charts.tsx (hand-drawn SVG, no chart library).
-  lib/            api.ts (fetch + SSE reader), auth.tsx, theme.tsx
-                  (ThemeProvider/useTheme), useData.ts, metrics.ts
-                  (dashboard figures), format.ts, types.ts.
-frontend/         The ORIGINAL vanilla UI. Kept deliberately: main.py serves it
-                  when frontend-next/out is missing, so a clone without npm
-                  still boots and the Python suite is unaffected.
-data/
-  purchase_orders.json / approved_vendors.json / users.json   (TRACKED)
-  app.db                                                      (NOT tracked)
-sample_invoices/  10 PDFs, generate_invoices.py, manifest.json
-scripts/          replay_samples.py — drives the 7 samples in manifest order
-                  and checks each verdict. Used by reset-demo.ps1 -Replay.
-reset-demo.ps1    Clears run history (and optionally replays the samples).
-tests/            18 files, 446 tests. conftest.py provides auth_headers()
-                  as a plain function, NOT a fixture -- import it.
+purchase_orders:      po_number (PK), vendor, amount, currency, issued_date,
+                      status, description, source_file, source_row
+
+vendors:               vendor_name (PK), vendor_id, status
+                      (this table is named `vendors`, not `approved_vendors`)
+
+runs:                  id (PK, SERIAL), filename, status, created_at,
+                      vendor_name, invoice_number, total, po_number,
+                      extracted_json, po_match_json, stages_json,
+                      reasons_json, audit_json, automated_decision,
+                      human_decision, final_decision, reviewed_by,
+                      reviewed_at, review_note
+
+run_allocations:       id (PK, SERIAL), run_id (FK -> runs.id), po_number,
+                      amount, seq
+                      (immutable facts; balance derived at read time by
+                      joining to runs.status='APPROVED')
+
+extraction_quota:      day, provider, used (PK is (day, provider))
+                      (this table is named `extraction_quota`, not
+                      `daily_quota`, and lives in quota.py not storage.py)
 ```
 
-### Test suite — 446 tests, 18 files
+**Not database tables, despite looking like they should be:** users live in
+`data/users.json`, read directly by `auth.py` on every call (`load_users()`);
+there is no `users` table and never has been. There is also no
+`run_stage_logs` table — a run's stage-by-stage log is the `stages_json`
+column on `runs` itself, one JSON array per run.
+
+---
+
+### Frontend (`frontend-next/` — Next.js 15 + React 19 + Tailwind v4 + TypeScript)
+
+**Architecture:** built as a **static export** (`npm run build` → `frontend-next/out/`), served as plain HTML/JS by FastAPI. No Node process at runtime. `next dev` on :3000 proxies `/api` to :8000 for development.
+
+**Design system** is **light-first enterprise finance interface**:
+- Warm-neutral surfaces (white/off-white) distinguished by elevation, not borders
+- One accent colour for interaction
+- Three semantic tones (approved/held/rejected) that carry meaning
+- Radii capped at 10px (larger corners read as consumer not finance)
+- IBM Plex Sans for UI text, IBM Plex Mono (tabular numerals) for all ledger figures
+- Every colour flows through CSS custom properties in `globals.css`
+- Dark mode is an explicit toggle (`:root[data-theme="dark"]`), persisted to localStorage, never `prefers-color-scheme`
+
+**Layout and pages:**
+
+| File | Purpose |
+|---|---|
+| `app/layout.tsx` | Root layout. IBM Plex fonts (next/font). Theme bootstrap script runs before interactive, so dark-mode users never see light flash. ThemeProvider. |
+| `app/page.tsx` | Single client-rendered page. Auth gate (show login if no token). If authenticated, render AppShell + section switcher (Process / Invoices / Reference / Overview). Client-side state, no real routes — deep links would need backend support for no gain. |
+| `app/globals.css` | ~450 lines. Complete design system: 30+ CSS custom properties (colour tokens, type scale, spacing, shadows). Light palette as bare `:root`, dark palette in `@media (prefers-color-scheme: dark)` + `[data-theme="dark"]` guards so both light/dark win. Utility classes: `.panel`, `.rise`, `.tnum` (tabular numerals). |
+
+**Page components** (`components/pages/`):
+
+| Component | Purpose |
+|---|---|
+| `OverviewPage` | Dashboard: 9 KPI cards (count/amount/rate for approved/review/rejected, PO consumption, daily AI budget). Volume over time (hand-drawn SVG, no chart library). Reason distribution pie. Reset demo button (admin only). |
+| `ProcessPage` | Upload + live run view. Before-run state: file drop zone, sample-invoice picker, 10 MB limit (client + server). After run: phase stepper, document preview, extracted data, audit trail, decision panel inline. File held in-memory so user sees the document they processed. |
+| `InvoicesPage` | Run register. Fetches `GET /api/runs` once, then filters/sorts/pages client-side (no params). Filter by status + EXCEPTIONS (unreviewed NEEDS_REVIEW). Sort by created_at/total/vendor/status. Click a row to open ReviewWorkspace overlay. Pre-filter supported (e.g. Overview "Open review queue" lands here with filter set). |
+| `ReferencePage` | Read-only: POs + approved vendors (both lists, no edit UI). |
+
+**Invoice components** (`components/invoice/`):
+
+| Component | Purpose |
+|---|---|
+| `StageList` | Render the 9-stage log with completion %, execution time, outcomes. `PhaseStepper`: progress indicator with labels. |
+| `PoMatchPanel` | Three-way match table (invoice amount vs PO balance vs tolerance). `PoBudget` component: the balance bar (consumed / this run / remaining, overflow hatched red). |
+| `Panels` | Verdict banner + extraction summary + extracted fields table (confidence badges) + reasons list. `ReviewerBrief`: combined from audit.reason + audit.problematic_fields + audit.suggested_resolution, never generated. Confidence badges inline on every field, coloured by whether the RULE ENGINE flagged it. |
+| `AuditTrail` | Render audit.* as structured record: decision, reason, PO match + source, values compared, variance, tolerance, rules pass/fail list. |
+| `ReviewBar` | Accept/Reject buttons + confirm dialogs. Populated from ReviewerBrief. Only shown on NEEDS_REVIEW. Posts to `/api/runs/{id}/review`. |
+| `DocumentPreview` | Render the original PDF. Priority: in-memory File (if this is the run just processed in this tab) → fetched from `/api/sample-invoices/{name}` (if it's a sample) → empty state (historical non-sample runs not persisted). Uses browser native PDF viewer (`<object>`), not a library. Caches sample index in-memory per session. |
+| `ReviewWorkspace` | Two-pane layout component. Document at left (sticky on desktop), decision evidence at right. Exports `ReviewWorkspaceBody` (the layout, used inline on ProcessPage) and `ReviewWorkspace` (full-screen overlay opened from InvoicesPage). Overlay: `role=dialog`, `aria-modal`, Escape closes, `body.overflow: hidden`. Supports Previous/Next nav when opened from a list. |
+
+**UI primitives** (`components/ui/`):
+
+- `Button`, `Badge`, `StatusBadge`, `Panel`, `PanelHeader`, `Modal` (focus trap), `SearchInput`, `Select`, `Segmented`, `Tooltip`, `Callout`, `EmptyState`, `ErrorState`, `SkeletonRows`, `Spinner`
+- All respond to `--tone` and `--state` CSS custom properties
+- Icons: 16px stroke-width=1.5 SVG set (50+), incl. sun/moon for theme toggle. No icon library.
+- `Toast.tsx`: floating notifications (context + hook), sticky-top. `Modal.tsx`: dialog container with focus trap.
+
+**Layout components** (`components/layout/`):
+
+- `AppShell.tsx`: page chrome, responsive sidebar (desktop rail) / mobile drawer. Dark-mode toggle (sun/moon button) in account row. Exports `PageHeader` / `PageBody`.
+
+**Other:**
+
+- `ResetDemoButton.tsx`: calls `POST /api/admin/reset-demo`, shows confirm dialog, updates runs on success.
+- `charts.tsx`: hand-drawn SVG charts (volume-by-day, reason distribution pie). No chart library.
+
+**Utility libraries** (`lib/`):
+
+| File | Purpose |
+|---|---|
+| `api.ts` | Fetch wrapper with auth header + error handling. `streamRun()` reads `POST /api/runs/stream` SSE response with ReadableStream reader. `apiFetch` / `apiJson` for regular requests. |
+| `auth.tsx` | `AuthContext` + `useAuth` hook. Login form. Token in localStorage. |
+| `theme.tsx` | `ThemeProvider` + `useTheme` hook. Reads/writes localStorage (`ip-theme`), syncs to `html[data-theme]`. |
+| `useData.ts` | Hook: fetch data once on mount, cache in state, return `{data, loading, error}`. |
+| `metrics.ts` | Compute dashboard KPIs from runs list. |
+| `format.ts` | Format utilities: `money(n)`, `amount(n, currency)`, `when(date)`, `percent(n)`, `confidence(score)`. `STAGE_ORDER` array. |
+| `types.ts` | TypeScript interfaces: `RunRecord`, `Extracted`, `PoMatch`, `Audit`, `Reason`, `Stage`, `Verdict`, `SampleInvoice`, etc. |
+
+---
+
+### Other directories
+
+**`frontend/`** — The original vanilla frontend (HTML + vanilla JS, no build, no Node). Kept deliberately as a fallback: if `frontend-next/out/` does not exist, `main.py` serves this instead. A clone without npm still boots a working UI.
+
+**`data/`** — Seed data, reloaded into Postgres on every startup:
+- `purchase_orders.json`, `approved_vendors.json`, `users.json` — tracked in git, reloaded on startup
+- `app.db` / `app.db.bak` — **vestigial**, the old SQLite runtime database from before the Postgres migration. Not tracked, not read by any code any more. Safe to delete; kept only because `scripts/migrate_sqlite_to_postgres.py` can still import history out of one if it exists.
+
+**`sample_invoices/`** — Test fixtures:
+- 10 PDFs, order-dependent by design
+- `generate_invoices.py` — regenerate with `python generate_invoices.py`
+- `manifest.json` — scenario descriptions, expected verdicts, route-dependent expectations (sample 05 has two by Gemini availability)
+
+**`scripts/`** — Operational:
+- `replay_samples.py` — drives all samples through `/api/runs/stream`, verifies verdicts. Used by `reset-demo.ps1 -Replay`.
+- `migrate_sqlite_to_postgres.py` — one-time, idempotent import of `runs`/`run_allocations` history from an old `data/app.db` into the live Postgres database. Does not touch POs/vendors (those always reload from `data/*.json`).
+
+**`docker-compose.yml`** — a local PostgreSQL instance matching `.env.example`'s `DATABASE_URL`, for a clone that would rather not install Postgres system-wide. `docker-compose up -d` and go. Not used in production; a real deployment points `DATABASE_URL` at a managed instance.
+
+**`reset-demo.ps1`** — clears run history (and optionally replays samples), by calling `storage.clear_run_history()` directly — the same function `POST /api/admin/reset-demo` calls, so the script and the endpoint can never disagree about what "reset" means. Callable from terminal or from UI (admin). No longer needs to stop the server first (that was a SQLite file-lock workaround; Postgres has no equivalent).
+
+**`tests/`** — 18 files, 447 tests:
+- Both Groq and Gemini mocked at HTTP transport boundary, so suite needs no key, no network, no quota
+- `conftest.py` provides `auth_headers(role)` as a plain function (not a pytest fixture — callers import and call it)
+- `pg_schema.py` — shared helper for per-test Postgres isolation: a fresh, uniquely-named schema per test (`fresh_schema()`), dropped on teardown (`drop_schema()`). Every `db(...)` fixture across the suite calls this instead of monkeypatching a SQLite file path.
+- Real, isolated database state per test. Exceptions: `test_samples.py` honours a live key and exercises real routes (module-scoped schema, since the ten samples build on each other); **`test_reset_demo.py` and `test_extraction_routing.py` have no `db`/schema fixture at all and run directly against whatever `storage.PG_SCHEMA` currently is** — i.e. the real application schema (`public`), exactly as they ran directly against the real `data/app.db` before the migration (`test_extraction_routing.py` never imports `storage` itself, but `extraction.extract_invoice()` calls `quota.try_consume()` internally, which does). Both discovered, not introduced, while migrating; documented here rather than silently fixed, per §3. Practical effect: `test_extraction_routing.py` can fail if the real vision quota is already spent, and running the full suite clears real run history as a side effect of `test_reset_demo.py` actually exercising the reset endpoint against a live schema.
+
+### Test suite — 447 tests, 18 files
 
 | File | n | Covers |
 |---|---|---|
@@ -708,7 +906,13 @@ Notes for whoever changes them:
   failure cascades — inherent, since later cases are *about* the state earlier
   ones left.
 * The concurrency test uses real threads and a `Barrier`, exercising actual
-  SQLite locking. Its retry-on-locked loop is part of what it asserts.
+  Postgres row locking (`SELECT ... FOR UPDATE` on the contended PO). Losing
+  threads block and retry rather than raising outright, so the retry loop
+  inherited from the SQLite version is now mostly a no-op — kept because it is
+  still correct, and because a self-hosted instance under real contention can
+  still occasionally raise (a timeout, a deadlock across multiple rows). The
+  test asserts the outcome (never over budget, exactly five of eight
+  approved), not the mechanism.
 
 ### API endpoints
 
@@ -856,18 +1060,22 @@ scanned-sample demo is not reliably reproducible, and `manifest.json` resolves
 that sample's badge on key *presence* rather than provider *availability* — so
 the badge can contradict the run beside it. **Decide before recording.**
 
-⚠️ **3. `data/app.db` accumulates runs, which breaks the samples.** Not a bug —
-the samples are history-dependent by design, so a second pass makes 01 a
-duplicate of itself and leaves PO-1001 with $5.72. It was reported twice as
-"the happy path is rejected". Now recoverable without shell access: **Reset
-demo data** on Overview (admin), or `.\reset-demo.ps1`. Reset before recording.
+⚠️ **3. The `public` Postgres schema accumulates runs, which breaks the
+samples.** Not a bug (and not new — this was true of `data/app.db` too) — the
+samples are history-dependent by design, so a second pass makes 01 a duplicate
+of itself and leaves PO-1001 with $5.72. It was reported twice as "the happy
+path is rejected". Now recoverable without shell access: **Reset demo data**
+on Overview (admin), or `.\reset-demo.ps1`. Reset before recording. Also
+happens as a side effect of running the full test suite — see the
+`test_reset_demo.py` note under §Test suite.
 
 ⚠️ **5. `test_extraction_routing.py` reads the real quota counter.** It is
 described as fully mocked, and the providers are — but `extraction` consults
-`quota.try_consume()` against `data/app.db` before reaching the fakes, and
-`conftest.py` has no DB isolation. With the local vision budget spent, 4 of its
-23 cases fail. Run against a clean database for the true result. A
-`storage.DB_PATH` redirect plugin is the workaround used during this work.
+`quota.try_consume()` against the real `public` Postgres schema before
+reaching the fakes: this file has no `db`/schema fixture at all (see §Test
+suite), so `storage.PG_SCHEMA` is never redirected. With the local vision
+budget spent, some of its cases fail. Run right after a `reset-demo` for the
+true result, or point `DATABASE_URL` at a scratch database while testing.
 
 ⚠️ **4. `extraction._first()` strips a leading minus sign** off a captured
 amount, so `Total Due: -500.00` extracts as +500. Accounting parentheses are
@@ -905,16 +1113,20 @@ unaffected. The amount rule cannot catch a sign the extractor discarded.
 
 1. Read this file, then [README.md](README.md) (current and verified).
 2. `git log --oneline -10` and `git status` — confirm nothing moved.
-3. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **446 passed**.
-   No key or network needed. If it is not 446, find out what changed before
-   building anything. Two known non-regressions: `test_samples` 05 depends on
+3. Confirm `DATABASE_URL` is set (in `.env`) and Postgres is reachable — the
+   app and the test suite both require it now; there is no SQLite fallback.
+   `docker-compose up -d` if using the provided compose file, or point it at
+   whatever local/managed instance is already running.
+4. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **447 passed**.
+   No key or network needed. If it is not 447, find out what changed before
+   building anything. Known non-regressions: `test_samples` 05 depends on
    Gemini being reachable (503 and 429 both happen), and
-   `test_extraction_routing` fails 4 cases when the local vision quota is spent
-   (§9 issue 5) — run against a clean `data/app.db` for the true number.
-4. `cd frontend-next && npm run build` if the UI was touched. The export in
+   `test_extraction_routing` can fail when the local vision quota is spent
+   (§9 issue 5) — run right after a `reset-demo` for the true number.
+5. `cd frontend-next && npm run build` if the UI was touched. The export in
    `out/` is what FastAPI serves; without a rebuild the browser keeps serving
    the previous one.
-5. **Ask the user what they want next.** Do not start Phases 2–7, and do not fix
+6. **Ask the user what they want next.** Do not start Phases 2–7, and do not fix
    the open issues in §9, without being asked (§3).
 
 The single highest-value next task is **recording the demo video**. Reset the
@@ -942,6 +1154,9 @@ demo first (§4), and settle the sample-05 badge question (§9 issue 2).
 | ~~FX conversion must not widen auto-approval~~ **REVERSED, at the user's explicit request** | Was: a verdict depending on a rate fetched at run time is not reproducible by an auditor. Now: conversion is allowed against a **pinned, versioned** rate table (`config.FX_RATES`) — the objection was about *when* the rate is fetched, not conversion itself, and a pinned table is exactly as reproducible as a pinned model. See § Currency mismatch and FX conversion. |
 | Same raw number, different currency → REJECTED, not held | No correct conversion produces identical digits in a different currency, so it isn't an ordinary discrepancy for a human to reconcile — it reads as a currency-code error, and paying face value would silently mis-pay by the full FX difference. The one place a currency finding rejects rather than holds. |
 | Pydantic `Field()` rejected for confidence | Class-level schema metadata; confidence is per-instance data. Built as `ExtractedInvoice.provenance: dict`, not a literal `Tracked[T]` generic wrapper — same principle (provenance travels beside the value, not baked into the type used for arithmetic), lighter-weight implementation. |
+| **PostgreSQL, not SQLite, in every environment** | Requested explicitly, to prepare for real deployment and concurrent multi-user access — the same reasoning as every other pinning decision in this file (auditability needs a reproducible, restartable, shareable store; a single-writer file on one process's disk was never going to survive more than one uvicorn worker). No SQLite fallback anywhere, dev included, so "works on my machine" cannot mean "works against the wrong database." |
+| Row-level locking (`SELECT ... FOR UPDATE`) instead of a database-wide lock for the ledger | SQLite's `BEGIN IMMEDIATE` had no finer granularity to reach for; Postgres does, and the actual invariant that needs defending is per-PO, not database-wide. Not a redesign of the guarantee — `test_concurrent_invoices_cannot_overspend_a_po` still passes unmodified in what it asserts — just a more precise implementation of the same one. |
+| `psycopg2-binary`, no ORM | Same philosophy as the SQLite version: raw parameterised SQL, `storage.py` as the one module that touches the database. An ORM would have been a second architectural decision riding along on a driver swap, which was not what was asked. |
 | **Groq for text, Gemini for vision** | Gemini's free tier is 20/day and is the only route that can read a picture. Economics, not architecture — the swap touched only `extraction.py` + `config.py`. |
 | Groq failure → regex, NOT → Gemini | Falling through would spend the scarce vision budget on a route that already has a local fallback. |
 | Models **pinned**, not aliased | An alias changes the model under a running system. |
@@ -1019,6 +1234,24 @@ demo first (§4), and settle the sample-05 badge question (§9 issue 2).
 
 ---
 
+## 11. Frontend component architecture patterns (discovered)
+
+**Layout composition over inheritance:** `ReviewWorkspace` exports both `ReviewWorkspaceBody` (the two-pane layout logic, reused inline on ProcessPage) and the full-screen overlay (ReviewWorkspace). The body is positioning-agnostic — the caller decides whether it's inline or in a modal. This avoids duplicating the layout logic and lets ProcessPage show it inline with its own page chrome, while InvoicesPage wraps it in a full-screen overlay. Same pattern should apply to new two-pane or multi-panel layouts.
+
+**Document preview smart routing:** `DocumentPreview` handles three sources of truth: in-memory File (highest priority — it's current), fetched from API (for samples), empty state (for historical non-samples). It deduplicates sample names with an in-memory cache so repeated mounts don't refetch. When building similar "preview or fetch or empty" components, this priority order prevents stale data and keeps API calls minimal.
+
+**Token-driven UI theming:** Every colour, spacing, type size flows through CSS custom properties in `globals.css`. Component-level styles read those tokens (e.g., `color: var(--text)`, `background: var(--surface)`). Dark mode is a second set of token values, never component-level `dark:` variants. This keeps the CSS lightweight and lets the entire app darkify consistently when the theme toggle fires. Adding components: always use tokens, never hardcode colours.
+
+**Client-side filtering/sorting as default:** `InvoicesPage` fetches the full run list once, then filters/sorts/pages in the browser. This is the right default at ~1000 rows; no API params needed. The pattern scales to ~10k before moving to server-side (at that point, add query params to `GET /api/runs`, but the component shape stays the same). Filtering is boolean (status OR exceptions), sorting is by key + direction, paging is offset-based.
+
+**Async state in hooks, not Redux:** Every page uses `useState` + `useEffect` to manage async fetches, filters, open modals. No Redux or Zustand. Keeps dependencies clear (a page's own filters only affect its own render) and state is co-located with the component that uses it. If the app grows and shared state across pages becomes essential, migrate to context + useContext, then consider Redux.
+
+**Form validation client + server both:** ProcessPage validates file type/size client-side for fast UX (readable message instantly if over 10MB), but the server validates independently and is the real gate. This avoids a round-trip and gives snappy feedback without trusting the client.
+
+**Confidence badges by rule engine, not re-derived in UI:** `ExtractedFields` colours confidence badges based on whether the RULE ENGINE flagged the field (`audit.low_confidence_fields`), not by re-calculating the threshold in the browser. This ensures the UI's read of "low" can never drift from what `decide()` used. The badge colour is deterministic and always matches the reason the run was held.
+
+---
+
 ## 11. Working conventions
 
 **Commits:** end every message with
@@ -1042,3 +1275,13 @@ was not sending. Don't paper over gaps.
 (gitignored). Delete them afterwards.
 
 **Browser checks:** Playwright + Chromium are installed in the venv.
+
+**Database schema:** Use named columns in INSERT statements (`INSERT INTO table (col1, col2) VALUES (?, ?)`) not positional, so queries survive schema growth. Migrations are additive via `_ensure_columns()` — idempotent and safe to re-run. Never store binary blobs (PDFs); reconstruct from in-memory File or fetch samples from API.
+
+**API contracts with frontend:** `GET /api/runs` returns the full list in one response (client does pagination). `GET /api/runs/{id}` includes the full audit trail. `POST /api/runs/stream` streams stages as SSE ending with `final` event. Relative `/api/...` paths (same-origin). Bearer token in `Authorization` header for protected endpoints.
+
+**Audit trail structure:** Stored in `runs.audit_json`, includes `automated_decision`, `reason`, `invoice`, `po_match`, `rules`, `extraction`, `problematic_fields`, `low_confidence_fields`, `suggested_resolution`. Frontend renders reason + problematic fields + suggestion in the reviewer brief. Full trail shown in Audit Trail panel.
+
+**Frontend component patterns:** Layout composition (ReviewWorkspaceBody reused inline and in overlay). Document preview smart routing (File > fetch > empty state). Token-driven theming (no hardcoded colours, all via CSS custom properties). Client-side filtering/sorting default (scales to ~10k rows). Confidence badges coloured by rule engine, not re-derived in UI.
+
+**Uncommitted changes in working tree:** frontend redesign + dark-mode toggle + DocumentPreview + ReviewWorkspace. Not committed because still being finalized. Commit message convention: end with `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.  

@@ -29,28 +29,32 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
+TESTS = os.path.dirname(os.path.abspath(__file__))
+if TESTS not in sys.path:
+    sys.path.insert(0, TESTS)
 
 import config      # noqa: E402
 import matching    # noqa: E402
 import rules       # noqa: E402
 import storage     # noqa: E402
+import pg_schema   # noqa: E402
 
 VENDOR = "Initech Consulting"     # V-003, approved in the seed data
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "DB_PATH", str(tmp_path / "arith.db"))
-    storage.init_db(reset_runs=True)
+def db(monkeypatch):
+    schema = pg_schema.fresh_schema(monkeypatch)
     conn = storage.get_conn()
     conn.execute("DELETE FROM purchase_orders")
     conn.execute("""INSERT INTO purchase_orders
            (po_number, vendor, amount, currency, issued_date, status, description)
-           VALUES (?,?,?,?,?,?,?)""",
+           VALUES (%s,%s,%s,%s,%s,%s,%s)""",
                  ("PO-5001", VENDOR, 10_000.00, "USD", "2026-01-01", "open", "test"))
     conn.commit()
     conn.close()
-    return storage.DB_PATH
+    yield schema
+    pg_schema.drop_schema(schema)
 
 
 def invoice(subtotal, tax, total, number="INV-A1"):

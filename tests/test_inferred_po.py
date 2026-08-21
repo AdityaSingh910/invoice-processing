@@ -28,27 +28,31 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
+TESTS = os.path.dirname(os.path.abspath(__file__))
+if TESTS not in sys.path:
+    sys.path.insert(0, TESTS)
 
 import matching    # noqa: E402
 import rules       # noqa: E402
 import storage     # noqa: E402
+import pg_schema   # noqa: E402
 
 VENDOR = "Acme Office Supplies"     # V-001, approved in the seed data
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
+def db(monkeypatch):
     """Isolated ledger. Seed POs load normally; tests add their own as needed."""
-    monkeypatch.setattr(storage, "DB_PATH", str(tmp_path / "inferred.db"))
-    storage.init_db(reset_runs=True)
-    return storage.DB_PATH
+    schema = pg_schema.fresh_schema(monkeypatch)
+    yield schema
+    pg_schema.drop_schema(schema)
 
 
 def add_po(po_number, amount, vendor=VENDOR, status="open"):
     conn = storage.get_conn()
     conn.execute("""INSERT INTO purchase_orders
            (po_number, vendor, amount, currency, issued_date, status, description)
-           VALUES (?,?,?,?,?,?,?)""",
+           VALUES (%s,%s,%s,%s,%s,%s,%s)""",
                  (po_number, vendor, amount, "USD", "2026-01-01", status, "test"))
     conn.commit()
     conn.close()

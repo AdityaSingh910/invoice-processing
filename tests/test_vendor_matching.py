@@ -37,25 +37,29 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
+TESTS = os.path.dirname(os.path.abspath(__file__))
+if TESTS not in sys.path:
+    sys.path.insert(0, TESTS)
 
 import rules       # noqa: E402
 import storage     # noqa: E402
+import pg_schema   # noqa: E402
 
 norm = storage.normalize_vendor_name
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
+def db(monkeypatch):
     """Seed vendors: Acme Office Supplies, Globex Logistics, Initech Consulting,
     Stark Industrial Parts, Umbrella Cleaning Co."""
-    monkeypatch.setattr(storage, "DB_PATH", str(tmp_path / "vendor.db"))
-    storage.init_db(reset_runs=True)
-    return storage.DB_PATH
+    schema = pg_schema.fresh_schema(monkeypatch)
+    yield schema
+    pg_schema.drop_schema(schema)
 
 
 def add_vendor(name, vendor_id="V-900", status="approved"):
     conn = storage.get_conn()
-    conn.execute("INSERT INTO vendors VALUES (?,?,?)", (name, vendor_id, status))
+    conn.execute("INSERT INTO vendors VALUES (%s,%s,%s)", (name, vendor_id, status))
     conn.commit()
     conn.close()
 

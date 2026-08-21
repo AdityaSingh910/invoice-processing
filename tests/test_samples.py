@@ -13,9 +13,10 @@ Three consequences:
 
 1. The samples run **sequentially, in manifest order**, sharing one database.
    `pytest.mark.parametrize` preserves the order it is given.
-2. The database is **isolated per module** — `storage.DB_PATH` is monkeypatched
-   to a temp file before `init_db()`. Running against the real `data/app.db`
-   would fail immediately, since it already carries runs from manual testing.
+2. The database is **isolated per module** — `storage.PG_SCHEMA` is
+   monkeypatched to a fresh, uniquely-named schema before `init_db()`. Running
+   against the real application schema would fail immediately, since it
+   already carries runs from manual testing.
 3. Expected verdicts are read from `sample_invoices/manifest.json`, the same
    file that labels the samples in the UI. One source of truth, so the tests and
    the interface cannot drift apart.
@@ -35,9 +36,14 @@ SAMPLES = os.path.join(ROOT, "sample_invoices")
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
+TESTS = os.path.dirname(os.path.abspath(__file__))
+if TESTS not in sys.path:
+    sys.path.insert(0, TESTS)
+
 import config      # noqa: E402
 import main        # noqa: E402
 import storage     # noqa: E402
+import pg_schema   # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -83,15 +89,17 @@ MANIFEST = load_manifest(LIVE_LLM)
 # --------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
-def client(tmp_path_factory):
-    """A TestClient wired to a throwaway database seeded from data/*.json.
+def client():
+    """A TestClient wired to a throwaway Postgres schema seeded from data/*.json.
 
-    `tmp_path_factory` rather than `tmp_path` because the DB has to outlive a
-    single test -- the whole point is that state accumulates across the seven.
+    Module-scoped because the schema has to outlive a single test -- the whole
+    point is that state accumulates across the ten samples.
 
-    `storage.DB_PATH` is a module-level constant read inside `get_conn()` at call
-    time, with no environment override, so patching the attribute is the only way
-    to redirect it.
+    `storage.PG_SCHEMA` is a module-level constant read inside `get_conn()` at
+    call time, with no environment override, so patching the attribute is the
+    only way to redirect it (see tests/pg_schema.py -- the same mechanism
+    every other test file's `db` fixture uses, just module-scoped here instead
+    of per-test).
 
     `GEMINI_API_KEY` and `GROQ_API_KEY` are deliberately **not** stripped. When a
     key is present the suite exercises the real `groq (text)` / `gemini (vision)`
@@ -112,20 +120,15 @@ def client(tmp_path_factory):
           ("LIVE gemini (vision) - %s" % config.EXTRACTION_MODEL if LIVE_LLM
            else "route 'none' - no GEMINI_API_KEY"))
 
-    db_path = tmp_path_factory.mktemp("invoice_db") / "test_app.db"
-
     mp = pytest.MonkeyPatch()
-    mp.setattr(storage, "DB_PATH", str(db_path))
+    schema = pg_schema.fresh_schema(mp)   # creates the schema + seeds reference data
 
-    # Fresh schema + seed reference data (POs and vendors) from data/*.json,
-    # with no run history at all.
-    storage.init_db(reset_runs=True)
     assert storage.list_purchase_orders(), "seed POs did not load into the test DB"
     assert storage.list_vendors(), "seed vendors did not load into the test DB"
     assert storage.list_runs() == [], "test DB should start with no run history"
 
     # The context manager fires FastAPI's startup event, which calls init_db()
-    # again -- harmless, and it proves startup works against the patched path.
+    # again -- harmless, and it proves startup works against the patched schema.
     # The API now requires a bearer token on every invoice endpoint, so the
     # test client authenticates like any other caller. `admin` carries every
     # scope, which keeps this fixture about samples rather than about
@@ -133,10 +136,11 @@ def client(tmp_path_factory):
     from conftest import auth_headers
     from fastapi.testclient import TestClient
     with TestClient(main.app, headers=auth_headers("admin")) as c:
-        assert storage.DB_PATH == str(db_path), "startup must not restore the real DB path"
+        assert storage.PG_SCHEMA == schema, "startup must not restore the real schema"
         yield c
 
     mp.undo()
+    pg_schema.drop_schema(schema)
 
 
 # --------------------------------------------------------------------------

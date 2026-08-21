@@ -26,21 +26,25 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
+TESTS = os.path.dirname(os.path.abspath(__file__))
+if TESTS not in sys.path:
+    sys.path.insert(0, TESTS)
 
 import main       # noqa: E402
 import matching   # noqa: E402
 import rules      # noqa: E402
 import storage    # noqa: E402
+import pg_schema   # noqa: E402
 
 VENDOR = "Globex Logistics"      # approved; holds PO-1002 at $5,000
 PO = "PO-1002"
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "DB_PATH", str(tmp_path / "review.db"))
-    storage.init_db(reset_runs=True)
-    return storage.DB_PATH
+def db(monkeypatch):
+    schema = pg_schema.fresh_schema(monkeypatch)
+    yield schema
+    pg_schema.drop_schema(schema)
 
 
 @pytest.fixture
@@ -49,7 +53,7 @@ def client(db):
     from fastapi.testclient import TestClient
     # Reviewing requires the 'invoice:review' scope; a reviewer has it.
     with TestClient(main.app, headers=auth_headers("reviewer", "a.singh")) as c:
-        assert storage.DB_PATH == db, "startup must not restore the real DB path"
+        assert storage.PG_SCHEMA == db, "startup must not restore the real schema"
         yield c
 
 

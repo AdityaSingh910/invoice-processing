@@ -180,6 +180,38 @@ AUTH_ISSUER = os.environ.get("AUTH_ISSUER", "invoice-processing")
 AUTH_TOKEN_TTL_MINUTES = int(os.environ.get("AUTH_TOKEN_TTL_MINUTES", "480") or 480)
 USERS_SEED = os.path.join(ROOT, "data", "users.json")
 
+# --------------------------------------------------------------------------
+# Database
+#
+# PostgreSQL is the live application database, in both development and
+# production -- there is no SQLite fallback. Read at call time, like the
+# signing secret and API keys above, for the same reason: load_dotenv() runs
+# after this module is imported, so a module-level constant would silently
+# miss a value set in .env.
+#
+# No hardcoded host, user or password ever lives here, same principle as
+# AUTH_SECRET: a default connection string committed to the repository is not
+# a secret, and a deployment that forgot to set one should fail loudly rather
+# than silently talk to some other database.
+# --------------------------------------------------------------------------
+DATABASE_URL_ENV = "DATABASE_URL"
+
+
+def database_url() -> str:
+    """The Postgres connection string, or raise if it is not configured.
+
+    Raising here rather than falling back to a default is deliberate: a
+    process that started against the wrong database (or none) should fail the
+    first time it tries to use one, not proceed and produce confusing errors
+    three calls later.
+    """
+    url = os.environ.get(DATABASE_URL_ENV, "").strip()
+    if not url:
+        raise RuntimeError(
+            f"{DATABASE_URL_ENV} is not set. Point it at a PostgreSQL instance, e.g. "
+            f"postgresql://user:password@localhost:5432/invoice_processing")
+    return url
+
 # CORS. Configured so a browser on another origin can be allowed deliberately,
 # NOT as a security control: CORS is enforced by the browser, and a script or
 # curl request ignores it entirely. Authentication is the boundary; this only

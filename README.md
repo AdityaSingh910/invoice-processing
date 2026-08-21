@@ -139,6 +139,18 @@ clean, extension-free headless browser.
 
 ## Quick start (Windows)
 
+**Requires PostgreSQL first.** The app has no SQLite fallback — set
+`DATABASE_URL` in `.env` (copy `.env.example`) and point it at a reachable
+instance:
+
+```powershell
+docker-compose up -d          # local Postgres matching .env.example, if you have Docker
+```
+
+or install PostgreSQL directly (`winget install PostgreSQL.PostgreSQL.16` on
+Windows) and create a dedicated database/role rather than using the
+`postgres` superuser for the app.
+
 ```powershell
 .\start.ps1
 ```
@@ -192,15 +204,20 @@ start refuses to boot while they exist — see [Running in production](#running-
 .\venv\Scripts\python.exe -m pytest tests\ -q
 ```
 
-**446 tests across 18 files.** They mock both providers, so they need no API
+**447 tests across 18 files.** They mock both providers, so they need no API
 key, no network and no quota. With keys present, `tests/test_samples.py` additionally exercises the
 real Groq and Gemini routes end to end — the fixture prints which mode ran,
-because a green suite means a different thing in each.
+because a green suite means a different thing in each. Requires PostgreSQL
+reachable via `DATABASE_URL`; every other test gets an isolated schema per
+run, created and dropped automatically.
 
-> One test needs a note: `tests/test_extraction_routing.py` reads the real
-> daily-quota counter in `data/app.db`, so if the local vision budget is spent,
-> four of its cases fail even though the providers are mocked. Running against a
-> clean database gives the true result.
+> Two tests need a note: `tests/test_extraction_routing.py` and
+> `tests/test_reset_demo.py` run directly against the real application schema
+> rather than an isolated one (no `db` fixture in either file — a pre-existing
+> characteristic, not something the Postgres migration introduced). If the
+> local vision budget is spent, some `test_extraction_routing.py` cases fail
+> even though the providers are mocked; running right after `reset-demo` gives
+> the true result.
 
 ### Resetting the demo
 
@@ -621,7 +638,7 @@ security boundary — a script ignores it entirely.
   providers. Twenty polite requests an hour apart never trip a per-minute limit
   and would still exhaust Gemini for the day. When a budget is spent the
   provider is not called at all and extraction takes its existing safe fallback.
-  The counter lives in SQLite so it survives a restart.
+  The counter lives in PostgreSQL so it survives a restart.
 - **Input validation** — uploads capped and read in chunks, PDFs validated by
   magic bytes rather than extension or client-declared type, filenames reduced
   to a safe basename.
@@ -656,7 +673,7 @@ the light theme.
   execute; other endpoints serve run history, audit trails and reference data.
 - **Extraction** — `pdfplumber` for text, `pypdfium2` for page rasterisation
   (a self-contained wheel: no poppler or tesseract to install).
-- **Storage** — SQLite at `data/app.db`, seeded from `data/*.json` on startup.
+- **Storage** — PostgreSQL, via `DATABASE_URL`; seeded from `data/*.json` on startup. `psycopg2`, no ORM.
 - **Auth** — `pyjwt`; PBKDF2-HMAC-SHA256 password hashing from the standard library.
 - **Frontend** — Next.js 15 (App Router), React 19, Tailwind v4, TypeScript.
   Reads the SSE stream with `fetch()` and a `ReadableStream` reader.
@@ -707,9 +724,15 @@ Everything convenient about the demo — published passwords, zero-config signin
 keys — is allowed in development and fatal in production, deliberately. Each is
 the kind of mistake that leaves the app working perfectly and quietly insecure.
 
-Environment variables worth knowing, all optional in development:
+`DATABASE_URL` is required in **every** environment, not just production —
+there is no SQLite fallback to fall back to. Point it at a managed Postgres
+instance in production (RDS, Cloud SQL, a host's managed Postgres add-on,
+etc.), never at a container that dies with the deploy.
+
+Environment variables worth knowing:
 
 ```
+DATABASE_URL=                 # required everywhere — postgresql://user:pass@host:port/db
 APP_ENV=development           # production | prod | live triggers the checks above
 AUTH_SECRET=                  # required in production
 AUTH_USERS_FILE=              # override the demo user store
@@ -726,9 +749,10 @@ DAILY_QUOTA_TEXT=500
 
 **All three defects the audit and architect review found are fixed** — inferred
 PO matches no longer auto-approve, currency mismatches are caught, and the PO
-ledger race is closed with `BEGIN IMMEDIATE` + WAL (verified under real threads:
-8 concurrent $2,000 invoices against a $10,000 PO give exactly 5 approved, 3
-held, $0.00 remaining).
+ledger race is closed with a `SELECT ... FOR UPDATE` row lock on the specific
+purchase order being charged (verified under real threads: 8 concurrent $2,000
+invoices against a $10,000 PO give exactly 5 approved, 3 held, $0.00
+remaining).
 
 What is still true, by design rather than accident, and queued for later phases:
 
@@ -797,7 +821,7 @@ backend/
   extraction.py   PDF → text/images → structured fields (Groq / Gemini / regex)
   matching.py     PO lookup, split-PO balance maths, tolerance, currency
   rules.py        Validation, vendor, duplicates, decision + audit trail
-  storage.py      SQLite: seed data, run history, ledger, human review
+  storage.py      PostgreSQL: seed data, run history, ledger, human review
   auth.py         OAuth 2.0 bearer tokens, scopes, production config checks
   ratelimit.py    Per-user / per-IP sliding-window limits
   quota.py        Daily per-provider extraction budget (circuit breaker)
@@ -813,8 +837,11 @@ frontend-next/    The UI. Next.js 15 + React 19 + Tailwind v4, TypeScript
   lib/            API client, auth context, theme (dark-mode toggle), metrics,
                   formatting, types
 frontend/         The original vanilla UI, kept as a no-build fallback
-data/             Seed POs + vendors + demo users (tracked); app.db (not tracked)
+data/             Seed POs + vendors + demo users (tracked); app.db is vestigial
+                  (pre-Postgres SQLite file, unused by any code now)
 sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
+scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
+docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
 scripts/          replay_samples.py — drives the samples in manifest order
 tests/            18 files, 446 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed

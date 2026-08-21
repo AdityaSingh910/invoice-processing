@@ -24,15 +24,20 @@ WHY THE COUNTER IS IN THE DATABASE
 The budget is a calendar-day quantity, so it has to survive a restart. An
 in-process counter would reset every time uvicorn reloaded and hand out a fresh
 20 requests, which is precisely the accounting error the breaker exists to
-prevent. It shares the app's SQLite file and its write transaction, so two
-concurrent runs cannot both consume the last request.
+prevent. It shares the app's Postgres connection pool and its write transaction,
+so two concurrent runs cannot both consume the last request.
 
 Counting is by UTC day, matching how the providers reckon their own quotas
 rather than the operator's local midnight.
+
+MIGRATED FROM SQLITE alongside storage.py: `?` -> `%s`, `except sqlite3.Error`
+-> `except psycopg2.Error`. The upsert (`ON CONFLICT ... DO UPDATE`) needed no
+change -- that syntax is shared between SQLite and Postgres.
 """
-import sqlite3
 import sys
 from datetime import datetime, timezone
+
+import psycopg2
 
 import config
 import storage
@@ -49,8 +54,8 @@ def limit_for(provider: str) -> int:
     return config.DAILY_QUOTA_VISION if provider == VISION else config.DAILY_QUOTA_TEXT
 
 
-def _ensure_table(conn):
-    conn.execute(
+def _ensure_table(cur):
+    cur.execute(
         """CREATE TABLE IF NOT EXISTS extraction_quota (
             day TEXT NOT NULL,
             provider TEXT NOT NULL,
@@ -65,14 +70,17 @@ def used(provider: str, day: str = None) -> int:
     try:
         conn = storage.get_conn()
         try:
-            _ensure_table(conn)
-            row = conn.execute(
-                "SELECT used FROM extraction_quota WHERE day=? AND provider=?",
-                (day or _today(), provider)).fetchone()
+            with conn.cursor() as cur:
+                _ensure_table(cur)
+                cur.execute(
+                    "SELECT used FROM extraction_quota WHERE day=%s AND provider=%s",
+                    (day or _today(), provider))
+                row = cur.fetchone()
+            conn.commit()
             return row["used"] if row else 0
         finally:
             conn.close()
-    except sqlite3.Error:
+    except psycopg2.Error:
         return 0
 
 
@@ -87,7 +95,9 @@ def try_consume(provider: str) -> bool:
     """Reserve one request against today's budget. True if the call may proceed.
 
     Read and increment happen inside one write transaction, so the last request
-    of the day cannot be handed to two concurrent runs.
+    of the day cannot be handed to two concurrent runs -- the row's own PK
+    (day, provider) means the UPSERT below serialises on Postgres's normal
+    row-level locking with no extra FOR UPDATE needed.
 
     A failure of the counter itself is deliberately FAIL-OPEN: it returns True
     and logs. This is a cost guard, not a security control -- refusing to
@@ -106,18 +116,20 @@ def try_consume(provider: str) -> bool:
     day = _today()
     try:
         with storage.write_txn() as conn:
-            _ensure_table(conn)
-            row = conn.execute(
-                "SELECT used FROM extraction_quota WHERE day=? AND provider=?",
-                (day, provider)).fetchone()
-            spent = row["used"] if row else 0
-            if spent >= limit:
-                return False
-            conn.execute(
-                """INSERT INTO extraction_quota (day, provider, used) VALUES (?,?,1)
-                   ON CONFLICT(day, provider) DO UPDATE SET used = used + 1""",
-                (day, provider))
-            return True
+            with conn.cursor() as cur:
+                _ensure_table(cur)
+                cur.execute(
+                    "SELECT used FROM extraction_quota WHERE day=%s AND provider=%s FOR UPDATE",
+                    (day, provider))
+                row = cur.fetchone()
+                spent = row["used"] if row else 0
+                if spent >= limit:
+                    return False
+                cur.execute(
+                    """INSERT INTO extraction_quota (day, provider, used) VALUES (%s,%s,1)
+                       ON CONFLICT (day, provider) DO UPDATE SET used = extraction_quota.used + 1""",
+                    (day, provider))
+                return True
     except Exception as exc:
         print(f"[quota] counter unavailable ({exc.__class__.__name__}); allowing the call",
               file=sys.stderr)

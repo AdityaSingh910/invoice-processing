@@ -35,10 +35,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
+TESTS = os.path.dirname(os.path.abspath(__file__))
+if TESTS not in sys.path:
+    sys.path.insert(0, TESTS)
 
 import matching    # noqa: E402
 import rules       # noqa: E402
 import storage     # noqa: E402
+import pg_schema   # noqa: E402
 
 ACME = "Acme Office Supplies"        # PO-1001, $1,240
 GLOBEX = "Globex Logistics"          # PO-1002, $5,000
@@ -46,10 +50,10 @@ INITECH = "Initech Consulting"       # PO-1003, $8,200
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "DB_PATH", str(tmp_path / "multi.db"))
-    storage.init_db(reset_runs=True)
-    return storage.DB_PATH
+def db(monkeypatch):
+    schema = pg_schema.fresh_schema(monkeypatch)
+    yield schema
+    pg_schema.drop_schema(schema)
 
 
 def invoice(total, refs, vendor=ACME, number="INV-M1", currency="USD"):

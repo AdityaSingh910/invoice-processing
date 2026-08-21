@@ -22,6 +22,9 @@ BACKEND = os.path.join(ROOT, "backend")
 SAMPLES = os.path.join(ROOT, "sample_invoices")
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
+TESTS = os.path.dirname(os.path.abspath(__file__))
+if TESTS not in sys.path:
+    sys.path.insert(0, TESTS)
 
 import auth        # noqa: E402
 import config      # noqa: E402
@@ -30,14 +33,20 @@ import matching    # noqa: E402
 import ratelimit   # noqa: E402
 import rules       # noqa: E402
 import storage     # noqa: E402
+import pg_schema   # noqa: E402
 from conftest import auth_headers, token_for   # noqa: E402
 
 HAPPY_PDF = os.path.join(SAMPLES, "01_happy_path_acme.pdf")
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "DB_PATH", str(tmp_path / "sec.db"))
+def db(monkeypatch):
+    # fresh_schema() calls the REAL config.load_dotenv() as part of setting up
+    # (it needs DATABASE_URL from .env to reach Postgres at all), so it runs
+    # BEFORE load_dotenv is stubbed out below -- otherwise DATABASE_URL would
+    # never be loaded and every test in this file would fail before even
+    # reaching what they are actually testing.
+    schema = pg_schema.fresh_schema(monkeypatch)
     # Keep every test in this file off the network and off both quotas.
     #
     # Deleting the variables is not enough on its own: entering the TestClient
@@ -47,9 +56,9 @@ def db(tmp_path, monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setattr(config, "load_dotenv", lambda: None)
-    storage.init_db(reset_runs=True)
     ratelimit.limiter.reset()
-    return storage.DB_PATH
+    yield schema
+    pg_schema.drop_schema(schema)
 
 
 @pytest.fixture

@@ -25,12 +25,16 @@ BACKEND = os.path.join(ROOT, "backend")
 SAMPLES = os.path.join(ROOT, "sample_invoices")
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
+TESTS = os.path.dirname(os.path.abspath(__file__))
+if TESTS not in sys.path:
+    sys.path.insert(0, TESTS)
 
 import auth         # noqa: E402
 import config       # noqa: E402
 import extraction   # noqa: E402
 import quota        # noqa: E402
 import storage      # noqa: E402
+import pg_schema   # noqa: E402
 
 TEXT_PDF = os.path.join(SAMPLES, "01_happy_path_acme.pdf")
 SCANNED_PDF = os.path.join(SAMPLES, "05_scanned_no_text.pdf")
@@ -42,10 +46,10 @@ def read(path):
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "DB_PATH", str(tmp_path / "prod.db"))
-    storage.init_db(reset_runs=True)
-    return storage.DB_PATH
+def db(monkeypatch):
+    schema = pg_schema.fresh_schema(monkeypatch)
+    yield schema
+    pg_schema.drop_schema(schema)
 
 
 @pytest.fixture
@@ -241,7 +245,7 @@ def test_yesterdays_usage_does_not_count_against_today(db, monkeypatch):
     monkeypatch.setattr(config, "DAILY_QUOTA_VISION", 2)
     conn = storage.get_conn()
     quota._ensure_table(conn)
-    conn.execute("INSERT INTO extraction_quota (day, provider, used) VALUES (?,?,?)",
+    conn.execute("INSERT INTO extraction_quota (day, provider, used) VALUES (%s,%s,%s)",
                  ("2020-01-01", quota.VISION, 99))
     conn.commit(); conn.close()
 

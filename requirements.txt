@@ -34,3 +34,10 @@ httpx==0.28.1
 # issuer for a hosted IdP means verifying against that provider's JWKS instead
 # of a local secret; nothing else changes.
 pyjwt==2.13.0
+
+# Database. PostgreSQL is the live application database in both development
+# and production (see backend/storage.py) -- there is no SQLite fallback.
+# psycopg2-binary bundles libpq so nothing extra needs installing to connect;
+# the plain (non-binary) package is recommended for production builds that
+# compile their own dependencies, but this project has no such build step.
+psycopg2-binary==2.9.10
