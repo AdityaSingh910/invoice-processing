@@ -316,6 +316,23 @@ def document_s3_endpoint_url() -> str:
     return os.environ.get(DOCUMENT_S3_ENDPOINT_ENV, "").strip() or None
 
 
+# --------------------------------------------------------------------------
+# Review claims (Phase D)
+#
+# How long an employee's claim on a NEEDS_REVIEW invoice holds before it is
+# eligible to be taken over. A lease, not a permanent lock -- a closed browser
+# tab or a lost connection must not block an invoice forever, and there is no
+# background sweep job; the next claim attempt after this window simply finds
+# the old claim expired and takes over (storage.claim_review). Read at call
+# time, like every other env-backed setting in this file.
+# --------------------------------------------------------------------------
+REVIEW_CLAIM_LEASE_MINUTES_ENV = "REVIEW_CLAIM_LEASE_MINUTES"
+
+
+def review_claim_lease_minutes() -> int:
+    return int(os.environ.get(REVIEW_CLAIM_LEASE_MINUTES_ENV, "15") or 15)
+
+
 def load_dotenv():
     """Minimal .env loader (KEY=VALUE per line). Real environment wins."""
     if not os.path.isfile(ENV_PATH):

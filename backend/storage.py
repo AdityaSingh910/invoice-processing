@@ -44,7 +44,7 @@ import os
 import re
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psycopg2
 import psycopg2.extras
@@ -267,6 +267,217 @@ def _write_allocations(conn, run_id, allocations):
             )
 
 
+def _insert_activity(cur, run_id, event_type, actor, note=None, metadata=None):
+    """Append one activity row on an already-open cursor, inside a caller's
+    own transaction -- so an activity event always lands atomically with the
+    write it describes (a run being created, a claim taken, a decision
+    recorded), never as a separate step that could succeed or fail on its own
+    and leave the history disagreeing with what actually happened."""
+    cur.execute(
+        """INSERT INTO invoice_activity (run_id, event_type, actor, created_at, note, metadata_json)
+           VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+        (run_id, event_type, actor, datetime.now(timezone.utc).isoformat(), note,
+         json.dumps(metadata) if metadata is not None else None),
+    )
+    return cur.fetchone()["id"]
+
+
+def log_activity(run_id: int, event_type: str, actor: str = None, note: str = None,
+                 metadata: dict = None):
+    """Append one activity row in its own transaction, for callers with no
+    open cursor of their own (e.g. logging a document view from the API
+    layer). Prefer `_insert_activity` when already inside a `write_txn()`."""
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            return _insert_activity(cur, run_id, event_type, actor, note, metadata)
+
+
+def list_activity(run_id: int):
+    """The full chronological history for a run, oldest first. Immutable by
+    construction -- this table is never UPDATEd or individually deleted from,
+    only inserted into (or cleared as a whole run's history, in
+    clear_run_history)."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, run_id, event_type, actor, created_at, note, metadata_json
+                   FROM invoice_activity WHERE run_id=%s ORDER BY id ASC""",
+                (run_id,))
+            rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    for r in rows:
+        r["metadata"] = json.loads(r.pop("metadata_json")) if r.get("metadata_json") else None
+    return rows
+
+
+def get_active_claim(run_id: int):
+    """Who currently owns the review of this run, or None.
+
+    DERIVED, not stored: the most recent review_claims row for this run that
+    has not been released AND whose lease has not expired. A claim past its
+    `expires_at` reads as "no active claim" here even before anything has
+    gone back and marked it released -- the row is cleaned up lazily by the
+    next call to claim_review(), but callers that only want to know "is
+    someone reviewing this right now" never have to wait for that cleanup to
+    get the right answer.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, run_id, claimed_by, claimed_at, expires_at FROM review_claims
+                   WHERE run_id=%s AND released_at IS NULL ORDER BY id DESC LIMIT 1""",
+                (run_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    if row["expires_at"] <= datetime.now(timezone.utc).isoformat():
+        return None
+    return dict(row)
+
+
+def claim_review(run_id: int, username: str, lease_minutes: int = None):
+    """Claim exclusive ownership of a NEEDS_REVIEW run for human review.
+
+    THE CONCURRENCY GUARANTEE
+
+    `SELECT ... FOR UPDATE` on the `runs` row, exactly the same tool
+    `save_run_checked` uses to serialise two invoices racing the same PO --
+    here it serialises two employees racing the same run. Two concurrent
+    claim attempts for the same run_id cannot both read "no active claim" and
+    both insert one: whichever commits first is the winner, and the second
+    sees the first's row and is refused. The database is the authority, not a
+    frontend timer or an in-memory flag, which is why this works correctly
+    across multiple worker processes and would still work correctly if this
+    application ever ran more than one.
+
+    THREE OUTCOMES, NOT TWO
+
+    * No active claim (none ever existed, or the last one was released or has
+      expired) -> a new claim row is inserted and this call wins.
+    * An active, unexpired claim held by THIS SAME username -> treated as a
+      heartbeat/retry, not a conflict: the lease is renewed and `renewed` is
+      True. Covers a caller that already holds the claim retrying the same
+      request (a flaky network, a double click) without being told "someone
+      else has this".
+    * An active, unexpired claim held by SOMEONE ELSE -> refused. The caller
+      is told who holds it and when the lease expires, so the frontend can
+      show "currently being reviewed by X" rather than a bare error.
+
+    Only a NEEDS_REVIEW run can be claimed -- reviewing an already-decided run
+    makes no sense, and this reuses the exact eligibility test
+    record_human_review() already applies for the same reason.
+    """
+    lease_minutes = lease_minutes or config.review_claim_lease_minutes()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    expires_iso = (now + timedelta(minutes=lease_minutes)).isoformat()
+
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, status, automated_decision FROM runs WHERE id=%s FOR UPDATE",
+                (run_id,))
+            run = cur.fetchone()
+            if run is None:
+                return {"ok": False, "error": "unknown run"}
+
+            automated = run["automated_decision"] or run["status"]
+            if automated != "NEEDS_REVIEW":
+                return {"ok": False,
+                        "error": f"only NEEDS_REVIEW runs can be claimed (this one is {automated})"}
+
+            cur.execute(
+                """SELECT id, claimed_by, claimed_at, expires_at FROM review_claims
+                   WHERE run_id=%s AND released_at IS NULL ORDER BY id DESC LIMIT 1""",
+                (run_id,))
+            active = cur.fetchone()
+
+            if active and active["expires_at"] > now_iso:
+                if active["claimed_by"] == username:
+                    cur.execute("UPDATE review_claims SET expires_at=%s WHERE id=%s",
+                               (expires_iso, active["id"]))
+                    return {"ok": True, "claim_id": active["id"], "claimed_by": username,
+                            "claimed_at": active["claimed_at"], "expires_at": expires_iso,
+                            "renewed": True}
+                return {"ok": False, "error": "claimed",
+                        "claimed_by": active["claimed_by"], "expires_at": active["expires_at"]}
+
+            if active:
+                # Unexpired-but-unreleased claim from a prior holder: the
+                # lease ran out and nobody came back to release it (a closed
+                # tab, a lost connection). Close it out as expired rather than
+                # silently overwriting it, so the history still shows what
+                # happened to it.
+                cur.execute(
+                    "UPDATE review_claims SET released_at=%s, release_reason='expired' WHERE id=%s",
+                    (now_iso, active["id"]))
+                _insert_activity(cur, run_id, "REVIEW_RELEASED", None,
+                                 note="Claim lease expired without action; taken over on next claim.",
+                                 metadata={"claim_id": active["id"],
+                                           "previous_holder": active["claimed_by"]})
+
+            cur.execute(
+                """INSERT INTO review_claims (run_id, claimed_by, claimed_at, expires_at)
+                   VALUES (%s,%s,%s,%s) RETURNING id""",
+                (run_id, username, now_iso, expires_iso))
+            claim_id = cur.fetchone()["id"]
+            _insert_activity(cur, run_id, "REVIEW_CLAIMED", username,
+                             metadata={"claim_id": claim_id, "expires_at": expires_iso})
+            return {"ok": True, "claim_id": claim_id, "claimed_by": username,
+                    "claimed_at": now_iso, "expires_at": expires_iso, "renewed": False}
+
+
+def release_review_claim(run_id: int, username: str, is_admin: bool = False,
+                         reason: str = "released"):
+    """Release the active claim on a run.
+
+    Only the claim's own holder may release it, unless the caller is an
+    admin -- the same override authority `invoice:admin` already carries for
+    `/status`, applied here so a departed or unreachable employee's claim can
+    be freed without waiting out the full lease.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, claimed_by FROM review_claims
+                   WHERE run_id=%s AND released_at IS NULL ORDER BY id DESC LIMIT 1 FOR UPDATE""",
+                (run_id,))
+            active = cur.fetchone()
+            if not active:
+                return {"ok": False, "error": "no active claim on this run"}
+            if active["claimed_by"] != username and not is_admin:
+                return {"ok": False, "error": "claimed by another reviewer",
+                        "claimed_by": active["claimed_by"]}
+            now_iso = datetime.now(timezone.utc).isoformat()
+            cur.execute("UPDATE review_claims SET released_at=%s, release_reason=%s WHERE id=%s",
+                       (now_iso, reason, active["id"]))
+            _insert_activity(cur, run_id, "REVIEW_RELEASED", username,
+                             metadata={"claim_id": active["id"], "reason": reason})
+            return {"ok": True, "run_id": run_id, "released_by": username}
+
+
+def add_comment(run_id: int, username: str, note: str):
+    """Append a standalone note to a run's activity history, without ruling
+    on it -- for a reviewer flagging something mid-review before accepting or
+    rejecting. Distinct from the note a review decision itself may carry
+    (record_human_review), which is attached to that decision specifically."""
+    note = (note or "").strip()
+    if not note:
+        return {"ok": False, "error": "note must not be empty"}
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM runs WHERE id=%s", (run_id,))
+            if cur.fetchone() is None:
+                return {"ok": False, "error": "unknown run"}
+            activity_id = _insert_activity(cur, run_id, "COMMENT_ADDED", username, note=note)
+            return {"ok": True, "activity_id": activity_id}
+
+
 def allocations_from_match(po_match: dict, total):
     """The allocation rows implied by a PO match.
 
@@ -483,6 +694,81 @@ def init_db(reset_runs: bool = False):
                 )"""
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_run_id ON documents(run_id)")
+
+            # WHAT HAPPENED TO THIS INVOICE, AND WHEN (Phase D).
+            #
+            # Deliberately a SEPARATE concept from the audit trail on `runs`.
+            # `audit_json` explains why the DETERMINISTIC RULES reached the
+            # verdict they did -- it is evidence about the process, written
+            # once by decide() and never appended to. This table is evidence
+            # about PEOPLE (and the system, acting on their behalf) over time:
+            # who claimed a review, who accepted or rejected it, who left a
+            # note, who viewed the source document. Append-only, never
+            # updated or deleted except as a unit when the run itself is
+            # cleared (clear_run_history) -- a later event must never erase
+            # or overwrite an earlier one, or the question "who did what, and
+            # when" stops being answerable.
+            #
+            # `actor` is the authenticated username, or NULL for an event the
+            # system generated on its own (a cascade auto-approval, a claim
+            # that expired unattended) -- never a name invented for either
+            # case. `metadata_json` carries whatever structured detail is
+            # useful for that event type (a claim id, an expiry, a status
+            # transition); `note` is free text, used for review notes and
+            # standalone comments.
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS invoice_activity (
+                    id SERIAL PRIMARY KEY,
+                    run_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    actor TEXT,
+                    created_at TEXT NOT NULL,
+                    note TEXT,
+                    metadata_json TEXT,
+                    FOREIGN KEY (run_id) REFERENCES runs(id)
+                )"""
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_activity_run_id ON invoice_activity(run_id)")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_activity_created_at ON invoice_activity(created_at)")
+
+            # WHO IS CURRENTLY REVIEWING THIS INVOICE (Phase D).
+            #
+            # One employee at a time may own the review of a NEEDS_REVIEW
+            # invoice. No `runs.current_reviewer` column and no in-memory
+            # lock -- both would drift the moment two processes or two
+            # requests raced, and an in-memory value cannot be shared across
+            # workers at all. Instead this is append-only, same spirit as
+            # `run_allocations`: a row is an immutable fact ("X claimed this
+            # run at T, until it expires or is released"), and "who currently
+            # holds it" is DERIVED at read time (get_active_claim) as the
+            # most recent row for the run with `released_at IS NULL` and an
+            # unexpired lease -- never a stored "current owner" field that
+            # could go stale.
+            #
+            # `expires_at` is a LEASE, not a permanent lock: a claim with no
+            # activity for config.review_claim_lease_minutes() is treated as
+            # abandoned by the next claim attempt, which marks it released
+            # (release_reason='expired') and takes over. There is no
+            # background sweep -- exactly like PO balances, staleness is
+            # resolved lazily, on the next read/write that cares, rather than
+            # by a job that has to run on a schedule to stay correct.
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS review_claims (
+                    id SERIAL PRIMARY KEY,
+                    run_id INTEGER NOT NULL,
+                    claimed_by TEXT NOT NULL,
+                    claimed_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    released_at TEXT,
+                    release_reason TEXT,
+                    FOREIGN KEY (run_id) REFERENCES runs(id)
+                )"""
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_claims_run_id ON review_claims(run_id)")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_claims_active ON review_claims(run_id, released_at)")
+
             # Read heavily by find_duplicate() (invoice_number equality) and by every
             # ledger query that filters on status -- neither existed as an index under
             # SQLite because a single-file database at this volume never needed one;
@@ -704,7 +990,7 @@ def find_duplicate(vendor_name, invoice_number, total):
 
 
 def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: list,
-                     reasons: list, tolerance_for=None, audit=None):
+                     reasons: list, tolerance_for=None, audit=None, uploaded_by=None):
     """Persist a run, re-verifying the PO balance under a row lock first.
 
     The pipeline computes its verdict outside any transaction -- it has to, since
@@ -813,10 +1099,19 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
             # its allocations would be an invoice charged to nothing, and the PO it
             # consumed would silently read as still available.
             _write_allocations(conn, run_id, allocations_from_match(po_match, total))
+            # Activity, same transaction: a run that exists with no record of
+            # having been processed would be a gap in the very history this
+            # table exists to keep complete.
+            _insert_activity(cur, run_id, "PROCESSING_COMPLETED", uploaded_by,
+                             metadata={"status": status})
+            if status == "NEEDS_REVIEW":
+                _insert_activity(cur, run_id, "REVIEW_REQUIRED", None,
+                                 metadata={"reason": (audit or {}).get("reason")})
         return run_id, status, extra
 
 
-def set_run_status(run_id: int, new_status: str, note: str = None):
+def set_run_status(run_id: int, new_status: str, note: str = None,
+                   claim_release_reason: str = "resolved"):
     """Change a run's status. This is the reversal mechanism.
 
     There is no balance to refund. Consumption is DERIVED -- `_consumed` sums
@@ -855,6 +1150,29 @@ def set_run_status(run_id: int, new_status: str, note: str = None):
             cur.execute("""UPDATE runs SET final_decision=%s
                           WHERE id=%s AND human_decision IS NULL""",
                        (new_status, run_id))
+
+            # A review claim exists to protect a NEEDS_REVIEW invoice from
+            # being worked by two employees at once. The moment the run
+            # leaves that state -- a human ruling, a cascade re-evaluation,
+            # an admin override -- there is nothing left to protect, so any
+            # active claim is released automatically here rather than
+            # sitting there until its lease happens to expire on its own.
+            if old_status == "NEEDS_REVIEW" and new_status != "NEEDS_REVIEW":
+                cur.execute(
+                    """SELECT id, claimed_by FROM review_claims
+                       WHERE run_id=%s AND released_at IS NULL ORDER BY id DESC LIMIT 1""",
+                    (run_id,))
+                active = cur.fetchone()
+                if active:
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    cur.execute(
+                        "UPDATE review_claims SET released_at=%s, release_reason=%s WHERE id=%s",
+                        (now_iso, claim_release_reason, active["id"]))
+                    _insert_activity(
+                        cur, run_id, "REVIEW_RELEASED", None,
+                        note=f"Released automatically: the invoice left NEEDS_REVIEW "
+                             f"({claim_release_reason}).",
+                        metadata={"claim_id": active["id"], "previous_holder": active["claimed_by"]})
             return True, old_status, po_number
 
 
@@ -932,13 +1250,28 @@ def record_human_review(run_id: int, decision: str, reviewer: str = None, note: 
         return {"ok": False,
                 "error": f"this run has already been reviewed ({row['human_decision']})"}
 
+    reviewer = (reviewer or "").strip() or None    # never invent an identity
+
+    # A run actively claimed by someone else is off-limits to a review
+    # submitted under a different identity -- the same ownership guarantee
+    # claim_review() enforces at claim time, checked again here so a second
+    # reviewer cannot simply skip the claim step and submit anyway. Claiming
+    # is optional in this application (an unclaimed NEEDS_REVIEW run has
+    # nothing to check against, and every review submitted before this phase
+    # existed was exactly that), so this only ever refuses when a claim is
+    # actually in force and belongs to someone else.
+    claim = get_active_claim(run_id)
+    if claim and claim["claimed_by"] != reviewer:
+        return {"ok": False, "error": "claimed",
+                "claimed_by": claim["claimed_by"], "expires_at": claim["expires_at"]}
+
     ok, old_status, po_number = set_run_status(
         run_id, new_status,
-        note or f"Human review: {decision} by {reviewer or 'an unattributed reviewer'}.")
+        note or f"Human review: {decision} by {reviewer or 'an unattributed reviewer'}.",
+        claim_release_reason="completed")
     if not ok:
         return {"ok": False, "error": "could not update run status"}
 
-    reviewer = (reviewer or "").strip() or None    # never invent an identity
     reviewed_at = datetime.now(timezone.utc).isoformat()
     with write_txn() as conn:
         with conn.cursor() as cur:
@@ -946,6 +1279,11 @@ def record_human_review(run_id: int, decision: str, reviewer: str = None, note: 
                 """UPDATE runs SET human_decision=%s, final_decision=%s, reviewed_by=%s,
                    reviewed_at=%s, review_note=%s WHERE id=%s""",
                 (decision, final_decision, reviewer, reviewed_at, note, run_id))
+            # `decision` is exactly "ACCEPTED" or "REJECTED" -- the same
+            # vocabulary the activity/event-type list uses, so no translation
+            # step exists to drift out of sync with what was actually stored.
+            _insert_activity(cur, run_id, decision, reviewer, note=note,
+                             metadata={"final_decision": final_decision})
 
     return {
         "ok": True,
@@ -982,7 +1320,8 @@ def runs_pending_on_po(po_number: str):
         conn.close()
 
 
-def save_run(filename, status, extracted: dict, po_match: dict, stages: list, reasons: list):
+def save_run(filename, status, extracted: dict, po_match: dict, stages: list, reasons: list,
+            uploaded_by=None):
     # write_txn(), not a bare get_conn(): the run row and its allocation rows
     # must land as one unit, or a failure between the two would leave a run
     # with no allocations -- an invoice charged to nothing, silently reading
@@ -1012,6 +1351,11 @@ def save_run(filename, status, extracted: dict, po_match: dict, stages: list, re
             )
             run_id = cur.fetchone()["id"]
             _write_allocations(conn, run_id, allocations_from_match(po_match, extracted.get("total")))
+            _insert_activity(cur, run_id, "PROCESSING_COMPLETED", uploaded_by,
+                             metadata={"status": status})
+            if status == "NEEDS_REVIEW":
+                _insert_activity(cur, run_id, "REVIEW_REQUIRED", None,
+                                 metadata={"reason": reasons[0]["text"] if reasons else None})
         return run_id
 
 
@@ -1036,14 +1380,25 @@ def list_runs(limit=200):
 
 
 def get_run(run_id):
+    """A single run, hydrated, plus who (if anyone) currently holds its
+    review claim -- so a caller opening one specific invoice (the exact
+    scenario Phase D's collaborative review exists for) can see that state
+    without a second round trip. Deliberately not done in list_runs(): that
+    returns up to 200 rows in one call, and adding a claim lookup per row
+    would turn a single query into a couple hundred for a bulk listing that
+    does not need it."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM runs WHERE id=%s", (run_id,))
             row = cur.fetchone()
-            return _hydrate(dict(row)) if row else None
+            if row is None:
+                return None
+            hydrated = _hydrate(dict(row))
     finally:
         conn.close()
+    hydrated["current_claim"] = get_active_claim(run_id)
+    return hydrated
 
 
 def clear_run_history():
@@ -1072,11 +1427,16 @@ def clear_run_history():
             # once the transaction commits there is no way back to the keys.
             cur.execute("SELECT storage_backend, storage_key FROM documents")
             to_delete = [dict(r) for r in cur.fetchall()]
-            # Allocations and documents are rows ABOUT runs, and leaving them
-            # behind would charge every PO against invoices that no longer
-            # exist, or point the document viewer at a run that is gone.
+            # Allocations, documents, activity and claims are all rows ABOUT
+            # runs, and leaving them behind would charge every PO against
+            # invoices that no longer exist, point the document viewer or the
+            # activity timeline at a run that is gone, or leave a claim
+            # dangling on nothing. Deleted before `runs` itself for the same
+            # reason: Postgres enforces the foreign key.
             cur.execute("DELETE FROM run_allocations")
             cur.execute("DELETE FROM documents")
+            cur.execute("DELETE FROM review_claims")
+            cur.execute("DELETE FROM invoice_activity")
             cur.execute("DELETE FROM runs")
             deleted = cur.rowcount
 

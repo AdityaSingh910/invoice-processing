@@ -231,6 +231,8 @@ def reevaluate_po_queue(po_number: str, triggered_by: int = None):
         )
         ok, old, _ = storage.set_run_status(run["id"], "APPROVED", note)
         if ok:
+            storage.log_activity(run["id"], "AUTO_APPROVED", actor=None, note=note,
+                                 metadata={"po_number": po_number, "triggered_by": triggered_by})
             changed.append({"run_id": run["id"], "from": old, "to": "APPROVED", "reason": note})
     return changed
 

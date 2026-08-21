@@ -21,9 +21,10 @@ suite is green.**
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light-first enterprise design with an explicit dark-mode toggle |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **480 passing** deterministically, 19 files, no live API calls |
+| Automated tests | **523 passing** deterministically, 20 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
+| Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
 | Document storage | Uploaded PDFs persist after processing — metadata in Postgres, bytes behind a swappable local/S3 store |
@@ -657,6 +658,49 @@ decision, the same fail-safe posture as the daily extraction-quota breaker.
 their backing files along with the runs they belong to, so the samples stay
 repeatable exactly as before.
 
+### Review collaboration and activity history
+
+Several employees can work the same review queue at once, and the database —
+not the frontend — is the authority on what happened and who owns what.
+
+**Two separate concepts, kept separate.** The audit trail (`audit_json` on
+`runs`) explains why the *deterministic rules* reached a verdict — written
+once by `decide()`, never appended to. The new `invoice_activity` table
+records what *people* (and the system, acting on their behalf) did about it
+afterwards: claimed a review, released it, added a note, accepted or
+rejected, viewed or downloaded the source document. It is append-only — a
+later event never overwrites an earlier one, so the full history of who
+touched a run stays readable.
+
+**Claiming is a lease, not a lock a person has to remember to release.** One
+employee at a time may claim a `NEEDS_REVIEW` run (`POST
+/api/runs/{id}/review/claim`); a second claim attempt gets a `409` naming who
+currently holds it. Enforced with `SELECT ... FOR UPDATE` on the run row —
+the same tool `save_run_checked` already uses to serialise two invoices
+racing one PO — so two employees racing this endpoint cannot both win, proven
+under real threads against real Postgres, not a mock. Every claim carries a
+lease (`REVIEW_CLAIM_LEASE_MINUTES`, default 15); a closed tab or a lost
+connection does not block the invoice forever, because the *next* claim
+attempt after the lease lapses simply finds it expired and takes over. There
+is no background sweep job — staleness is resolved lazily, the same
+philosophy PO balances already use.
+
+A run leaving `NEEDS_REVIEW` for any reason — a human ruling, a cascade
+re-evaluation freeing PO budget, an admin override — automatically releases
+whatever claim was on it; there is nothing left to protect once review is no
+longer needed. A review submitted while someone *else* holds the claim is
+refused with the same `409` shape as claiming itself.
+
+`GET /api/runs/{id}/activity` returns the chronological history plus who (if
+anyone) currently holds the claim; `GET /api/runs/{id}` also carries
+`current_claim` directly, so opening one specific invoice never needs a
+second round trip to answer "is someone already looking at this?" Claiming,
+releasing and adding a standalone comment (`POST /api/runs/{id}/comment`) all
+require `invoice:review`, the same scope reviewing itself already requires;
+reading activity requires only `invoice:read`, matching every other run-level
+read. Reviewer identity is always the authenticated token's username, never a
+request-body field — the claim endpoints do not even accept one.
+
 ### API security
 
 The frontend is treated as an untrusted client. CORS is configured but is not a
@@ -739,6 +783,10 @@ GET  /api/runs/{id}              one run, including its audit trail[invoice:read
 GET  /api/runs/{id}/document     metadata for the source PDF       [invoice:read]
 GET  /api/runs/{id}/document/download  the PDF itself (?inline=1)  [invoice:read]
 POST /api/runs/{id}/review       accept / reject a held invoice    [invoice:review]
+POST /api/runs/{id}/review/claim   claim exclusive review ownership[invoice:review]
+POST /api/runs/{id}/review/release release a review claim          [invoice:review]
+POST /api/runs/{id}/comment      add a note without deciding       [invoice:review]
+GET  /api/runs/{id}/activity     who did what, and when, plus the current claim [invoice:read]
 POST /api/runs/{id}/status       override any run's status         [invoice:admin]
 POST /api/admin/reset-demo       clear run history so samples replay[invoice:admin]
 GET  /api/reference              POs + approved vendors            [invoice:read]
@@ -785,6 +833,7 @@ DAILY_QUOTA_TEXT=500
 DOCUMENT_STORE_BACKEND=local  # local | s3 -- see "Document storage" below
 DOCUMENT_STORAGE_DIR=./data/documents
 DOCUMENT_S3_BUCKET=           # required if DOCUMENT_STORE_BACKEND=s3
+REVIEW_CLAIM_LEASE_MINUTES=15 # see "Review collaboration and activity history"
 ```
 
 ---
@@ -889,7 +938,7 @@ sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
 docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            19 files, 480 tests, both providers mocked
+tests/            20 files, 523 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

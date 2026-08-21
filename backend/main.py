@@ -160,7 +160,8 @@ async def _abort_unreadable(filename, message, stages, stage, pdf_bytes=b"",
 
     extracted = ExtractedInvoice(raw_text="", extraction_method="none").to_dict()
     po_match = matching.empty_match(None)
-    run_id = storage.save_run(filename, status, extracted, po_match, stages, reasons)
+    run_id = storage.save_run(filename, status, extracted, po_match, stages, reasons,
+                              uploaded_by=uploaded_by)
     # An unreadable file is still a real upload worth keeping -- a reviewer
     # routing it for manual handling needs the original document, not just
     # the fact that nothing could be read from it.
@@ -372,7 +373,7 @@ async def run_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str = None,
     # downgrades a stale APPROVED rather than overspending the PO.
     run_id, status, extra = storage.save_run_checked(
         filename, status, extracted, po_match, stages, reasons,
-        tolerance_for=matching.tolerance_for, audit=audit)
+        tolerance_for=matching.tolerance_for, audit=audit, uploaded_by=uploaded_by)
     if extra:
         reasons = list(reasons) + [extra]
         # save_run_checked re-checked the balance under the write lock and
@@ -575,6 +576,7 @@ def get_run_document(run_id: int,
     file physically lives, which is nobody's business outside this process.
     """
     doc = _get_run_document_or_404(run_id)
+    storage.log_activity(run_id, "DOCUMENT_VIEWED", actor=principal.username)
     return {
         "id": doc["id"],
         "run_id": doc["run_id"],
@@ -615,6 +617,9 @@ def download_run_document(run_id: int, inline: bool = False,
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Document content is no longer available")
 
+    storage.log_activity(run_id, "DOCUMENT_DOWNLOADED", actor=principal.username,
+                         metadata={"inline": inline})
+
     # original_filename was already reduced to a safe, control-character-free
     # basename at upload time (main.py's _safe_filename) before it was ever
     # stored, so it is safe to place directly in this header.
@@ -648,6 +653,9 @@ def change_run_status(run_id: int, payload: dict = Body(...),
     if not ok:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="Unknown run, or invalid status")
+    if old_status != new_status:
+        storage.log_activity(run_id, "STATUS_OVERRIDDEN", actor=principal.username,
+                             note=note, metadata={"from": old_status, "to": new_status})
 
     cascaded = []
     if po_number and old_status != new_status:
@@ -710,9 +718,18 @@ def review_run(run_id: int, payload: dict = Body(...),
         note=(payload or {}).get("note"),
     )
     if not result.get("ok"):
+        err = result["error"]
+        if err == "claimed":
+            # Someone else is actively reviewing this run. Told as a rich 409,
+            # not a bare string, so the caller can render "currently being
+            # reviewed by X" without a second lookup.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"error": f"This invoice is currently being reviewed by "
+                                 f"{result['claimed_by']}.",
+                       "claimed_by": result["claimed_by"], "expires_at": result["expires_at"]})
         # 404 for a run that does not exist, 409 for one that exists but is not
         # in a reviewable state -- a caller can act on the difference.
-        err = result["error"]
         code = (status.HTTP_404_NOT_FOUND if "unknown run" in err
                 else status.HTTP_409_CONFLICT
                 if ("NEEDS_REVIEW" in err or "already been reviewed" in err)
@@ -729,6 +746,94 @@ def review_run(run_id: int, payload: dict = Body(...),
     result["remaining_after"] = storage.remaining_for_po(po_number) if po_number else None
     result["run"] = storage.get_run(run_id)
     return result
+
+
+@app.post("/api/runs/{run_id}/review/claim")
+def claim_run_review(run_id: int,
+                     principal: auth.Principal = Security(auth.current_principal,
+                                                          scopes=["invoice:review"])):
+    """Claim exclusive ownership of a NEEDS_REVIEW run for human review.
+
+    One employee at a time: enforced by a row lock in the database
+    (storage.claim_review), not a frontend timer or an in-memory flag, so two
+    people racing this endpoint for the same run cannot both win. A claim
+    carries a lease (config.review_claim_lease_minutes()) so a closed tab or a
+    lost connection does not block the invoice forever -- the next claim
+    attempt after it expires simply takes over. Claiming again with the same
+    identity while already holding the claim renews the lease rather than
+    conflicting with itself, so a retried or double-submitted request is safe.
+    """
+    result = storage.claim_review(run_id, principal.username)
+    if not result.get("ok"):
+        err = result.get("error", "")
+        if err == "claimed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"error": f"This invoice is currently being reviewed by "
+                                 f"{result['claimed_by']}.",
+                       "claimed_by": result["claimed_by"], "expires_at": result["expires_at"]})
+        code = status.HTTP_404_NOT_FOUND if "unknown run" in err else status.HTTP_409_CONFLICT
+        raise HTTPException(status_code=code, detail=err)
+    return result
+
+
+@app.post("/api/runs/{run_id}/review/release")
+def release_run_review(run_id: int,
+                       principal: auth.Principal = Security(auth.current_principal,
+                                                            scopes=["invoice:review"])):
+    """Release a review claim. Only the claim's own holder may release it,
+    unless the caller also has 'invoice:admin' -- the same override authority
+    that scope already carries for /status, here used to free a claim left by
+    someone who is no longer available to release it themselves."""
+    result = storage.release_review_claim(
+        run_id, principal.username, is_admin=principal.has("invoice:admin"))
+    if not result.get("ok"):
+        err = result.get("error", "")
+        code = (status.HTTP_404_NOT_FOUND if "unknown run" in err
+               else status.HTTP_409_CONFLICT)
+        raise HTTPException(status_code=code, detail=err)
+    return result
+
+
+@app.post("/api/runs/{run_id}/comment")
+def add_run_comment(run_id: int, payload: dict = Body(...),
+                    principal: auth.Principal = Security(auth.current_principal,
+                                                         scopes=["invoice:review"])):
+    """Add a note to a run's activity history without ruling on it -- for a
+    reviewer flagging something mid-review, before an accept or reject.
+    Requires the same 'invoice:review' scope as claiming and deciding: a
+    comment is part of the review workflow, not general-purpose annotation."""
+    note = (payload or {}).get("note")
+    result = storage.add_comment(run_id, principal.username, note)
+    if not result.get("ok"):
+        err = result.get("error", "")
+        code = status.HTTP_404_NOT_FOUND if "unknown run" in err else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=err)
+    return result
+
+
+@app.get("/api/runs/{run_id}/activity")
+def get_run_activity(run_id: int,
+                     principal: auth.Principal = Security(auth.current_principal,
+                                                          scopes=["invoice:read"])):
+    """Chronological activity for a run -- who did what, and when -- plus who,
+    if anyone, currently holds its review claim.
+
+    Deliberately distinct from the run's own audit trail (`GET /api/runs/{id}`):
+    that explains why the DETERMINISTIC RULES reached the verdict they did.
+    This explains what PEOPLE (and the system, acting on their behalf) did
+    about it afterwards -- claimed it, released it, commented, decided,
+    viewed the source document. Same permission as reading the run itself:
+    an activity history is invoice data, not a separately-permissioned
+    resource, matching how the document endpoints already treat 'invoice:read'.
+    """
+    if not storage.get_run(run_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return {
+        "run_id": run_id,
+        "activity": storage.list_activity(run_id),
+        "current_claim": storage.get_active_claim(run_id),
+    }
 
 
 @app.get("/api/reference")
