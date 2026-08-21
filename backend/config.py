@@ -295,6 +295,16 @@ RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE = int(
 RATE_LIMIT_REPORTING_PER_MINUTE = int(
     os.environ.get("RATE_LIMIT_REPORTING_PER_MINUTE", "120") or 120)
 
+# Assistant questions per authenticated user per minute (Phase K2).
+#
+# Each one can cost a provider request, so this sits with processing rather
+# than with reading -- but a person genuinely does ask several questions in a
+# row, so it is well above the processing figure. The daily budget
+# (DAILY_QUOTA_CHAT) is the slower breaker behind it, the same pairing
+# extraction already has.
+RATE_LIMIT_CHAT_PER_MINUTE = int(
+    os.environ.get("RATE_LIMIT_CHAT_PER_MINUTE", "30") or 30)
+
 # Whether X-Forwarded-For may be believed when identifying a caller. Off by
 # default: the header is client-controlled, so trusting it on a directly-exposed
 # app lets anyone reset their own rate-limit counter by inventing one. Turn it on
@@ -377,6 +387,12 @@ CONTENT_SECURITY_POLICY = (os.environ.get("CONTENT_SECURITY_POLICY", "").strip()
 DAILY_QUOTA_ENABLED = os.environ.get("DAILY_QUOTA_ENABLED", "1").strip() not in ("0", "false", "False", "")
 DAILY_QUOTA_VISION = int(os.environ.get("DAILY_QUOTA_VISION", "20") or 20)
 DAILY_QUOTA_TEXT = int(os.environ.get("DAILY_QUOTA_TEXT", "500") or 500)
+# The assistant's own daily budget (Phase K2), kept SEPARATE from the text
+# budget above even though both spend Groq. If chat drew on DAILY_QUOTA_TEXT,
+# an afternoon of questions could exhaust the budget that reads invoices --
+# which is the exact failure this breaker exists to prevent, arriving through a
+# new door. Chat can starve itself; it cannot starve the pipeline.
+DAILY_QUOTA_CHAT = int(os.environ.get("DAILY_QUOTA_CHAT", "300") or 300)
 
 # --------------------------------------------------------------------------
 # Document storage (Phase C)
@@ -706,6 +722,7 @@ def refresh_env_settings():
     global CORS_ORIGINS, RATE_LIMIT_ENABLED, RATE_LIMIT_PROCESS_PER_MINUTE
     global RATE_LIMIT_IP_PER_MINUTE, RATE_LIMIT_LOGIN_PER_MINUTE
     global RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE, RATE_LIMIT_REPORTING_PER_MINUTE
+    global RATE_LIMIT_CHAT_PER_MINUTE
     global TRUST_PROXY_HEADERS, AUTH_ISSUER, AUTH_TOKEN_TTL_MINUTES
     global SECURITY_HEADERS_ENABLED, HSTS_MAX_AGE_SECONDS, CONTENT_SECURITY_POLICY
 
@@ -726,6 +743,7 @@ def refresh_env_settings():
     RATE_LIMIT_LOGIN_PER_MINUTE = _int("RATE_LIMIT_LOGIN_PER_MINUTE", 10)
     RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE = _int("RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE", 15)
     RATE_LIMIT_REPORTING_PER_MINUTE = _int("RATE_LIMIT_REPORTING_PER_MINUTE", 120)
+    RATE_LIMIT_CHAT_PER_MINUTE = _int("RATE_LIMIT_CHAT_PER_MINUTE", 30)
     TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "").strip() in (
         "1", "true", "True")
     AUTH_ISSUER = os.environ.get("AUTH_ISSUER", "invoice-processing")

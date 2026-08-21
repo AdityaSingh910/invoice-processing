@@ -24,6 +24,7 @@ import AppShell, {
   type Section,
 } from "@/components/layout/AppShell";
 import AnalyticsPage from "@/components/pages/AnalyticsPage";
+import AssistantPage from "@/components/pages/AssistantPage";
 import OverviewPage from "@/components/pages/OverviewPage";
 import ProcessPage from "@/components/pages/ProcessPage";
 import InvoicesPage from "@/components/pages/InvoicesPage";
@@ -85,6 +86,7 @@ export default function Home() {
           server per reporting window, so there is nothing here to hand down
           and nothing that would go stale if there were. */}
       {section === "analytics" && <AnalyticsPage />}
+      {section === "assistant" && <AssistantPage />}
       {section === "process" && <ProcessPage runs={runs} onRan={refresh} />}
       {section === "invoices" && <InvoicesPage runs={runs} initialFilter={invoicesFilter} />}
       {section === "reference" && (

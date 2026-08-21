@@ -195,3 +195,12 @@ export const IconAnalytics = (p: IconProps) => (
     <path d="M11.5 11V6.5" />
   </Svg>
 );
+
+/** The assistant (Phase K2). A speech bubble, because that is what every
+ *  interface in the world uses for one and inventing a novel glyph here would
+ *  only make the row harder to find. */
+export const IconChat = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H6l-3 2.5V4a1.5 1.5 0 0 1 1.5-1.5h7.5A1.5 1.5 0 0 1 13.5 4z" />
+  </Svg>
+);

@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 import analytics
 import auth
+import chat
 import config
 import documents
 import email_ingest
@@ -1642,6 +1643,89 @@ def get_log_event(stream: str, event_id: int,
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="No such log event")
     return row
+
+# --------------------------------------------------------------------------
+# The assistant (Phase K2)
+#
+# WHAT THESE ENDPOINTS ARE
+#
+# A read-only question-answering layer over records this caller can already
+# reach. `chat.py` holds the whole design; the two things worth knowing at the
+# routing level are:
+#
+#   * RETRIEVAL IS CHOSEN BY PYTHON, NOT BY THE MODEL. A question resolves to
+#     one intent in a frozen table, which names one retriever. The model never
+#     picks what to fetch, never receives a database handle, and never emits
+#     SQL -- so there is no path from a question, or from text injected into an
+#     invoice and echoed back, to a query nobody wrote.
+#
+#   * AUTHORIZATION HAPPENS BEFORE THE MODEL SEES ANYTHING. The retrievers are
+#     handed the authenticated principal and enforce the same scope rules the
+#     equivalent endpoints enforce -- in particular the per-person figures keep
+#     `/api/analytics/users`'s restriction (§7c.5): your own row unless you
+#     hold invoice:admin. The model is never asked to enforce a permission,
+#     because by the time it is called the data has already been narrowed.
+#
+# SCOPE is `invoice:read`, and this is not a widening: every retriever calls a
+# function that this caller could already reach through an existing endpoint.
+# The assistant rearranges what they can already read; it opens nothing new.
+#
+# RATE LIMITED like processing rather than like reading, because a question can
+# cost a provider request. The daily budget (quota.CHAT) sits behind it.
+# --------------------------------------------------------------------------
+
+@app.post("/api/chat")
+def post_chat(payload: dict = Body(...),
+              principal: auth.Principal = Depends(ratelimit.rate_limit_chat)):
+    """Ask the assistant a question about this application's records.
+
+    Body: {"message": str, "history": [{"role": "user"|"assistant",
+                                        "content": str}, ...]}
+
+    The reply always carries `answered_from`, so a client never has to guess
+    whether it is looking at application data or at a model's wording of it:
+
+        application_data                  -- retrieved, laid out by the server
+        application_data_phrased_by_model -- retrieved, then written up
+        application_policy                -- a fixed answer about what this
+                                             application does not record
+
+    `sources` names the records the answer was built from and is assembled in
+    Python from what was actually read, so it cannot cite an invoice that does
+    not exist. `facts` is the retrieved data itself -- returned so the UI can
+    show the records beside the prose rather than asking the reader to trust
+    the prose.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Expected a JSON object")
+    try:
+        return chat.answer(payload.get("message"), payload.get("history"),
+                           principal)
+    except chat.ChatError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except analytics.AnalyticsError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.get("/api/chat/suggestions")
+def get_chat_suggestions(principal: auth.Principal = Security(
+        auth.current_principal, scopes=["invoice:read"])):
+    """Starter questions the assistant can actually answer.
+
+    Served rather than hard-coded in the UI so a suggestion cannot outlive the
+    intent behind it: every string here matches a pattern in `chat.INTENTS`.
+    `available` says whether a language model is configured -- the assistant
+    works either way, but the answers are laid-out records rather than prose
+    when it is not, and the UI should say so rather than let it look broken.
+    """
+    return {
+        "suggestions": chat.starter_prompts(),
+        "available": chat.provider_available(),
+        "note": ("Answers come from this application's own records. The "
+                 "assistant is read-only and cannot change anything."),
+    }
+
 
 @app.get("/api/reference")
 def get_reference(principal: auth.Principal = Security(auth.current_principal,

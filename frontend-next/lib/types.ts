@@ -535,3 +535,45 @@ export interface AnalyticsUsers {
   users: UserStat[];
   note: string | null;
 }
+
+/* ------------------------------------------------------ assistant (K2) */
+
+/** Where an answer came from. Sent by the server on every reply so the UI can
+ *  label it honestly rather than presenting model prose and retrieved records
+ *  as the same kind of statement. */
+export type AnsweredFrom =
+  | "application_data"
+  | "application_data_phrased_by_model"
+  | "application_policy";
+
+export type ChatSource = {
+  type: string;
+  ref: string;
+  label?: string | null;
+};
+
+export type ChatReply = {
+  answer: string;
+  intent: string;
+  answered_from: AnsweredFrom;
+  sources: ChatSource[];
+  facts: Record<string, unknown>;
+  used_provider: boolean;
+  notice?: string;
+};
+
+export type ChatTurn = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  /** Assistant turns only. Absent while the reply is still in flight. */
+  reply?: ChatReply;
+  /** Set when the request failed, so the turn can offer a retry. */
+  error?: string;
+};
+
+export type ChatSuggestions = {
+  suggestions: string[];
+  available: boolean;
+  note: string;
+};

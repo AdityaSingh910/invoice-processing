@@ -153,6 +153,30 @@ async def _login_username(request: Request) -> str:
     return raw.strip().lower()[:120]
 
 
+def rate_limit_chat(
+    request: Request,
+    principal: auth.Principal = Security(auth.current_principal, scopes=["invoice:read"]),
+) -> auth.Principal:
+    """Guards the assistant (Phase K2): authenticate, authorize, then count.
+
+    Chat spends a provider request per question, so it belongs with processing
+    rather than with reading -- the thing being protected is the same scarce
+    resource, and an unattended script asking questions in a loop is the same
+    problem as one uploading in a loop. Same order as `rate_limit_processing`
+    for the same reason: authentication first, so an unauthenticated flood is
+    refused before it can consume anyone's budget, and the per-user counter is
+    keyed to a verified identity rather than to something the caller supplied.
+
+    The daily budget (quota.CHAT) sits behind this as the slower breaker, the
+    same pairing extraction already has.
+    """
+    _enforce(f"chat-ip:{client_ip(request)}", config.RATE_LIMIT_IP_PER_MINUTE,
+             "this address")
+    _enforce(f"chat-user:{principal.username}", config.RATE_LIMIT_CHAT_PER_MINUTE,
+             "assistant questions")
+    return principal
+
+
 def rate_limit_reporting(
     request: Request,
     principal: auth.Principal = Security(auth.current_principal, scopes=["invoice:read"]),

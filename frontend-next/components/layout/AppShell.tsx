@@ -22,11 +22,18 @@ import {
   IconShield,
   IconSignOut,
   IconSun,
+  IconChat,
   IconUpload,
   IconX,
 } from "@/components/ui/icons";
 
-export type Section = "overview" | "analytics" | "process" | "invoices" | "reference";
+export type Section =
+  | "overview"
+  | "analytics"
+  | "assistant"
+  | "process"
+  | "invoices"
+  | "reference";
 
 /**
  * Which sidebar ROW is lit.
@@ -44,6 +51,7 @@ export type Section = "overview" | "analytics" | "process" | "invoices" | "refer
 export type NavId =
   | "overview"
   | "analytics"
+  | "assistant"
   | "process"
   | "invoices"
   | "review-queue"
@@ -120,6 +128,13 @@ const GROUPS: {
         label: "Analytics",
         hint: "KPIs and trends",
         icon: IconAnalytics,
+      },
+      {
+        id: "assistant",
+        key: "assistant",
+        label: "Assistant",
+        hint: "Ask about your invoices",
+        icon: IconChat,
       },
     ],
   },

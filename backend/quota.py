@@ -44,6 +44,11 @@ import storage
 
 VISION = "gemini-vision"
 TEXT = "groq-text"
+# The assistant (Phase K2). A third key rather than a third table: this module
+# already counts per (day, provider), so a new budget is a new provider string
+# and nothing else. Kept apart from TEXT so questions cannot spend the budget
+# that reads invoices -- see config.DAILY_QUOTA_CHAT.
+CHAT = "groq-chat"
 
 
 def _today() -> str:
@@ -51,7 +56,11 @@ def _today() -> str:
 
 
 def limit_for(provider: str) -> int:
-    return config.DAILY_QUOTA_VISION if provider == VISION else config.DAILY_QUOTA_TEXT
+    if provider == VISION:
+        return config.DAILY_QUOTA_VISION
+    if provider == CHAT:
+        return config.DAILY_QUOTA_CHAT
+    return config.DAILY_QUOTA_TEXT
 
 
 def _ensure_table(cur):
