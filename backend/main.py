@@ -13,7 +13,8 @@ from fastapi import (Body, Depends, FastAPI, File, HTTPException, Query, Request
                      Security, UploadFile, status)
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.datastructures import MutableHeaders
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import (JSONResponse, RedirectResponse, Response,
+                               StreamingResponse)
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 
@@ -27,6 +28,7 @@ import email_security
 import extraction
 import logs
 import matching
+import oauth_google
 import portal
 import quota
 import ratelimit
@@ -231,6 +233,11 @@ def _startup():
     # outbound connection. Safe in every uvicorn worker: duplicate suppression
     # is the database's UNIQUE (provider, provider_message_id), not
     # coordination between pollers.
+    # Remembered here because this handler runs ON the event loop, and the
+    # Gmail OAuth callback -- a sync endpoint, therefore a worker thread --
+    # needs a way back to it to start polling a mailbox that was just
+    # connected (§7h.8).
+    email_ingest.remember_event_loop()
     try:
         if email_ingest.start_poller():
             print(f"[startup] email ingestion polling every "
@@ -1235,11 +1242,16 @@ def trigger_ingestion_poll(principal: auth.Principal = Depends(ratelimit.rate_li
     running: both go through the same unique constraint, so the worst case is
     one of them being told a message was already ingested.
     """
-    if not config.email_ingest_enabled():
+    # Asks whether there is a mailbox to read, not merely whether an
+    # environment variable is set: since Phase G2 a Gmail mailbox connected
+    # through the admin UI is itself a configured mailbox, and refusing to poll
+    # one an administrator just connected would be indefensible.
+    if not email_ingest.ingestion_configured():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Email ingestion is disabled. Set {config.EMAIL_INGEST_ENABLED_ENV}=1 "
-                   f"and configure {config.EMAIL_PROVIDER_ENV}.")
+            detail=f"Email ingestion is disabled. Connect Gmail from Settings, or set "
+                   f"{config.EMAIL_INGEST_ENABLED_ENV}=1 and "
+                   f"{config.EMAIL_PROVIDER_ENV}=imap.")
     result = email_ingest.poll_once(actor=principal.username)
     if not result.get("ok"):
         # A provider that is unreachable or refusing credentials is a 502: the
@@ -1281,6 +1293,278 @@ def process_email_message(email_id: int,
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail=result.get("error", "the message could not be processed"))
     return result
+
+
+# --------------------------------------------------------------------------
+# Gmail OAuth (Phase G2)
+#
+# THE AUTHORIZATION MODEL, STATED ONCE FOR ALL FOUR ENDPOINTS.
+#
+# Three of them require `invoice:admin` -- the scope that already guards
+# /api/email/ingestion, because that endpoint describes the mailbox connection
+# and these ones CHANGE it. No new scope was invented, for the reason Phases H,
+# I and K2 each recorded: a scope needs a role to carry it, which means editing
+# every deployment's user store. Phase J's exception does not apply here,
+# because this adds no new kind of caller -- it is the existing administrator
+# doing an administrative thing.
+#
+# The fourth, the callback, cannot be scoped at all: Google redirects the
+# administrator's BROWSER to it and a top-level navigation carries no
+# Authorization header. Its security is the single-use state value, and
+# `ratelimit.rate_limit_oauth_callback` bounds guessing it. Nothing it does is
+# reachable without a state this server itself minted for a named
+# administrator minutes earlier.
+# --------------------------------------------------------------------------
+
+# The fixed vocabulary of outcomes the callback may put in a redirect URL.
+# A CLOSED SET ON PURPOSE: it means nothing Google said -- no error body, no
+# description, no code -- can ever be reflected into the browser's address bar,
+# where it would end up in history and in every proxy log on the way.
+_GMAIL_CALLBACK_RESULTS = (
+    "connected", "denied", "invalid_state", "exchange_failed",
+    "insufficient_scope", "no_refresh_token", "not_configured",
+)
+
+
+def _gmail_redirect(result: str) -> RedirectResponse:
+    """Send the browser back to the app with a one-word outcome.
+
+    The target is RELATIVE, so it always resolves to this application's own
+    origin. That is what makes an open redirect impossible here: there is no
+    caller-supplied destination anywhere in this flow, not even a validated
+    one.
+    """
+    if result not in _GMAIL_CALLBACK_RESULTS:
+        result = "exchange_failed"
+    # 303: the callback arrives as a GET, and the browser must follow with a
+    # GET to a page rather than re-issuing anything.
+    return RedirectResponse(url=f"/?gmail={result}", status_code=303)
+
+
+@app.get("/api/email/oauth/gmail/status")
+def gmail_oauth_status(principal: auth.Principal = Security(auth.current_principal,
+                                                            scopes=["invoice:admin"])):
+    """Whether Gmail is connected, and what an administrator needs to know.
+
+    Reports the mailbox address, the granted scopes, when it was last polled
+    and the last error -- and NO token. The projection behind it
+    (`storage.public_oauth_connection`) does not select the token columns at
+    all, rather than selecting and then removing them, so a column added later
+    is absent by default instead of exposed by default.
+    """
+    return {
+        "provider": "gmail",
+        # Two different questions with two different remedies: an unconfigured
+        # OAuth client needs the environment edited and the process restarted,
+        # while a configured-but-unconnected one just needs somebody to click
+        # Connect. Collapsing them would send an administrator to the wrong fix.
+        "oauth_configured": config.google_oauth_configured(),
+        "redirect_uri": config.google_oauth_redirect_uri() or None,
+        "scopes_requested": email_ingest.requested_scopes(),
+        "connection": storage.public_oauth_connection("gmail"),
+        "ingestion_active": email_ingest.ingestion_configured(),
+        "poller_running": email_ingest.poller_running(),
+    }
+
+
+@app.post("/api/email/oauth/gmail/authorize")
+def gmail_oauth_authorize(principal: auth.Principal = Security(auth.current_principal,
+                                                               scopes=["invoice:admin"])):
+    """Begin the authorization-code flow. Returns the URL to send the browser to.
+
+    Returns a URL rather than issuing a redirect, because the caller is an XHR
+    from the admin screen and a 302 to accounts.google.com would be followed by
+    `fetch` rather than by the browser -- landing Google's HTML in a JSON
+    parser instead of in front of the administrator.
+
+    The state and the PKCE verifier are generated here and stored SERVER-SIDE,
+    bound to this administrator. The verifier never leaves the server at all;
+    only its SHA-256 challenge goes to Google, which is the whole point of
+    PKCE -- an authorization code intercepted from the redirect cannot be
+    exchanged without a secret that was never transmitted.
+    """
+    try:
+        scopes = config.gmail_scopes()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    if not config.google_oauth_configured():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(f"Google OAuth is not configured. Set "
+                    f"{config.GOOGLE_OAUTH_CLIENT_ID_ENV}, "
+                    f"{config.GOOGLE_OAUTH_CLIENT_SECRET_ENV} and "
+                    f"{config.GOOGLE_OAUTH_REDIRECT_URI_ENV}."))
+
+    state = oauth_google.new_state()
+    verifier = oauth_google.new_code_verifier()
+    redirect_uri = config.google_oauth_redirect_uri()
+
+    storage.create_pending_authorization(
+        state=state, provider="gmail", code_verifier=verifier,
+        redirect_uri=redirect_uri, requested_by=principal.username,
+        expires_at=oauth_google.state_expiry())
+
+    url = oauth_google.build_authorization_url(state, verifier)
+    print(f"[oauth] gmail authorization started by {principal.username}", file=sys.stderr)
+    # The state is NOT returned. The browser does not need it -- it travels to
+    # Google inside the URL and comes back in the callback's query string -- and
+    # a CSRF token handed to client-side JavaScript is one an XSS can read.
+    return {"authorization_url": url, "scopes": scopes, "expires_in":
+            config.OAUTH_STATE_TTL_SECONDS}
+
+
+@app.get("/api/email/oauth/gmail/callback")
+def gmail_oauth_callback(request: Request, code: str = None, state: str = None,
+                         error: str = None,
+                         _limit: None = Depends(ratelimit.rate_limit_oauth_callback)):
+    """Where Google sends the administrator's browser back.
+
+    EVERY EXIT FROM THIS FUNCTION IS A REDIRECT CARRYING ONE WORD FROM A FIXED
+    LIST. No Google error text, no exception message and no token can reach the
+    address bar, and the administrator lands back on the settings screen either
+    way rather than on a JSON error page.
+
+    The state is consumed under a row lock before the code is exchanged, so a
+    replayed redirect -- a refreshed tab, a link out of browser history, a
+    stolen code -- finds it already used and is refused.
+    """
+    if error:
+        # The user pressed Cancel, or Google refused. `error` is Google's, so
+        # it is logged as a short code and never echoed onward.
+        print(f"[oauth] gmail authorization returned an error: "
+              f"{oauth_google._scrub(error)}", file=sys.stderr)
+        return _gmail_redirect("denied" if error == "access_denied" else "exchange_failed")
+
+    pending = storage.consume_pending_authorization(state, provider="gmail")
+    if not pending or not code:
+        # Unknown, expired, already used, or for another provider. The four are
+        # deliberately indistinguishable to the caller: each means "do not
+        # exchange this code", and telling them apart would confirm to somebody
+        # probing that a given state value once existed.
+        print("[oauth] gmail callback refused: state was not valid", file=sys.stderr)
+        return _gmail_redirect("invalid_state")
+
+    try:
+        payload = oauth_google.exchange_code(
+            code, pending["code_verifier"], pending["redirect_uri"])
+    except oauth_google.OAuthNotConfigured:
+        return _gmail_redirect("not_configured")
+    except oauth_google.OAuthError as exc:
+        print(f"[oauth] gmail token exchange failed: {exc.code or 'error'}", file=sys.stderr)
+        return _gmail_redirect("exchange_failed")
+
+    scopes = oauth_google.granted_scopes(payload)
+    if not oauth_google.scopes_are_sufficient(scopes):
+        # Google's consent screen lets a user untick individual permissions. A
+        # connection granted nothing usable would look successful here and fail
+        # later inside a background poll nobody is watching, so it is refused
+        # now, while there is a person to tell.
+        print("[oauth] gmail authorization granted insufficient scope", file=sys.stderr)
+        oauth_google.revoke(payload.get("refresh_token") or payload.get("access_token"))
+        return _gmail_redirect("insufficient_scope")
+
+    refresh_token = payload.get("refresh_token")
+    if not refresh_token:
+        # Without one, ingestion stops at the first access-token expiry -- an
+        # hour later, silently. Refused rather than stored, because a
+        # connection that works for an hour is worse than one that plainly did
+        # not connect.
+        print("[oauth] gmail authorization returned no refresh token", file=sys.stderr)
+        oauth_google.revoke(payload.get("access_token"))
+        return _gmail_redirect("no_refresh_token")
+
+    access_token = payload.get("access_token")
+    address = oauth_google.mailbox_address(access_token)
+
+    # Where this mailbox's first poll starts reading from. Set at CONNECT time
+    # rather than left NULL so that connecting cannot ingest and rule on years
+    # of invoices somebody has already dealt with by hand; `GMAIL_BACKFILL_DAYS`
+    # moves it back for a deployment that does want history.
+    started = int((time.time() - config.gmail_backfill_days() * 86400) * 1000)
+
+    try:
+        storage.save_oauth_connection(
+            provider="gmail",
+            email_address=address,
+            scopes=" ".join(scopes),
+            refresh_token_encrypted=oauth_google.encrypt_token(refresh_token),
+            access_token_encrypted=oauth_google.encrypt_token(access_token),
+            access_token_expires_at=oauth_google.expiry_from(payload),
+            connected_by=pending["requested_by"],
+            cursor_internal_date=started)
+    except Exception as exc:
+        # Including the case where AUTH_SECRET is absent and the tokens
+        # therefore cannot be encrypted. Storing them in the clear instead is
+        # not an option, so the grant is handed back to Google rather than left
+        # live against a connection this deployment could not record.
+        print(f"[oauth] gmail connection could not be stored: "
+              f"{exc.__class__.__name__}", file=sys.stderr)
+        oauth_google.revoke(refresh_token)
+        return _gmail_redirect("exchange_failed")
+
+    print(f"[oauth] gmail connected for {pending['requested_by']}", file=sys.stderr)
+
+    # Start polling now. The administrator's mental model is that connecting a
+    # mailbox starts reading it; requiring a restart would make the Connected
+    # badge describe an intention rather than a state.
+    try:
+        email_ingest.start_poller()
+    except Exception as exc:
+        print(f"[oauth] poller did not start: {exc.__class__.__name__}", file=sys.stderr)
+
+    return _gmail_redirect("connected")
+
+
+@app.post("/api/email/oauth/gmail/disconnect")
+def gmail_oauth_disconnect(principal: auth.Principal = Security(auth.current_principal,
+                                                                scopes=["invoice:admin"])):
+    """Revoke the grant at Google and delete the stored credential.
+
+    BOTH HALVES, IN THAT ORDER, AND THE LOCAL HALF HAPPENS EITHER WAY. Google
+    being unreachable must not leave an administrator unable to disconnect a
+    mailbox -- a token Google still honours but nobody holds is a smaller
+    problem than a credential this application cannot let go of. What was
+    achieved is reported honestly rather than assumed.
+
+    The poller is stopped only if there is nothing left for it to read: an
+    `EMAIL_PROVIDER=imap` deployment that also happened to have Gmail connected
+    keeps polling IMAP, which is what it was configured to do.
+    """
+    connection = storage.get_oauth_connection("gmail")
+    if not connection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="No Gmail mailbox is connected")
+
+    revoked = False
+    blob = connection.get("refresh_token_encrypted")
+    if blob:
+        try:
+            revoked = oauth_google.revoke(oauth_google.decrypt_token(blob))
+        except oauth_google.OAuthError:
+            # An undecryptable credential cannot be revoked remotely, which is
+            # all the more reason to remove it locally.
+            revoked = False
+
+    storage.delete_oauth_connection("gmail")
+    print(f"[oauth] gmail disconnected by {principal.username} "
+          f"(remote revoke: {'ok' if revoked else 'not confirmed'})", file=sys.stderr)
+
+    if not email_ingest.ingestion_configured():
+        email_ingest.stop_poller()
+
+    return {
+        "disconnected": True,
+        "revoked_at_google": revoked,
+        # Said plainly, because it is the one thing an administrator may still
+        # need to act on: if we could not reach Google, the grant may survive
+        # in the account's own security settings.
+        "notice": (None if revoked else
+                   "The credential was deleted here, but Google did not confirm the "
+                   "revocation. Remove this application's access at "
+                   "https://myaccount.google.com/permissions to be certain."),
+        "ingestion_active": email_ingest.ingestion_configured(),
+    }
 
 
 @app.get("/api/email/messages/{email_id}/attachments")

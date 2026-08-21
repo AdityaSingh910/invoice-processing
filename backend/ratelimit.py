@@ -286,3 +286,25 @@ def rate_limit_portal_submit(
     _enforce(f"portal-submit-user:{principal.username}",
              config.RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE, "invoice submissions")
     return principal
+
+
+def rate_limit_oauth_callback(request: Request) -> None:
+    """Guards the Google OAuth callback (Phase G2). Per IP only -- there is no
+    authenticated user here, and that is not an oversight.
+
+    The callback is the one endpoint in this integration that CANNOT require a
+    bearer token: Google redirects the administrator's BROWSER to it, and a
+    top-level browser navigation carries no Authorization header. Its security
+    is the single-use `state` value instead -- 256 bits from the OS CSPRNG,
+    bound to the administrator who started the flow, expiring in ten minutes,
+    and consumed under a row lock so it can be exchanged at most once.
+
+    What a limiter adds on top is a bound on GUESSING that state. Without one,
+    an unauthenticated caller could hammer the callback indefinitely; with it,
+    the search space stays astronomically out of reach in any practical time.
+    It is per-IP because there is no identity to key it to, and the ceiling is
+    the general per-address one -- a real administrator hits this endpoint
+    once per connection, so nothing legitimate comes near it.
+    """
+    _enforce(f"oauth-callback-ip:{client_ip(request)}", config.RATE_LIMIT_IP_PER_MINUTE,
+             "this address")

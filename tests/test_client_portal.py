@@ -332,6 +332,27 @@ def test_a_client_token_reaches_no_internal_endpoint(client, method, path):
         assert r.status_code == 200
         assert r.json()["scopes"] == ["portal:read", "portal:submit"]
         return
+
+    if concrete == "/api/email/oauth/gmail/callback":
+        # Phase G2. This route CANNOT answer 401/403: Google redirects the
+        # administrator's browser to it, and a top-level navigation carries no
+        # Authorization header, so it does not authenticate at all -- it
+        # ignores the token entirely and authorises on the single-use `state`
+        # instead.
+        #
+        # So the property is asserted directly rather than through a status
+        # code: a caller without a valid state is refused and NOTHING is
+        # changed. Holding a client token buys exactly nothing here.
+        #
+        # Re-issued without following the redirect -- the shared call above
+        # follows it to the app shell and reports that page's 200, which says
+        # nothing about what this route did.
+        redirect = client.get(concrete, headers=headers(ACME), follow_redirects=False)
+        assert redirect.status_code == 303
+        assert redirect.headers["location"] == "/?gmail=invalid_state"
+        assert storage.get_oauth_connection("gmail") is None
+        return
+
     assert r.status_code in (401, 403), f"{method} {concrete} -> {r.status_code}"
 
 

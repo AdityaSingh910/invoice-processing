@@ -1514,7 +1514,13 @@ def test_the_new_indexes_exist_and_the_schema_gained_no_table(db):
     assert tables == {"purchase_orders", "vendors", "runs", "run_allocations",
                       "documents", "invoice_activity", "review_claims",
                       "trusted_email_senders", "email_messages", "email_activity",
-                      "email_attachments"}
+                      "email_attachments",
+                      # Phase G2's Gmail connection. Listed rather than the
+                      # assertion being loosened: the point of comparing the
+                      # WHOLE set is that a table nobody mentioned shows up
+                      # here, and that only keeps working while the expected
+                      # set is maintained.
+                      "email_oauth_connections", "oauth_pending_authorizations"}
     # In particular, nothing that looks like a stored rollup.
     assert not any("analytic" in t or "metric" in t or "kpi" in t for t in tables)
 

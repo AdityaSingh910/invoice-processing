@@ -677,9 +677,16 @@ def email_ingest_enabled() -> bool:
 
 
 def email_provider() -> str:
-    """'none' (the default) or 'imap'. Read at call time like everything else."""
+    """'none' (the default), 'imap', or 'gmail'. Read at call time.
+
+    This reports the CONFIGURED choice only. A Gmail mailbox connected through
+    the admin UI is stored state rather than configuration, so it does not
+    appear here -- `email_provider.get_provider()` is what resolves the two
+    together, and its docstring records how. An explicit setting always wins
+    over a stored connection.
+    """
     choice = os.environ.get(EMAIL_PROVIDER_ENV, "none").strip().lower()
-    return choice if choice in ("none", "imap") else "none"
+    return choice if choice in ("none", "imap", "gmail") else "none"
 
 
 def email_poll_seconds() -> int:
@@ -727,6 +734,180 @@ def email_corporate_domains() -> tuple:
 
 def email_personal_domains() -> tuple:
     return _env_domains(EMAIL_PERSONAL_DOMAINS_ENV)
+
+
+# --------------------------------------------------------------------------
+# Gmail OAuth (Phase G2)
+#
+# WHY THE GMAIL API AND NOT IMAP-WITH-XOAUTH2.
+#
+# `ImapEmailProvider` already speaks XOAUTH2, so pointing it at Gmail with an
+# OAuth access token would need no new provider at all. It is deliberately not
+# used, and the reason is the SCOPE Google demands for it: IMAP is only ever
+# granted under `https://mail.google.com/`, which is full read, write, send and
+# DELETE over the entire mailbox. The Gmail API grants `gmail.readonly`, which
+# reads and can do nothing else.
+#
+# Ingestion reads messages and downloads attachments. Read-only is what it
+# actually needs, so read-only is what is asked for. The IMAP provider is
+# untouched and remains the right answer for every non-Google mailbox.
+#
+# WHAT IS LOST BY ASKING FOR LESS, AND WHY IT DOES NOT MATTER.
+#
+# `gmail.readonly` cannot mark a message read, so the flag-based "do not show
+# me this again" that IMAP uses is unavailable. That is survivable precisely
+# because this codebase never relied on it: email_provider's own docstring
+# already records that `mark_handled()` is an optimisation and that correctness
+# comes from the UNIQUE (provider, provider_message_id) constraint. The Gmail
+# provider therefore reuses that same hook to advance a high-water CURSOR over
+# Gmail's own internalDate instead of setting a flag -- called at the same point
+# in the poll, after the outcome is committed, with the same consequence if it
+# never runs: the message is offered again and the database refuses it.
+# --------------------------------------------------------------------------
+GOOGLE_OAUTH_CLIENT_ID_ENV = "GOOGLE_OAUTH_CLIENT_ID"
+GOOGLE_OAUTH_CLIENT_SECRET_ENV = "GOOGLE_OAUTH_CLIENT_SECRET"
+GOOGLE_OAUTH_REDIRECT_URI_ENV = "GOOGLE_OAUTH_REDIRECT_URI"
+GMAIL_SCOPES_ENV = "GMAIL_OAUTH_SCOPES"
+GMAIL_QUERY_ENV = "GMAIL_SEARCH_QUERY"
+GMAIL_BACKFILL_DAYS_ENV = "GMAIL_BACKFILL_DAYS"
+GMAIL_CURSOR_OVERLAP_ENV = "GMAIL_CURSOR_OVERLAP_SECONDS"
+
+# Google's own endpoints. Constants rather than settings: these are Google's
+# addresses, not this deployment's, and an operator who could repoint them
+# could redirect an authorization code -- and the refresh token it buys -- to a
+# host of their choosing. Nothing reads them from the environment.
+GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+GOOGLE_REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
+GMAIL_API_ROOT = "https://gmail.googleapis.com/gmail/v1/users/me"
+
+# The minimum scope this integration can work with, and the default.
+#
+# `gmail.readonly` reads messages and downloads attachments and can do nothing
+# else. An operator who wants the mailbox tidied as it is ingested may set
+# `gmail.modify` instead, which additionally lets the poller remove the UNREAD
+# label -- but nothing here requires it and nothing degrades without it.
+GMAIL_SCOPE_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
+GMAIL_SCOPE_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
+
+# Scopes refused outright, however they are configured. `mail.google.com` is
+# the IMAP scope and carries delete and send authority this application has no
+# use for; asking a customer to grant it for an invoice reader is exactly the
+# over-permissioning this module exists to avoid.
+GMAIL_REFUSED_SCOPES = (
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+    "https://www.googleapis.com/auth/gmail.settings.sharing",
+)
+
+# How long a pending authorization (state + PKCE verifier) stays valid. Long
+# enough to sign in to Google and pick an account, short enough that a state
+# value recovered later from a browser history or a proxy log is already dead.
+OAUTH_STATE_TTL_SECONDS = 600
+
+# How many message-id pages `messages.list` walks in one poll. Bounded so a
+# mailbox with a large backlog cannot make one poll run indefinitely -- the
+# remainder is simply picked up by the next one.
+GMAIL_MAX_LIST_PAGES = 10
+
+
+def google_oauth_client_id() -> str:
+    return os.environ.get(GOOGLE_OAUTH_CLIENT_ID_ENV, "").strip()
+
+
+def google_oauth_client_secret() -> str:
+    """Read at call time, and never returned by any endpoint.
+
+    Same posture as the provider API keys above: a secret is fetched at the
+    moment it is used, so importing this module never implies one exists and
+    nothing holds a copy in a module constant.
+    """
+    return os.environ.get(GOOGLE_OAUTH_CLIENT_SECRET_ENV, "")
+
+
+def google_oauth_redirect_uri() -> str:
+    """The callback Google redirects the browser back to.
+
+    Configured, never derived from the incoming request. Deriving it from Host
+    or X-Forwarded-Host would let a caller who can set those headers choose
+    where an authorization code is delivered; Google requires an exact
+    registered match in any case, so a configured value is both the safer and
+    the only workable option.
+    """
+    return os.environ.get(GOOGLE_OAUTH_REDIRECT_URI_ENV, "").strip()
+
+
+def gmail_scopes() -> list:
+    """The scopes requested at authorization. Read-only by default.
+
+    A configured scope outside the supported set RAISES rather than being
+    quietly dropped: a deployment that believed it was requesting one thing and
+    got another has a consent screen that disagrees with its own configuration,
+    and the operator should find that out at startup rather than from Google.
+    """
+    raw = os.environ.get(GMAIL_SCOPES_ENV, "").strip()
+    if not raw:
+        return [GMAIL_SCOPE_READONLY]
+    scopes = [s.strip() for s in raw.replace(",", " ").split() if s.strip()]
+    for scope in scopes:
+        if scope in GMAIL_REFUSED_SCOPES:
+            raise ValueError(
+                f"{GMAIL_SCOPES_ENV} contains {scope!r}, which grants send or delete "
+                f"authority this application never uses. Supported: "
+                f"{GMAIL_SCOPE_READONLY} (default) or {GMAIL_SCOPE_MODIFY}.")
+        if scope not in (GMAIL_SCOPE_READONLY, GMAIL_SCOPE_MODIFY):
+            raise ValueError(
+                f"{GMAIL_SCOPES_ENV} contains {scope!r}, which this integration does "
+                f"not use. Supported: {GMAIL_SCOPE_READONLY} (default) or "
+                f"{GMAIL_SCOPE_MODIFY}.")
+    return scopes
+
+
+def google_oauth_configured() -> bool:
+    """Whether a Google OAuth CLIENT exists -- not whether a mailbox is connected."""
+    return bool(google_oauth_client_id() and google_oauth_client_secret()
+                and google_oauth_redirect_uri())
+
+
+def gmail_search_query() -> str:
+    """An optional Gmail search expression narrowing what is polled.
+
+    Deliberately NOT `has:attachment` by default: a message with no PDF is
+    still recorded, as filtered out and with its reasons, rather than never
+    seen at all -- and that distinction is exactly what Phase G's triage exists
+    to preserve. Chats are excluded because they are not mail.
+    """
+    return os.environ.get(GMAIL_QUERY_ENV, "").strip() or "-in:chats"
+
+
+def gmail_backfill_days() -> int:
+    """How far back the FIRST poll after connecting reaches.
+
+    Zero by default: connecting a mailbox should start reading the invoices
+    that arrive from now on, not silently ingest and rule on years of history
+    somebody has already dealt with by hand.
+    """
+    try:
+        return max(0, min(365, int(os.environ.get(GMAIL_BACKFILL_DAYS_ENV, "") or 0)))
+    except ValueError:
+        return 0
+
+
+def gmail_cursor_overlap_seconds() -> int:
+    """How far BEHIND the high-water mark each poll re-reads.
+
+    A cursor on arrival time alone would miss a message Google delivers with an
+    internalDate slightly behind one already processed. Re-reading a short
+    overlap closes that, and costs nothing but a handful of ids: the messages in
+    it are refused by the unique constraint before their bodies are ever
+    fetched.
+    """
+    try:
+        return max(0, min(86400, int(os.environ.get(GMAIL_CURSOR_OVERLAP_ENV, "") or 300)))
+    except ValueError:
+        return 300
 
 
 def refresh_env_settings():

@@ -649,3 +649,80 @@ export interface PortalSubmission {
   submitted: boolean;
   invoice: PortalInvoice;
 }
+
+// --------------------------------------------------------------------------
+// Gmail OAuth (Phase G2)
+//
+// NOTE WHAT IS ABSENT: there is no token field of any kind here, and there is
+// nowhere for one to arrive. The server's projection does not select the token
+// columns, so the type mirrors a response that cannot carry them rather than a
+// response that happens not to today.
+// --------------------------------------------------------------------------
+export interface GmailConnection {
+  id: number;
+  provider: string;
+  /** The connected mailbox, when Google would tell us. Null is a normal
+   *  state -- the profile lookup is allowed to fail without failing the
+   *  connection -- so the UI must render it. */
+  email_address: string | null;
+  status: "CONNECTED" | "REVOKED" | "ERROR";
+  scopes: string | null;
+  access_token_expires_at: string | null;
+  cursor_internal_date: number | null;
+  connected_by: string | null;
+  connected_at: string | null;
+  updated_at: string | null;
+  last_polled_at: string | null;
+  last_error: string | null;
+  /** Whether a refresh token exists -- not the token. A connection without one
+   *  cannot outlive its first hour, which is worth showing. */
+  has_refresh_token: boolean;
+}
+
+export interface GmailStatus {
+  provider: string;
+  /** Whether a Google OAuth CLIENT is configured. Different question from
+   *  whether a mailbox is connected, and a different remedy: this one needs
+   *  the environment edited and the process restarted. */
+  oauth_configured: boolean;
+  redirect_uri: string | null;
+  scopes_requested: string[] | { error: string };
+  connection: GmailConnection | null;
+  ingestion_active: boolean;
+  poller_running: boolean;
+}
+
+export interface GmailAuthorizeStart {
+  authorization_url: string;
+  scopes: string[];
+  expires_in: number;
+}
+
+export interface GmailDisconnectResult {
+  disconnected: boolean;
+  revoked_at_google: boolean;
+  notice: string | null;
+  ingestion_active: boolean;
+}
+
+export interface EmailIngestionStatus {
+  enabled: boolean;
+  active: boolean;
+  poller_running: boolean;
+  poll_seconds: number;
+  poll_batch: number;
+  provider: Record<string, unknown>;
+  configuration_error: string | null;
+  gmail: {
+    oauth_configured: boolean;
+    connection: GmailConnection | null;
+    scopes_requested: string[] | { error: string };
+  };
+  counts: {
+    by_ingest_status: Record<string, number>;
+    by_relevance: Record<string, number>;
+    by_classification: Record<string, number>;
+    by_security_status: Record<string, number>;
+    invoice_runs_created: number;
+  };
+}

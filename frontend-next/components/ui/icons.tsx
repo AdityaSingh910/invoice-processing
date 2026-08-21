@@ -217,3 +217,15 @@ export const IconBuilding = (p: IconProps) => (
     <path d="M5 5.5h2M5 8h2M5 10.5h2" />
   </Svg>
 );
+
+/** Email integration settings (Phase G2). A cog, because the row it labels is
+ *  configuration rather than a place invoices live — and specifically NOT an
+ *  envelope, which would read as "somewhere to look at email" next to the
+ *  Invoices and Review queue rows rather than as somewhere to connect a
+ *  mailbox. */
+export const IconSettings = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="2.25" />
+    <path d="M8 1.5v1.75M8 12.75v1.75M14.5 8h-1.75M3.25 8H1.5M12.6 3.4l-1.24 1.24M4.64 11.36 3.4 12.6M12.6 12.6l-1.24-1.24M4.64 4.64 3.4 3.4" />
+  </Svg>
+);

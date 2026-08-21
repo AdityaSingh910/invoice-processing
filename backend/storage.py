@@ -1051,6 +1051,78 @@ def init_db(reset_runs: bool = False):
                    ON email_attachments(email_id, sha256)
                    WHERE sha256 IS NOT NULL""")
 
+            # ------------------------------------------------------------------
+            # GMAIL OAUTH (Phase G2). Two tables, and they are the FIRST thing
+            # this project stores that is not derivable from something else.
+            #
+            # Six times now (the PO ledger, the review claim, every KPI, the
+            # log, the assistant's transcript, the portal's client view) the
+            # answer to "should this be stored" has been no, because the rows
+            # already on file could produce it. A refresh token is the opposite
+            # case: it is issued once by Google, cannot be recomputed from
+            # anything this application holds, and losing it means a human has
+            # to walk through the consent screen again. It has to be persisted,
+            # so it is -- encrypted, in the database, and never in a response.
+            #
+            # `refresh_token_encrypted` and `access_token_encrypted` hold
+            # Fernet ciphertext (see oauth_google.py). No endpoint returns
+            # either column, no projection selects them by wildcard, and the
+            # accessors below that serve the API strip them by NAMING the
+            # columns they return rather than by removing them afterwards.
+            # ------------------------------------------------------------------
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS email_oauth_connections (
+                    id SERIAL PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    email_address TEXT,
+                    status TEXT NOT NULL,
+                    scopes TEXT,
+                    refresh_token_encrypted TEXT,
+                    access_token_encrypted TEXT,
+                    access_token_expires_at TEXT,
+                    cursor_internal_date BIGINT,
+                    connected_by TEXT,
+                    connected_at TEXT,
+                    updated_at TEXT,
+                    last_polled_at TEXT,
+                    last_error TEXT
+                )"""
+            )
+            # ONE mailbox per provider. This application ingests into a single
+            # shared AP queue, so "the company's invoice mailbox" is singular;
+            # a second connection would raise the question of which one an
+            # invoice arrived through and there is no column anywhere that
+            # could answer it. Reconnecting REPLACES, which is what an admin
+            # means by connecting a different mailbox.
+            cur.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_email_oauth_provider
+                   ON email_oauth_connections(provider)""")
+
+            # A pending authorization: the CSRF state and its PKCE verifier,
+            # held between the redirect out to Google and the callback back.
+            #
+            # In the database rather than in a process dictionary for the
+            # reason ratelimit.py records about its own counters: several
+            # uvicorn workers do not share memory, so an in-process store would
+            # fail whenever the callback landed on a different worker from the
+            # one that started the flow -- intermittently, and only in the
+            # multi-worker deployment this is being made ready for.
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS oauth_pending_authorizations (
+                    state TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    code_verifier TEXT NOT NULL,
+                    redirect_uri TEXT NOT NULL,
+                    requested_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT
+                )"""
+            )
+            cur.execute(
+                """CREATE INDEX IF NOT EXISTS idx_oauth_pending_expires
+                   ON oauth_pending_authorizations(expires_at)""")
+
             # Read heavily by find_duplicate() (invoice_number equality) and by every
             # ledger query that filters on status -- neither existed as an index under
             # SQLite because a single-file database at this volume never needed one;
@@ -2447,6 +2519,318 @@ def ingestion_summary():
             "by_classification": by_classification,
             "by_security_status": by_security_status,
             "invoice_runs_created": runs_created}
+
+
+# --------------------------------------------------------------------------
+# Gmail OAuth connections (Phase G2)
+#
+# THE ONE RULE IN THIS SECTION: two shapes, and only one of them has tokens.
+#
+# `get_oauth_connection()` returns the encrypted token columns, because the
+# poller and the refresh path genuinely need them. `public_oauth_connection()`
+# does not select them AT ALL -- not "selects and then deletes them", which is
+# a habit that survives exactly until someone adds a column. Everything that
+# answers an HTTP request goes through the second one.
+# --------------------------------------------------------------------------
+
+# The columns that are safe to show a signed-in administrator. Naming them
+# here, once, is what makes the guarantee above checkable: a token column
+# added later is absent from this tuple by default rather than present by
+# default, so the failure mode of forgetting is a missing field, not a leak.
+_PUBLIC_OAUTH_COLUMNS = (
+    "id", "provider", "email_address", "status", "scopes",
+    "access_token_expires_at", "cursor_internal_date", "connected_by",
+    "connected_at", "updated_at", "last_polled_at", "last_error",
+)
+
+OAUTH_CONNECTED = "CONNECTED"
+OAUTH_REVOKED = "REVOKED"
+OAUTH_ERROR = "ERROR"
+
+
+def _now() -> str:
+    """The one timestamp spelling this application writes, named once.
+
+    Identical to the `datetime.now(timezone.utc).isoformat()` every other
+    writer in this module uses inline -- deliberately so, because the half-open
+    ISO string ranges the analytics and log layers compare with `>=` and `<`
+    only work while every writer agrees on the spelling. This section writes
+    timestamps in a dozen places and repeating the expression that many times
+    is how one of them eventually loses its timezone.
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
+def get_oauth_connection(provider: str = "gmail"):
+    """The full row, INCLUDING the encrypted token columns.
+
+    Only the ingestion and refresh paths may call this. Anything that answers
+    an HTTP request wants `public_oauth_connection()`.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM email_oauth_connections WHERE provider = %s",
+                        (provider,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def public_oauth_connection(provider: str = "gmail"):
+    """The row an administrator may see. The token columns are never selected."""
+    cols = ", ".join(_PUBLIC_OAUTH_COLUMNS)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT {cols} FROM email_oauth_connections WHERE provider = %s",
+                        (provider,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            out = dict(row)
+            # Whether a refresh token EXISTS is operationally important -- a
+            # connection without one cannot survive its first hour -- while the
+            # value itself never leaves this module. A boolean answers the
+            # question without carrying the secret.
+            cur.execute("""SELECT refresh_token_encrypted IS NOT NULL AS has_refresh
+                           FROM email_oauth_connections WHERE provider = %s""", (provider,))
+            flag = cur.fetchone()
+            out["has_refresh_token"] = bool(flag and flag["has_refresh"])
+            return out
+    finally:
+        conn.close()
+
+
+def save_oauth_connection(provider: str, email_address: str, scopes: str,
+                          refresh_token_encrypted: str,
+                          access_token_encrypted: str = None,
+                          access_token_expires_at: str = None,
+                          connected_by: str = None,
+                          cursor_internal_date: int = None) -> dict:
+    """Create or REPLACE the connection for a provider.
+
+    Reconnecting replaces rather than accumulating, because the unique index
+    says one mailbox per provider and because that is what an administrator
+    means when they connect a different account.
+
+    A NULL `refresh_token_encrypted` never overwrites a stored one. Google
+    returns a refresh token only on the first authorization for a given
+    client/account pair unless it is explicitly asked to re-consent, so a
+    re-authorization that legitimately returns none must not wipe the working
+    credential and leave the connection unable to outlive its access token.
+    """
+    now = _now()
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM email_oauth_connections WHERE provider = %s FOR UPDATE",
+                        (provider,))
+            existing = cur.fetchone()
+            if existing:
+                cur.execute(
+                    """UPDATE email_oauth_connections
+                          SET email_address = %s,
+                              status = %s,
+                              scopes = %s,
+                              refresh_token_encrypted = COALESCE(%s, refresh_token_encrypted),
+                              access_token_encrypted = %s,
+                              access_token_expires_at = %s,
+                              connected_by = %s,
+                              connected_at = %s,
+                              updated_at = %s,
+                              cursor_internal_date = %s,
+                              last_error = NULL
+                        WHERE provider = %s
+                    RETURNING id""",
+                    (email_address, OAUTH_CONNECTED, scopes, refresh_token_encrypted,
+                     access_token_encrypted, access_token_expires_at, connected_by,
+                     now, now,
+                     cursor_internal_date if cursor_internal_date is not None
+                     else existing["cursor_internal_date"],
+                     provider))
+            else:
+                cur.execute(
+                    """INSERT INTO email_oauth_connections
+                       (provider, email_address, status, scopes,
+                        refresh_token_encrypted, access_token_encrypted,
+                        access_token_expires_at, cursor_internal_date,
+                        connected_by, connected_at, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING id""",
+                    (provider, email_address, OAUTH_CONNECTED, scopes,
+                     refresh_token_encrypted, access_token_encrypted,
+                     access_token_expires_at, cursor_internal_date,
+                     connected_by, now, now))
+            new_id = cur.fetchone()["id"]
+    return {"id": new_id, "provider": provider}
+
+
+def update_oauth_tokens(provider: str, access_token_encrypted: str,
+                        access_token_expires_at: str,
+                        refresh_token_encrypted: str = None):
+    """Record a refreshed access token. Clears any previous error.
+
+    A successful refresh is proof the authorization is live again, so it also
+    moves the connection back to CONNECTED -- otherwise a single transient
+    network failure would leave a perfectly working mailbox displayed as
+    broken until somebody reconnected it by hand.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE email_oauth_connections
+                      SET access_token_encrypted = %s,
+                          access_token_expires_at = %s,
+                          refresh_token_encrypted = COALESCE(%s, refresh_token_encrypted),
+                          status = %s,
+                          last_error = NULL,
+                          updated_at = %s
+                    WHERE provider = %s""",
+                (access_token_encrypted, access_token_expires_at,
+                 refresh_token_encrypted, OAUTH_CONNECTED, _now(), provider))
+
+
+def set_oauth_status(provider: str, status: str, error: str = None):
+    """Move a connection to REVOKED or ERROR, with the reason.
+
+    The error text is written by this application from an exception class or a
+    Google error CODE -- never a response body, which is where a token echoed
+    back in a diagnostic would end up being persisted.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE email_oauth_connections
+                      SET status = %s, last_error = %s, updated_at = %s
+                    WHERE provider = %s""",
+                (status, (error or None), _now(), provider))
+
+
+def clear_oauth_access_token(provider: str = "gmail"):
+    """Forget the cached access token, keeping the refresh token.
+
+    Used when Google refuses an access token that has not yet expired by our
+    clock -- a revoked grant, or a clock skew. The next poll then refreshes
+    rather than retrying a credential already known to be rejected.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE email_oauth_connections
+                      SET access_token_encrypted = NULL,
+                          access_token_expires_at = NULL,
+                          updated_at = %s
+                    WHERE provider = %s""", (_now(), provider))
+
+
+def advance_oauth_cursor(provider: str, internal_date: int):
+    """Move the high-water mark forward. NEVER backward.
+
+    `GREATEST` in SQL rather than a read-then-write in Python: two workers
+    polling the same mailbox can commit out of order, and a plain assignment
+    would let the slower one rewind the cursor and re-offer everything between
+    -- correct, because the unique constraint would refuse it all, but a
+    steady waste of Gmail's quota that would look like a leak.
+    """
+    if internal_date is None:
+        return
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE email_oauth_connections
+                      SET cursor_internal_date =
+                              GREATEST(COALESCE(cursor_internal_date, 0), %s),
+                          last_polled_at = %s,
+                          updated_at = %s
+                    WHERE provider = %s""",
+                (int(internal_date), _now(), _now(), provider))
+
+
+def touch_oauth_poll(provider: str = "gmail"):
+    """Record that a poll ran, whether or not it found anything.
+
+    A mailbox that is connected and quiet and a mailbox that is connected and
+    not being polled look identical without this, and only one of them is fine.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE email_oauth_connections SET last_polled_at = %s
+                    WHERE provider = %s""", (_now(), provider))
+
+
+def delete_oauth_connection(provider: str = "gmail") -> bool:
+    """Remove the connection and the stored tokens with it.
+
+    A real DELETE rather than a status flag. A disconnected mailbox whose
+    refresh token was still on disk would be a credential nobody believes they
+    still hold, which is the worst kind to keep.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM email_oauth_connections WHERE provider = %s",
+                        (provider,))
+            return cur.rowcount > 0
+
+
+# ---- pending authorizations (state + PKCE) --------------------------------
+def create_pending_authorization(state: str, provider: str, code_verifier: str,
+                                 redirect_uri: str, requested_by: str,
+                                 expires_at: str):
+    """Record an outbound authorization request so the callback can be checked.
+
+    Also opportunistically clears expired rows. There is no sweeper job in this
+    project -- Phase D's review claims established the pattern of tidying lazily
+    on the next write of the same kind -- and this table only ever grows by one
+    row per click of a button only an administrator can reach.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM oauth_pending_authorizations WHERE expires_at < %s",
+                        (_now(),))
+            cur.execute(
+                """INSERT INTO oauth_pending_authorizations
+                   (state, provider, code_verifier, redirect_uri, requested_by,
+                    created_at, expires_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                (state, provider, code_verifier, redirect_uri, requested_by,
+                 _now(), expires_at))
+
+
+def consume_pending_authorization(state: str, provider: str = "gmail"):
+    """Claim a pending authorization exactly once, or refuse it.
+
+    SINGLE USE, AND THAT IS THE POINT. The row is locked with SELECT ... FOR
+    UPDATE and stamped `consumed_at` inside the same transaction that reads it
+    -- the same pattern `claim_review()` and `record_human_review()` use, for
+    the same reason. Two callbacks arriving with one state value (a replayed
+    redirect, a double-clicked consent, a code someone lifted out of a browser
+    history) cannot both read it as unconsumed, so at most one can ever be
+    exchanged for a token.
+
+    Returns the row on success, or None if the state is unknown, expired,
+    already used, or for a different provider. The caller cannot tell those
+    apart, and should not: each one means "do not exchange this code".
+    """
+    if not state:
+        return None
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT * FROM oauth_pending_authorizations
+                    WHERE state = %s FOR UPDATE""", (state,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            if row["consumed_at"] or row["provider"] != provider:
+                return None
+            if str(row["expires_at"]) < _now():
+                return None
+            cur.execute(
+                """UPDATE oauth_pending_authorizations SET consumed_at = %s
+                    WHERE state = %s""", (_now(), state))
+            return dict(row)
 
 
 def clear_run_history():

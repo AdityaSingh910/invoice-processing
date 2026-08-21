@@ -33,7 +33,7 @@ vendor binding no token can assert (§7g).
 - **Backend** (`backend/`) — FastAPI, PostgreSQL, the 9-stage pipeline, the
   deterministic rule engine, OAuth2 auth, document storage, multi-user review
   collaboration, email trusted-source verification (§7a), email invoice
-  ingestion (§7b), the derived-at-read-time KPI/analytics layer (§7c), and the
+  ingestion (§7b) and the Gmail OAuth mailbox connection on top of it (§7h), the derived-at-read-time KPI/analytics layer (§7c), and the
   log/filter/grouping/export query layer over the histories those phases
   already write (§7d), hardened by the Phase K security pass (§7e), the
   read-only AP assistant (§7f), and the externally-reachable supplier portal
@@ -45,8 +45,9 @@ vendor binding no token can assert (§7g).
 - **`data/`** — seed POs, vendors, demo users (JSON, tracked in git,
   reloaded into Postgres on every startup) plus gitignored runtime state
   (`documents/`).
-- **`tests/`** — 1,398 tests, 27 files, real (schema-isolated) PostgreSQL, both
-  LLM providers mocked. See §10.
+- **`tests/`** — 1,546 tests, 28 files, real (schema-isolated) PostgreSQL, both
+  LLM providers mocked, and Google mocked at the two functions that open a
+  socket. See §10.
 
 ---
 
@@ -73,6 +74,7 @@ history — do not conflate them:
 | E | Review workflow hardening | ✅ Complete | `66e6f79` |
 | F | Email security & trusted-source verification | ✅ Complete | `d351869` |
 | G | Email invoice ingestion & extraction | ✅ Complete | `8dfc286` |
+| G2 | Gmail OAuth connection (on top of G) | ✅ Complete | see §13.1 |
 | H | KPIs + analytics | ✅ Complete | `9bdbeeb` (backend) + `96b3f92` (frontend) |
 | I | Logs + filters + grouping + exports | ✅ Complete | `248009e` |
 | J | Client access / client portal | ✅ Complete | `79b5b54` |
@@ -94,7 +96,7 @@ This project has been built one verified phase at a time, each requested
 individually, each committed on its own before the next began. See §9 for
 what J–M are planned to cover — plan only, nothing implemented.
 
-**Do not redo A–K2, or J.** All are complete, tested, and committed. A–I and
+**Do not redo A–K2, J, or G2.** All are complete, tested, and committed. A–I and
 K were committed in their respective phases; K2 (the assistant) was committed
 in `86f4421`; J (the supplier portal) has its own commit — see §13.1. See §7f
 for what K2 does and §7g for what J does. If something in them looks wrong,
@@ -366,6 +368,25 @@ email_activity    id (PK, SERIAL), email_id (FK → email_messages.id),
                   — append-only history for a message. Separate from
                   invoice_activity because that table's run_id is NOT NULL
                   and a quarantined message has no run (Phase F, §7a.7)
+
+email_oauth_connections
+                  id (PK, SERIAL), provider, email_address, status, scopes,
+                  refresh_token_encrypted, access_token_encrypted,
+                  access_token_expires_at, cursor_internal_date, connected_by,
+                  connected_at, updated_at, last_polled_at, last_error
+                  — the connected Gmail mailbox. UNIQUE(provider), so there is
+                  ONE mailbox per provider and reconnecting replaces.
+                  THE FIRST NON-DERIVABLE THING THIS PROJECT STORES: a refresh
+                  token is issued once by Google and cannot be recomputed from
+                  anything on file, which is exactly why it needs a row (§7h.4)
+
+oauth_pending_authorizations
+                  state (PK), provider, code_verifier, redirect_uri,
+                  requested_by, created_at, expires_at, consumed_at
+                  — one row per outbound consent request, so the callback can
+                  verify it. In the database rather than in process memory
+                  because several uvicorn workers do not share memory and the
+                  callback can land on a different one (§7h.5)
 ```
 
 **Not database tables, despite looking like they should be:** users live in
@@ -382,7 +403,8 @@ Indexes: `run_allocations(po_number)`, `run_allocations(run_id)`,
 `email_messages(status)`, `email_messages(sha256)`, `email_messages(run_id)`,
 `email_messages(received_at)`, `email_activity(email_id)`,
 `email_activity(created_at)` (Phase I — §7d.1), `runs(client_id)`
-(Phase J — §7g.11),
+(Phase J — §7g.11), **`UNIQUE email_oauth_connections(provider)`** and
+`oauth_pending_authorizations(expires_at)` (Phase G2 — §7h.4),
 **`UNIQUE email_messages(provider, provider_message_id)`** (Phase G's
 idempotency mechanism, §7b.5), `email_messages(ingest_status)`,
 `email_attachments(email_id)`, `email_attachments(run_id)`,
@@ -1093,18 +1115,24 @@ uvicorn workers is safe — see §7b.5.
 
 ### 7b.12 Known limitations
 
-1. **IMAP is the only implemented provider.** The abstraction is real and a
-   second provider is a new class, but Gmail API and Microsoft Graph are *not*
-   implemented and are not claimed.
+1. ~~**IMAP is the only implemented provider.**~~ **SUPERSEDED BY PHASE G2**,
+   which added `GmailApiEmailProvider` as a second class behind the same
+   interface — see §7h. Microsoft Graph is still *not* implemented and is not
+   claimed. The abstraction held: nothing downstream of `fetch()` changed.
 2. **Polling, not webhooks.** IMAP has no webhook; `IDLE` is not implemented
    either, so the worst-case latency is one `EMAIL_POLL_SECONDS` interval.
-3. **OAuth tokens are consumed, not obtained.** `EMAIL_IMAP_OAUTH_TOKEN` is
-   read from the environment; there is no refresh-token flow, so a short-lived
-   token must be refreshed by whatever issues it.
+3. **OAuth tokens are consumed, not obtained — FOR IMAP.**
+   `EMAIL_IMAP_OAUTH_TOKEN` is still read from the environment and still has no
+   refresh flow, so a short-lived token used that way must be refreshed by
+   whatever issues it. **Phase G2 changed this for Gmail only** (§7h): that
+   path runs a real authorization-code flow and refreshes its own access
+   tokens. The IMAP provider was deliberately left exactly as it was.
 4. **PDF only.** The extraction pipeline reads PDFs, so other formats are
    recorded and skipped with a reason rather than half-processed.
-5. **No frontend.** These endpoints have no UI, the same restriction Phases
-   D, E and F worked under (§11).
+5. **No frontend — EXCEPT the Gmail connection screen.** The message,
+   quarantine and attachment endpoints still have no UI, the same restriction
+   Phases D, E and F worked under (§11). Phase G2 added one screen, and only
+   one: connecting a mailbox (§7h.8).
 6. **The relevance filter is a heuristic**, deliberately biased toward
    processing. It can pass junk through to an LLM call; it is built not to stop
    a real invoice, and stopped messages are kept and re-runnable either way.
@@ -2887,6 +2915,544 @@ project has declined to store something derivable (§3, §6.2, §7c.1, §7d.1,
 
 ---
 
+## 7h. Gmail OAuth mailbox connection (Phase G2)
+
+**Status: implemented, tested (144 tests), verified.**
+
+Phase G could already poll a mailbox. What it could not do was **acquire the
+right to poll one** without an operator putting a mailbox password in a `.env`
+file. This closes that, for Gmail specifically, and changes nothing downstream
+of `fetch()`.
+
+**This is not a new phase in the A–M track.** It is Phase G finished for
+production: same brief, same module, same pipeline, one new provider and the
+credential flow that provider needs. Do not treat it as licence to start L or M.
+
+### 7h.1 The problem, stated exactly
+
+`EMAIL_IMAP_PASSWORD` is a long-lived password for an entire mailbox, sitting
+in an environment variable, that must be typed into this application by
+whoever owns the mailbox. Every part of that sentence is a problem: it cannot
+be scoped, it cannot be revoked without changing the password everywhere, it
+grants send and delete along with read, and asking a customer for it is asking
+them to do the thing every security awareness course tells them not to.
+
+### 7h.2 The decision the whole phase rests on
+
+**The Gmail API with `gmail.readonly`, not IMAP with an OAuth token.**
+
+This is the interesting part, because the lazy option genuinely works.
+`ImapEmailProvider` has spoken SASL XOAUTH2 since Phase G (§7b.4), so pointing
+it at Gmail with a Google access token would have needed **no new provider at
+all** — a smaller diff, and Gmail accepts it.
+
+It was rejected on **scope**. Google only grants IMAP access under
+`https://mail.google.com/`, which is full read, write, send and **delete** over
+the entire mailbox. `gmail.readonly` reads messages and downloads attachments
+and can do nothing else. Ingestion reads mail; asking a customer to hand an
+invoice reader the authority to delete their mailbox is over-permissioning, and
+it is the kind that gets noticed in exactly the security review this phase
+exists to survive.
+
+So the refusal is enforced rather than merely recommended:
+`config.GMAIL_REFUSED_SCOPES` lists `mail.google.com`, `gmail.send`,
+`gmail.compose` and both settings scopes, and `gmail_scopes()` **raises** on
+any of them. A deployment cannot configure its way into asking for delete
+authority. `gmail.modify` is the one permitted alternative, for an operator who
+wants ingested mail marked read; nothing requires it.
+
+**What asking for less costs, and why it costs nothing.** `gmail.readonly`
+cannot set a flag, so the IMAP `\Seen` trick is unavailable. That is survivable
+because **this codebase never relied on it**: `email_provider.py`'s own
+docstring has said since Phase G that `mark_handled()` is an optimisation and
+that correctness comes from `UNIQUE (provider, provider_message_id)`. The Gmail
+provider reuses that exact hook to advance a high-water **cursor** over Gmail's
+`internalDate` instead of setting a flag — called at the same point in the
+poll, after the outcome is committed, with the same consequence if it never
+runs: the message is offered again and the database refuses it.
+
+An architectural claim made in Phase G was therefore load-bearing here, a
+phase later, and it held.
+
+### 7h.3 What did NOT change
+
+- **`ImapEmailProvider` is untouched.** Not one line. It is still the right
+  answer for every non-Google mailbox, and `EMAIL_PROVIDER=imap` still selects
+  it, still requires its own environment variables, and is **never overridden
+  by a stored Gmail connection** — a test asserts that specifically.
+- **`ingest_message()`, `email_triage`, `email_security`, `run_pipeline`,
+  `documents`, the quarantine gate and the dedup constraint are all untouched.**
+  A Gmail message is bytes and an id, which is what every consumer downstream of
+  `fetch()` already took.
+- **`source="EMAIL"`** — Gmail *is* email. A third source value would have split
+  the ingestion funnel in analytics (§7c) for no reason anybody could act on.
+- **No new scope.** `invoice:admin` already guarded `/api/email/ingestion`
+  because it describes the mailbox connection; these endpoints change it. Phase
+  J's reason for inventing scopes (§7g.2) does not apply — this adds no new
+  kind of caller, it is the existing administrator doing an administrative
+  thing.
+
+### 7h.4 Storage — the first non-derivable thing this project keeps
+
+Six times now the answer to "should this be stored" has been **no**, because
+the rows already on file could produce it: the PO ledger (§3), the review claim
+(§6.2), every KPI (§7c.1), the log (§7d.1), the assistant's transcript (§7f.5)
+and the portal's client view (§7g.11).
+
+**A refresh token is the opposite case and is worth naming as such.** Google
+issues it once, it cannot be recomputed from anything this application holds,
+and losing it means a human walks the consent screen again. So it is stored —
+and the reason the streak is broken is recorded here rather than left to look
+like an inconsistency.
+
+Two tables (§4). The one rule in that section of `storage.py`:
+
+- **`get_oauth_connection()`** returns the encrypted token columns. Only the
+  poller and the refresh path may call it.
+- **`public_oauth_connection()`** serves everything that answers an HTTP
+  request, and **does not select the token columns at all** — not "selects and
+  then deletes them", which is a habit that survives exactly until someone adds
+  a column. `_PUBLIC_OAUTH_COLUMNS` names what is safe, once, so a column added
+  later is absent by default rather than exposed by default. It reports
+  `has_refresh_token` as a **boolean**, because whether one exists is
+  operationally important and its value is not.
+
+**Encryption is Fernet** (AES-128-CBC + HMAC-SHA256, authenticated and
+versioned) from `cryptography`, which Phase F already made a declared runtime
+dependency for DKIM — **no new package**. The key is derived by HKDF-SHA256
+from `AUTH_SECRET`, with a fixed info string so it is cryptographically
+separated from the JWT signing key even though both descend from the same
+secret.
+
+**A separate `GMAIL_TOKEN_KEY` was considered and rejected**: it would add a
+second mandatory secret, and therefore a second way to misconfigure a
+deployment, without adding security — both live in the same environment, so
+anything that can read one can read the other. What it *would* add is a new
+failure mode where half the secrets were rotated.
+
+**The consequence is real and is stated rather than hidden: rotating
+`AUTH_SECRET` makes a stored Gmail credential undecryptable.** That is already
+that rotation's semantics for every session in the application; it fails closed
+(reported as its own condition, with "reconnect Gmail" as the remedy, and
+nothing falls back to plaintext); and it is fixed by one click. A test asserts
+the failure, and another asserts an undecryptable connection can still be
+*disconnected* — otherwise a rotation would strand it forever.
+
+### 7h.5 The flow, and what makes the callback safe
+
+```
+admin clicks Connect          POST /authorize      [invoice:admin]
+   server mints state + PKCE verifier, stores them bound to that admin
+   returns the Google URL (NOT the state)
+      v
+Google consent screen         the admin authenticates AT GOOGLE
+      v
+GET /callback?code&state      unauthenticated by necessity
+   state consumed under SELECT ... FOR UPDATE -- single use
+   code + verifier exchanged for tokens
+   scopes checked, refresh token required, mailbox address read
+   tokens encrypted, connection saved, poller started
+      v
+303 redirect to /?gmail=connected
+```
+
+**The callback cannot be scoped, and that is not an oversight.** Google
+redirects the administrator's *browser* to it, and a top-level navigation
+carries no `Authorization` header. Its security is the `state`:
+
+- 256 bits from the OS CSPRNG;
+- bound server-side to the administrator who started the flow;
+- expiring in ten minutes (`config.OAUTH_STATE_TTL_SECONDS`);
+- **consumed exactly once**, under `SELECT ... FOR UPDATE` in the same
+  transaction that reads it — the pattern `claim_review()` and
+  `record_human_review()` already use (§4, §7.2). A replayed redirect, a
+  refreshed tab, or a code lifted from browser history finds it already used;
+- and `ratelimit.rate_limit_oauth_callback` bounds guessing it.
+
+**Unknown, expired, already-used and wrong-provider are deliberately
+indistinguishable** to the caller. Each means "do not exchange this code", and
+telling them apart would confirm to somebody probing that a given state once
+existed.
+
+**PKCE is used even though this is a confidential client.** A web-server client
+holds a secret, so PKCE is not strictly required; it costs one hash and it
+closes authorization-code interception, because a code captured from the
+redirect cannot be exchanged without a verifier that never left this server.
+
+**The state is deliberately NOT returned to the page.** A CSRF token handed to
+client-side JavaScript is one an XSS can read. It travels to Google inside the
+URL and comes back in the callback's query string, and the browser never needs
+to see it as data.
+
+**Every exit from the callback is a 303 to a RELATIVE URL carrying one word
+from a closed set** (`main._GMAIL_CALLBACK_RESULTS`). Two properties fall out:
+nothing Google said — no error body, no description, no code — can reach the
+address bar, where it would land in history and every proxy log; and there is
+no caller-supplied destination anywhere in the flow, not even a validated one,
+so an open redirect is impossible rather than guarded against.
+
+### 7h.6 Failure handling, and the three-state rule again
+
+Phase F insisted that `pass` / `fail` / `unavailable` are three states and that
+collapsing the last two is how you flag honest senders as hostile (§7a.4). The
+same discipline applies to a credential:
+
+| What happened | What it means | What the code does |
+|---|---|---|
+| `invalid_grant` from Google | the grant is gone: revoked, expired, password changed | status → `REVOKED`, polling stops, UI says reconnect |
+| network error, DNS failure, timeout | we could not ask | status stays `CONNECTED`, reason recorded, retried next poll |
+| HTTP 401 on an API call | this access token was rejected | refresh once and retry once, then give up |
+
+**Treating a DNS blip as a revocation would disconnect a working mailbox and
+make an administrator walk the consent screen for nothing**, so `OAuthError`
+carries an explicit `terminal` flag and only that flag disconnects. A test
+drives an unreachable Google and asserts the connection is still `CONNECTED`
+with the reason recorded; a mutation making every error terminal breaks exactly
+that test.
+
+The 401 retry is **once**. A second 401 after a genuine refresh means the grant
+is gone, and looping would turn a revoked mailbox into a request flood.
+
+Two conditions are refused at the callback rather than stored, because both
+produce a connection that *looks* successful and fails later inside a
+background poll nobody is watching:
+
+- **insufficient scope** — Google's consent screen lets a user untick
+  permissions;
+- **no refresh token** — without one ingestion stops at the first access-token
+  expiry, an hour later, silently. (`access_type=offline` + `prompt=consent` is
+  what makes Google issue one; without `prompt=consent` a *re*-authorization
+  after a disconnect returns none.)
+
+In both cases the useless grant is handed back to Google rather than left live.
+So is the grant, if storing the connection fails — because storing the tokens
+in the clear instead is not an available fallback.
+
+### 7h.7 Secrets — what is where, and the two backstops
+
+| Secret | Where it lives | Ever leaves? |
+|---|---|---|
+| Google client secret | server environment, read at call time | no — never in a response, never in the authorization URL |
+| refresh token | `email_oauth_connections`, Fernet-encrypted | no — not selected by the public projection, not in any response |
+| access token | same, encrypted, with an absolute expiry | only in an `Authorization` header to Google |
+| `state` / PKCE verifier | `oauth_pending_authorizations` | verifier never leaves the server at all |
+
+Two backstops beyond "nothing deliberately logs a token":
+
+- **`oauth_google._scrub()`** is applied to every message that can be surfaced
+  or persisted, and redacts anything mentioning `refresh_token`,
+  `access_token`, `client_secret`, `id_token` or `code_verifier`. It exists
+  because "nothing deliberately logs a token" is a claim about today's code.
+- **Google's error bodies are parsed for the short `error` CODE and nothing
+  else.** The body also carries a free-text description, and a description is
+  something this module would then be persisting and displaying.
+
+**Google's endpoints are constants in `config.py`, not settings.** An operator
+who could repoint the token endpoint could collect an authorization code and
+the refresh token it buys. `_post_form()` also asserts `https://` rather than
+assuming it — which cannot currently fail, and is exactly why it is cheap to
+check and will still hold if someone later makes an endpoint configurable
+without reading that file.
+
+**NOTHING PHASE K BUILT WAS RELAXED TO MAKE THIS WORK**, and the CSP is the
+one worth stating because it is where a redirect-based flow usually forces a
+concession. It did not: `connect-src 'self'` is untouched because the browser
+never calls Google — the server does, from `urllib`. The navigation to the
+consent screen is a top-level `window.location` assignment, which no directive
+in that policy governs (`form-action 'self'` covers form submissions, and there
+is no `navigate-to`). `frame-ancestors 'none'` also stays as it is: Google
+refuses to be framed, so the flow is a full-page navigation rather than the
+iframe or popup a weaker policy would have tempted.
+
+The live account re-check, the security headers, the existing limiters and the
+production config gate are all unchanged; this phase only *adds* a limiter
+(§7h.5). A Phase G2 test asserts a disabled administrator cannot start the flow
+— Phase K's re-check, exercised on this phase's most sensitive route.
+
+**No new dependency.** Four HTTPS calls on `urllib.request`, the same posture
+that built an IMAP client on `imaplib`. `httpx` is in `requirements.txt` as a
+*test* dependency (fastapi's TestClient needs it) and `google-auth` is not
+present at all; neither belongs in a deployment's supply chain for this,
+least of all one handling the most sensitive credential in the application.
+
+### 7h.8 Turning ingestion on, and the one semantic change
+
+`email_ingest.ingestion_configured()` replaces the old
+`email_ingest_enabled() and provider != "none"` check:
+
+| `EMAIL_PROVIDER` | Polls when |
+|---|---|
+| `imap` | `EMAIL_INGEST_ENABLED=1` — **exactly as before, unchanged** |
+| `gmail` | a live connection is stored |
+| unset / `none` | a live connection is stored ← **the new behaviour** |
+
+An administrator who has just walked through Google's consent screen has said
+"poll this mailbox" more concretely than an environment variable could, and a
+mailbox that shows as **Connected** in the UI while nothing reads it would make
+that badge a statement about nothing. So connecting starts the poller, and
+disconnecting stops it — but only if nothing else is left to read, so an
+`EMAIL_PROVIDER=imap` deployment keeps polling IMAP.
+
+**An explicit setting always wins over stored state.** Only the *absence* of a
+choice is filled in from a connection.
+
+**Starting the poller from the callback needed one piece of plumbing**, and it
+is the sort that is invisible until it is wrong. `start_poller()` used to reach
+for the current event loop, which worked because its only caller was the
+FastAPI startup handler — Starlette runs that *on* the loop. The OAuth callback
+is a sync path operation, so FastAPI runs it in a **worker thread with no
+running loop**, where asking for one raises. `email_ingest.remember_event_loop()`
+is now called once at startup, and `start_poller()` hands the task to that loop
+with `call_soon_threadsafe` when it is called from anywhere else. Creating a
+task on a loop from another thread is not safe; this is the supported way to
+ask the loop to do it itself.
+
+### 7h.9 Endpoints
+
+```
+GET  /api/email/oauth/gmail/status      [invoice:admin]  connected? mailbox? last error?
+POST /api/email/oauth/gmail/authorize   [invoice:admin]  -> the Google URL
+GET  /api/email/oauth/gmail/callback    (state-validated) where Google redirects
+POST /api/email/oauth/gmail/disconnect  [invoice:admin]  revoke at Google + delete
+```
+
+`/authorize` returns a URL rather than issuing a 302, because the caller is an
+XHR from the admin screen: a redirect to `accounts.google.com` would be
+followed by `fetch` rather than by the browser, landing Google's HTML in a JSON
+parser instead of in front of the administrator.
+
+**Disconnect does both halves, in that order, and the local half happens either
+way.** Google being unreachable must not leave an administrator unable to
+disconnect a mailbox — a token Google still honours but nobody holds is a
+smaller problem than a credential this application cannot let go of. What was
+actually achieved is reported (`revoked_at_google`) rather than assumed, with a
+`notice` pointing at myaccount.google.com when it was not.
+
+### 7h.10 Frontend
+
+One screen, in a new **Administration** nav group, gated on `invoice:admin` —
+which is a courtesy so nobody renders a row that only returns 403, not a
+control: every endpoint re-checks server-side.
+
+`components/pages/SettingsPage.tsx` shows connection state, the mailbox
+address, who connected it, when it was last polled, which permission was
+granted, whether collection is running, and the last error — plus Connect,
+Check now, Reconnect and Disconnect.
+
+**The page handles no secret, and that is structural rather than careful.** The
+client secret is in the server environment, the refresh token is encrypted in
+the database, and the `state` is deliberately not returned by `/authorize`. What
+this component holds is a URL to navigate to and a status object with no
+token-shaped field in it — there is nothing here to leak. `lib/types.ts` mirrors
+that: `GmailConnection` has no token field and nowhere for one to arrive.
+
+The callback outcome is read once from `?gmail=` and then **removed from the
+address bar** with `history.replaceState`, so a reload does not replay a stale
+"connected" banner over a mailbox that has since been disconnected.
+
+**`app/page.tsx` also opens on the settings section when `?gmail=` is present**,
+rather than on Overview. Found by reading the flow rather than by a test, and
+it is not cosmetic: the person coming back from Google left from the Email
+integration screen, and the default landing would have dropped them somewhere
+that says nothing about what just happened, with the outcome sitting unread in
+the address bar — including the failure cases, which are the ones that most
+need to be seen. The helper is lazily evaluated and guarded on
+`typeof window`, because this is a static export and there is no `window`
+during prerender.
+
+**THE ROUND TRIP TO GOOGLE DOES NOT SIGN THE ADMINISTRATOR OUT, AND NOBODY
+SHOULD "FIX" IT AS IF IT DID.** The bearer token lives in `sessionStorage`,
+which Phase K's audit specifically approved because it dies with the tab
+(§7e.8). `sessionStorage` is scoped to tab **and origin**, so navigating that
+tab to `accounts.google.com` and back leaves this origin's entry intact — the
+administrator returns still signed in. Moving the token to `localStorage` to
+"survive the redirect" would weaken a control Phase K deliberately chose, to
+solve a problem that does not exist.
+
+Two states are kept apart that a lesser screen would collapse into "not
+connected": **no OAuth client configured** (needs the environment edited and a
+restart) and **configured but not connected** (needs somebody to click
+Connect). They have completely different remedies, and showing the wrong one
+sends an administrator to the wrong fix.
+
+Files: **new** `components/pages/SettingsPage.tsx`; edits to `lib/types.ts`,
+`components/ui/icons.tsx` (one icon, appended), `components/layout/AppShell.tsx`
+(one nav group, and the `Section`/`NavId` unions) and `app/page.tsx` (routing).
+
+### 7h.11 Deployment configuration
+
+Full setup instructions are in `.env.example` and README. In summary:
+
+1. Google Cloud console → enable the **Gmail API**.
+2. OAuth consent screen → **Internal** for a Workspace domain (no verification
+   needed), **External** otherwise (which requires Google's review before
+   anyone outside your test users can connect). Add `gmail.readonly` only.
+3. Credentials → OAuth client ID → **Web application**.
+4. Authorised redirect URI, matched by Google character for character:
+   `https://<your origin>/api/email/oauth/gmail/callback`
+
+```
+GOOGLE_OAUTH_CLIENT_ID        required
+GOOGLE_OAUTH_CLIENT_SECRET    required   — .env or a secret store, never in git
+GOOGLE_OAUTH_REDIRECT_URI     required   — exact match with the console
+GMAIL_OAUTH_SCOPES            default gmail.readonly
+GMAIL_SEARCH_QUERY            default -in:chats
+GMAIL_BACKFILL_DAYS           default 0
+GMAIL_CURSOR_OVERLAP_SECONDS  default 300
+AUTH_SECRET                   REQUIRED — the token encryption key derives from it
+```
+
+**Google requires HTTPS for any redirect URI that is not `localhost`**, so a
+real deployment must be behind TLS before this works at all. That is Phase M's
+territory and is a genuine prerequisite, not a nicety.
+
+### 7h.12 Tests
+
+`tests/test_gmail_oauth.py`, **144 tests**, driven over real HTTP through the
+real app wherever the claim is about an endpoint.
+
+**Google is mocked at `oauth_google._post_form` and `oauth_google.api_get`** —
+the only two functions in the codebase that open a socket. Everything above
+them is real: PKCE, the authorization URL, the encryption, the storage, the
+provider's paging and cursor arithmetic, the endpoints and their scopes. No
+test needs a Google account, a client secret, or a network. The fake implements
+enough of Google to be worth testing against: the `after:` bound is really
+applied, paging really pages, and a revoked refresh token really produces
+`invalid_grant`.
+
+The DKIM fixture is the Phase G one — a **real generated keypair and a genuine
+signing pass** — so a Gmail message that reaches the pipeline in these tests
+got there by passing actual cryptography, exactly as it would in production.
+
+Verified against passing vacuously by mutation — **eight mutations, each
+breaking exactly the tests that should break**, all reverted and re-verified
+green:
+
+| Mutation | Broke | Correct? |
+|---|---|---|
+| a consumed state can be replayed | 2 (endpoint replay, storage single-use) | ✅ |
+| tokens stored in plaintext | 36 (encryption, leak greps, and everything downstream) | ✅ |
+| `/authorize` drops to `invoice:read` | 3 (viewer, analyst, reviewer) | ✅ |
+| every OAuth error treated as terminal | 1 (network failure must not revoke) | ✅ |
+| the backlog drains newest-first | 1 (oldest-first ordering) | ✅ |
+| the redirect accepts any result word | 1 (result-word injection) | ✅ |
+| the public projection selects `*` | 2 (status endpoint leak, projection shape) | ✅ |
+| `start_poller` forgets the remembered event loop | 1 (connecting really starts polling) | ✅ |
+
+**FOUR REAL REGRESSIONS WERE INTRODUCED BY THIS WORK AND CAUGHT BY THE EXISTING
+SUITE, NOT BY THE NEW FILE.** All four are recorded rather than quietly fixed,
+because "run the FULL suite, not just the file you changed" earned its place in
+the handoff checklist by exactly this, and because in every case **the existing
+test was doing its job.**
+
+1. **`test_email_ingestion.py::test_polling_while_disabled_is_refused_clearly`.**
+   Broadening the manual-poll endpoint's 409 condition from "ingestion is
+   disabled" to "there is no mailbox" also changed its message, and that test
+   asserts the word *disabled* appears in it. The status code and the behaviour
+   were both unchanged; only the wording had drifted. **The fix was to the
+   message, not to the test** — it now reads "Email ingestion is disabled.
+   Connect Gmail from Settings, or set `EMAIL_INGEST_ENABLED=1`…", which keeps
+   the existing contract and is more useful than either version was.
+
+2. **`test_analytics.py::test_the_new_indexes_exist_and_the_schema_gained_no_table`**
+   and 3. **`test_logs.py::test_phase_i_adds_one_index_and_no_table`.** Both
+   enumerate **every** table in the schema and compare the whole set, precisely
+   so that a table nobody mentioned shows up here. Phase G2 adds two. The two
+   names were added to those allowlists — and **nothing else in either test was
+   touched**: Phase H must still add no rollup and Phase I must still add no
+   log table, and both of those assertions are untouched and still pass. This
+   is the same fix Phase J made when its two demo supplier accounts tripped
+   `test_the_shipped_user_store_is_marked_as_demo` (§10), for the same reason:
+   maintaining the expected set is what keeps the check working at all.
+
+4. **`test_client_portal.py`'s internal-route sweep.** It enumerates every
+   route from `app.routes` — deliberately, so a later phase cannot outgrow a
+   hand-written list — and requires a client token to get 401 or 403 from each.
+   The OAuth callback **cannot** answer either: Google redirects a browser to
+   it, so it does not authenticate at all (§7h.5).
+
+   **The accepted status codes were NOT widened**, which would have blunted the
+   sweep for all forty-odd other routes. The callback got an explicit exception
+   in the same shape as the `/api/auth/me` one already there, asserting the
+   property that actually matters instead of a status code: a caller without a
+   valid state is redirected to `invalid_state` and **no connection is
+   created**. Holding a client token buys nothing there — which is the claim
+   the sweep exists to make, stated directly.
+
+   That exception initially failed for an unrelated reason worth noting: the
+   TestClient follows redirects, so the shared call reported the app shell's
+   200 rather than the callback's 303. It now re-issues with
+   `follow_redirects=False`.
+
+**A FIFTH BUG WAS FOUND BY READING THE FLOW RATHER THAN BY A TEST — BECAUSE THE
+TEST THAT SHOULD HAVE CAUGHT IT WAS STUBBING THE THING UNDER TEST.**
+
+`test_connecting_starts_the_background_poller` monkeypatched
+`email_ingest.start_poller` and asserted it was called. It was called. It also
+did nothing: `start_poller()` reached for the current event loop, and the OAuth
+callback is a sync FastAPI endpoint, which runs in a worker thread where there
+is no running loop (§7h.8). Connecting a mailbox would have shown **Connected**
+in the UI while nothing polled it until the next restart — the exact promise
+this phase exists to make, quietly broken, with a green test over it.
+
+The fix is the `remember_event_loop()` / `call_soon_threadsafe` handoff in
+§7h.8. The test was replaced with one that **does not stub anything** and
+asserts `poller_running()` afterwards, plus two siblings covering "no mailbox,
+no poller" and "starting twice does not run two". Reverting the fix breaks
+exactly the first of those and nothing else — verified.
+
+The lesson generalises and is worth keeping: **a test that monkeypatches the
+function whose effect it is asserting proves only that a call happened.**
+
+Acting on it found a second instance in the same file:
+`test_disconnect_stops_the_poller` stubbed `stop_poller` and asserted the call.
+It now starts the poller for real, disconnects, and asserts `poller_running()`
+is False — with a sibling checking that disconnecting Gmail does **not** stop
+an IMAP deployment that was also polling. Every remaining `monkeypatch` in the
+file is at a genuine boundary: the two functions that open a socket, the DKIM
+resolver, the extraction spy, a clock, or a deliberately-failing dependency.
+
+### 7h.13 Known limitations
+
+1. **Gmail only.** Microsoft Graph / Outlook is not implemented and is not
+   claimed. The provider abstraction now has two real implementations rather
+   than one, which is evidence it works, not a claim that a third is free.
+2. **One mailbox per provider.** `UNIQUE(provider)` — this application ingests
+   into a single shared AP queue, so "the company's invoice mailbox" is
+   singular. Several Gmail accounts would need a column on `email_messages`
+   saying which one a message came from, and nothing downstream has anywhere to
+   put that.
+3. **Rotating `AUTH_SECRET` requires reconnecting the mailbox** (§7h.4).
+   Fails closed and reports itself, but it is real.
+4. **Still polling, not push.** Gmail *does* offer push via Cloud Pub/Sub, and
+   it was deliberately not used: it needs a Pub/Sub topic, a public HTTPS
+   endpoint, a subscription and its own auth — an entire second delivery path,
+   with the polling one still needed as a fallback. Worst-case latency stays
+   one `EMAIL_POLL_SECONDS` interval.
+5. **The cursor is a high-water mark with a fixed overlap.** A message
+   delivered with an `internalDate` further behind the mark than
+   `GMAIL_CURSOR_OVERLAP_SECONDS` would not be picked up. The default is five
+   minutes; a deployment seeing genuinely late delivery should raise it, at the
+   cost of listing more ids per poll (not of downloading more messages — an
+   already-ingested id is never fetched).
+6. **An External OAuth consent screen needs Google's verification** before
+   anyone outside the configured test users can connect. That is Google's
+   process, measured in days to weeks, and no code here can shorten it.
+   Internal (Workspace) apps skip it entirely.
+7. **`format=raw` is trusted to be byte-exact** for DKIM verification. It is
+   what Google documents and it is what the tests assert against
+   round-tripped bytes, but if Google ever normalised a header in transit a
+   legitimate signature would fail and the message would be quarantined —
+   which is the safe direction to be wrong in, and would be visible as a
+   verification failure rather than as a silent loss.
+8. **Rate limits are per process** (§7e.8), which now includes the OAuth
+   callback limiter.
+9. **No frontend test suite exists in this project** (§11.4), so the settings
+   screen is verified by `tsc --noEmit`, `npm run build` and driving the real
+   app. The backend behind it is covered by the 144 tests above.
+
+---
+
 ## 8. Authentication, authorization
 
 - **OAuth 2.0 resource-server pattern.** `Authorization: Bearer <JWT>`,
@@ -2899,6 +3465,8 @@ project has declined to store something derivable (§3, §6.2, §7c.1, §7d.1,
   `portal:submit` for external ones (Phase J). Demo roles: `viewer` (read
   only), `analyst` (+process), `reviewer` (+review), `admin` (+override any
   status), plus `client` and `client_readonly` for suppliers.
+  `invoice:admin` also gates connecting and disconnecting the Gmail mailbox
+  (§7h.9); no new scope was created for it.
   **No client role carries any `invoice:*` scope and no internal role carries
   any `portal:*` scope** — that separation, not a per-endpoint filter, is what
   keeps external callers out of all 43 internal routes (§7g.2).
@@ -2960,6 +3528,32 @@ reason rather than the plan pretending otherwise.
 **Implemented, tested and verified — see [§7b](#7b-email-invoice-ingestion--extraction-phase-g)
 for what it does, and §7b.12 for what it deliberately does not.** This entry is
 a marker only; §7b is the authority.
+
+### Phase G2 — Gmail OAuth mailbox connection (DONE)
+
+**Implemented, tested and verified — see [§7h](#7h-gmail-oauth-mailbox-connection-phase-g2)
+for what it does, and §7h.13 for what it deliberately does not.** This entry is
+a marker only; §7h is the authority.
+
+**NOT A NEW PHASE IN THE A–M TRACK.** It is Phase G finished for production:
+the same brief, the same module, the same pipeline, one new provider and the
+credential flow that provider needs. It was asked for individually, exactly as
+every other phase here was, and it does not license starting L or M.
+
+Two things came out of it as decisions rather than defaults:
+
+- **The Gmail API was chosen over IMAP-with-XOAUTH2 even though the IMAP
+  provider already speaks XOAUTH2 and would have needed no new code.** Google
+  only grants IMAP under `https://mail.google.com/` — full read, write, send
+  and delete. `gmail.readonly` is what ingestion actually needs, and the
+  broader scopes are *refused* by configuration rather than merely discouraged
+  (§7h.2).
+- **`mark_handled()` was repurposed rather than replaced.** Read-only cannot
+  set a flag, so the Gmail provider advances a high-water cursor through the
+  same hook, at the same point in the poll. That worked because Phase G had
+  already committed to the constraint — not the flag — being what guarantees
+  idempotency, which made an architectural claim from a phase earlier
+  load-bearing here.
 
 ### Phase H — KPIs & analytics (DONE)
 
@@ -3088,6 +3682,7 @@ signature verified, an actual signature actually verified.
 | File | Tests | Covers |
 |---|---|---|
 | `test_client_portal.py` | 174 | Phase J: client authentication through the real password grant, both directions of the scope boundary (no client role holds an `invoice:*` scope, no internal role holds a `portal:*` one), a parametrised sweep of EVERY internal route enumerated from `app.routes`, isolation in both directions across the list, detail, document metadata, document bytes and purchase orders, IDOR through path, query string, body and forged token claims, the fail-closed handling of every incomplete binding, deactivation and demotion landing on the next request, the vendor-name collision rule, no-leak greps over every response, the frozen explanation table and its fallback, the client-visible timeline, submission (attribution, source, the same pipeline, no streamed stage names, both budgets, both limiters), the vendor-identity guard, and a read-only assertion against the module's parsed source |
+| `test_gmail_oauth.py` | 144 | Phase G2: token encryption at rest (round trip, non-determinism, fail-closed on a rotated AUTH_SECRET), PKCE and the authorization URL, the refused-scope table, authorization initiation, state/CSRF validation (forged, expired, replayed, wrong-provider, missing), a successful callback end to end, every rejected callback path (cancel, failed exchange, insufficient scope, no refresh token, storage failure), token refresh (reuse, expiry, early-refresh skew, refresh-token preservation), revoked and expired grants including the three-state rule that a network failure must NOT revoke, connect/disconnect and remote-revoke failure, authorization enforcement across every endpoint and role, no-leak greps over every response and the provider description, Gmail retrieval (byte-exact raw, oldest-first, cursor, overlap, paging, oversized), provider selection, duplicate handling with and without the pre-filter, Phase F verification and quarantine/release over a Gmail message, the existing pipeline reached through Gmail, and that IMAP is untouched |
 | `test_chat.py` | 87 | Phase K2: deterministic intent routing, retrieval against real records, the per-person authorization rule from both sides, prompt injection (fenced facts, defanged closing tag, line items that never arrive at all), secret-extraction and payment/correctness refusals, citations that cannot be fabricated, input and history validation, every provider failure degrading to the records, the separate daily budget, and two tests asserting the module is read-only against its parsed source |
 | `test_security_hardening.py` | 81 | Phase K: account deactivation and the live re-check (revocation, demotion, scope intersection), per-account login limiting, the reporting/export limiter across all thirteen endpoints, HTTP security headers incl. the SSE path and the production-only HSTS, CORS read per request, .env-bound settings, plus the boundaries the audit re-verified — no hash or secret in any response, no path or traceback in an error, storage-key traversal, hostile filter values, and the email quarantine gate |
 | `test_logs.py` | 204 | Phase I: retrieval and context joins, total ordering under identical timestamps, every filter and every combination, the reused date window, LIKE-metacharacter escaping, grouping and its per-person authorization, the two streams, event detail, the per-run stage view (order, unmeasured-is-null, refused filters, malformed blobs), both CSV exports (list-parity, formula neutralisation, truncation, no-leak greps), HTTP authorization, read-only-ness, and the one new index |
@@ -3117,6 +3712,38 @@ signature verified, an actual signature actually verified.
 
 (Counts verified via `pytest --collect-only -q` on the current tree — not
 copied from an old table.)
+
+**Verified state at the end of Phase G2** (2026-08-21).
+`tests/test_gmail_oauth.py` alone: **144 passed.**
+
+| Run | Result |
+|---|---|
+| Phase J's recorded state, tree at `79b5b54` | 1,398 tests — 1,386 passed, 12 failed |
+| **After Phase G2** | 1,546 tests — **1,534 passed, 12 failed** |
+
+1,534 − 1,386 = 148 = the 144 tests this phase added **plus 4**, and the 4 are
+worth naming rather than hand-waving: `test_client_portal.py`'s internal-route
+sweep is parametrised over the routes it reads from `app.routes` itself, so
+adding four endpoints added four cases to it automatically. That is the sweep
+working exactly as designed — a phase cannot add a route it forgets to test.
+
+**THE TWELVE FAILURES ARE THE SAME TWELVE BY NAME** as Phase J recorded: ten in
+`test_extraction_routing.py`, `test_confidence.py`'s end-to-end case, and
+`test_samples.py`'s scanned sample. All are live-provider cases;
+`test_extraction_routing.py` passes **23/23 when run alone**, re-verified
+immediately after this run. Phase G2 touches no extraction code.
+
+**Three of those twelve were briefly FIFTEEN**, and the three extra were real
+regressions this phase introduced — two schema-enumeration tests and the
+client-portal route sweep. All three are fixed and all three are recorded in
+§7h.12 along with the reasoning for each fix. **None of the three was
+loosened.**
+
+Those 144 were checked against passing vacuously by mutation — eight mutations,
+each breaking exactly the tests that should break, all reverted and re-verified
+green. The table is in §7h.12, along with the two tests that were **stubbing
+the very function whose effect they asserted** and therefore passed over a real
+bug (the poller never starting from the OAuth callback).
 
 **Verified state at the end of Phase J** (2026-08-21).
 `tests/test_client_portal.py` alone: **174 passed.**
@@ -3436,6 +4063,7 @@ Phase K2 Assistant screen and Phase J supplier portal are all in the history.
 | Phase H Analytics screen | `96b3f92` |
 | Phase K2 Assistant screen | `86f4421` |
 | Phase J supplier portal | `79b5b54` |
+| Phase G2 Gmail connection screen | see §13.1 |
 
 ### 11.0 There are TWO frontends in one bundle (Phase J)
 
@@ -3457,13 +4085,14 @@ decides which PRODUCT the person is looking at. See §7g.9.
 ### 11.1 What the INTERNAL frontend is
 
 A Next.js 15 / React 19 / Tailwind v4 static export, served by FastAPI from
-`frontend-next/out/`, in **six sections across eight nav rows**:
+`frontend-next/out/`, in **seven sections across nine nav rows**:
 
 ```
 OPERATIONS   Overview            performance, and what is blocked on a person
              Process invoice     upload and run                [invoice:process]
              Invoices            the full register
              Review queue        the same section, filtered     (badge = open holds)
+ADMIN        Email integration   connect a Gmail mailbox       [invoice:admin]
 REPORTING    Analytics           Phase H KPIs and trends
              Assistant           Phase K2, ask about your invoices
 REFERENCE    Purchase orders     the same section, orders tab
@@ -3545,7 +4174,7 @@ is already configured.
 
 ```powershell
 .\start.ps1                 # installs deps, generates samples, starts server, opens browser
-.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,398 tests, no key/network needed
+.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,546 tests, no key/network needed
 .\reset-demo.ps1             # clear run history (samples are order-dependent)
 .\reset-demo.ps1 -Replay     # clear, then drive all 10 samples through the API
 ```
@@ -3584,9 +4213,19 @@ any of them present.
   serving the old one (the HTML shell is served `no-store` specifically to
   avoid this class of problem, but the export itself still has to be rebuilt).
 - **Email ingestion is OFF by default and stays off** unless both
-  `EMAIL_INGEST_ENABLED=1` and `EMAIL_PROVIDER=imap` are set (§7b.11). Nothing
-  polls a mailbox and no outbound connection is made otherwise, so the demo
-  and the test suite are unaffected by it.
+  `EMAIL_INGEST_ENABLED=1` and `EMAIL_PROVIDER=imap` are set (§7b.11), **or a
+  Gmail mailbox has been connected through Settings → Email integration**
+  (§7h.8). Nothing polls a mailbox and no outbound connection is made
+  otherwise, so the demo and the test suite are unaffected by it.
+- **Connecting Gmail needs a Google OAuth client** (`GOOGLE_OAUTH_CLIENT_ID`,
+  `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`) and **an
+  `AUTH_SECRET`**, because the stored token's encryption key derives from it.
+  Without a client the settings screen says so and names the variables rather
+  than failing at the consent screen (§7h.10). Google requires HTTPS for any
+  redirect URI that is not `localhost`.
+- **Rotating `AUTH_SECRET` disconnects Gmail** as well as signing everyone out
+  — the stored credential can no longer be decrypted. It fails closed and the
+  fix is to click Connect again (§7h.4).
 - **Email endpoints exist but have no UI** (§7b.12) — exercise them with the
   API directly, or through `POST /api/email/messages` with a `.eml` file.
 
@@ -3604,7 +4243,41 @@ any of them present.
 | K | `2b0f97e` | ✅ Committed (security hardening) |
 | K2 | `86f4421` | ✅ Committed (read-only assistant) |
 | J | `79b5b54` | ✅ Committed (supplier portal) |
+| G2 | see §13.3 | ✅ Committed (Gmail OAuth connection) |
 | L, M | — | ⬜ Not started |
+
+**Phase G2's schema change is TWO TABLES** — `email_oauth_connections` and
+`oauth_pending_authorizations` (§4, §7h.4). No column was added to any existing
+table and no existing table was altered. Both are created by `init_db()` in the
+same block as everything else, so an existing database picks them up on the
+next startup.
+
+**A refresh token is the first thing this project stores that is not derivable
+from rows already on file**, and §7h.4 records why the six-times-running
+"derive it, do not store it" answer does not apply to a credential Google
+issues once.
+
+| Phase G2 part | Where |
+|---|---|
+| `backend/oauth_google.py` — the flow, PKCE, refresh, revoke, encryption | new file |
+| `backend/email_provider.py` — `GmailApiEmailProvider`, cursor, `get_provider()` | edit |
+| `backend/storage.py` — two tables, the public/private projection split | edit |
+| `backend/config.py` — the Google settings and the refused-scope table | edit |
+| `backend/main.py` — 4 `/api/email/oauth/gmail` endpoints | edit |
+| `backend/email_ingest.py` — `ingestion_configured()`, the loop handoff, status | edit |
+| `backend/ratelimit.py` — the unauthenticated callback limiter | edit |
+| `frontend-next/components/pages/SettingsPage.tsx` — the admin screen | new file |
+| `tests/test_gmail_oauth.py` — 144 tests | new file |
+| `tests/test_analytics.py`, `test_logs.py` — two table allowlists | edit (§7h.12) |
+| `tests/test_client_portal.py` — the route sweep's callback exception | edit (§7h.12) |
+| Documentation (§7h) | `CLAUDE.md`, `README.md`, `.env.example` |
+
+**Three EXISTING test files were edited, and §7h.12 says exactly why for each.**
+None of them was loosened: two schema allowlists gained the two tables Phase G2
+really adds (their "no rollup" / "no log table" assertions are untouched), and
+the client-portal sweep gained one explicit exception that asserts a stronger
+property than the status code it replaced. If any of these look like a test
+being bent to fit, read §7h.12 before changing them back.
 
 **Phase J's schema change is ONE COLUMN AND ONE INDEX** — `runs.client_id` and
 `idx_runs_client_id` (§7g.11). No `clients` table, no portal session table, no
@@ -3713,15 +4386,15 @@ the code, verify against the code directly rather than trusting either.
 
 1. Read this file, then `README.md`.
 2. `git status` — expect only `claudee.md` UNTRACKED, and no uncommitted changes.
-   `git log --oneline -10` — expect the Phase J commit at (or one below) the tip.
+   `git log --oneline -10` — expect the Phase G2 commit at (or one below) the tip.
    `git branch -v` — expect `main` ahead of `origin/main` unless it has been pushed.
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
-4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **1,386 passed, 12 failed**
-   (total of 1,398 tests, including 174 from J, 87 from K2, 81 from K security
-   hardening, 204 from Phase I logs, 119 from Phase H analytics, plus all A–G
-   tests). **Run the FULL suite, not just the file you changed** — Phase J
-   introduced two real problems that were invisible when either file ran alone
-   (§10).
+4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **1,534 passed, 12 failed**
+   (total of 1,546 tests, including 144 from G2, 174 from J, 87 from K2, 81 from
+   K security hardening, 204 from Phase I logs, 119 from Phase H analytics, plus
+   all A–G tests). **Run the FULL suite, not just the file you changed** — Phase
+   J introduced two real problems invisible when either file ran alone, and
+   Phase G2 introduced three more, in three files it had not touched (§7h.12).
    The 12 failures are ALL in `test_extraction_routing.py` (10), `test_confidence.py`'s
    end-to-end case (1), and `test_samples.py`'s scanned sample (1). Those are
    live-provider cases and the count moves with provider health and daily quota,
@@ -3734,5 +4407,8 @@ the code, verify against the code directly rather than trusting either.
    serves the static export in `out/`, so without a rebuild the browser keeps
    serving the old UI. There is no frontend test suite (§11.4).
 6. **Next phase is L** (multilingual support), then M (deployment hardening).
-   A–K2 and J are all committed and complete (§2). Do not start L or M, or any
-   later phase, without being asked (§2, §9).
+   A–K2, J and G2 are all committed and complete (§2). Do not start L or M, or
+   any later phase, without being asked (§2, §9). **G2 is not a licence to
+   start M** — it finished Phase G for production and stopped there; the
+   deployment items §7e.11 lists are still M's, and Phase G2 added one of its
+   own (Google requires HTTPS for a non-localhost redirect URI, §7h.11).

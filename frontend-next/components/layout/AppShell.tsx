@@ -23,6 +23,7 @@ import {
   IconSignOut,
   IconSun,
   IconChat,
+  IconSettings,
   IconUpload,
   IconX,
 } from "@/components/ui/icons";
@@ -33,7 +34,8 @@ export type Section =
   | "assistant"
   | "process"
   | "invoices"
-  | "reference";
+  | "reference"
+  | "settings";
 
 /**
  * Which sidebar ROW is lit.
@@ -56,7 +58,8 @@ export type NavId =
   | "invoices"
   | "review-queue"
   | "purchase-orders"
-  | "approved-vendors";
+  | "approved-vendors"
+  | "settings";
 
 /** `exceptionsOnly` lets a caller (Overview's exception card, or the "Review
  *  queue" nav item) send the reviewer straight to the pre-filtered queue
@@ -116,6 +119,22 @@ const GROUPS: {
         icon: IconShield,
         exceptionsOnly: true,
         badge: true,
+      },
+    ],
+  },
+  {
+    label: "Administration",
+    items: [
+      {
+        // Scoped to invoice:admin, so it does not render for anyone who would
+        // only get a 403 from it. That is a courtesy, not a control -- every
+        // endpoint behind it re-checks the scope server-side.
+        id: "settings",
+        key: "settings",
+        label: "Email integration",
+        hint: "Connect a mailbox",
+        icon: IconSettings,
+        scope: "invoice:admin",
       },
     ],
   },

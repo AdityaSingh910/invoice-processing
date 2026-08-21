@@ -850,14 +850,81 @@ permission that accepts a held invoice. Processing re-reads the *stored*
 security status, so there is no argument a caller can pass that gets around it.
 
 **The provider is replaceable.** IMAP is implemented — real, TLS-only, on the
-standard library, preferring an OAuth2 token over a mailbox password. Anything
-else is a new class behind the same small interface; nothing downstream knows a
+standard library, preferring an OAuth2 token over a mailbox password — and
+**Gmail is implemented too**, over Google's API with an OAuth connection an
+administrator makes from inside the application (next section). Anything else
+is a new class behind the same small interface; nothing downstream knows a
 mailbox exists.
 
-**What it does not do:** Gmail API and Microsoft Graph are not implemented.
-There are no webhooks (IMAP has none) and no `IDLE`, so latency is one poll
-interval. OAuth tokens are consumed from configuration, not refreshed. PDFs
+**What it does not do:** Microsoft Graph is not implemented. There are no
+webhooks (IMAP has none) and no `IDLE`, so latency is one poll interval. PDFs
 only — other formats are recorded and skipped with a reason.
+
+### Connecting Gmail
+
+Putting a mailbox password in a `.env` file is a bad way to hold a credential
+and a worse way to ask a customer for one. So an administrator connects Gmail
+from **Email integration** in the app instead: they sign in at Google, on
+Google's own domain, and this application never sees the password.
+
+```
+Settings → Email integration → Connect Gmail
+   → Google's consent screen
+   → back to the app, connected
+   → the background poller starts on that mailbox
+```
+
+**The permission asked for is `gmail.readonly`** — read messages, download
+attachments, nothing else. It cannot send, reply, delete, or change a label.
+That is the whole reason this uses Google's API rather than IMAP: Google only
+grants IMAP under `https://mail.google.com/`, which is full control of the
+mailbox including deletion. Asking a customer for that in order to read
+invoices is over-permissioning, and the application **refuses** to be
+configured with it.
+
+**No token reaches the browser.** The client secret stays in the server
+environment; the refresh token is encrypted at rest and no endpoint returns it.
+The OAuth `state` is generated server-side, bound to the administrator who
+started the flow, expires in ten minutes, and is consumed under a row lock so
+it works exactly once — and it is deliberately *not* handed to the page, since
+a CSRF token in client-side JavaScript is one an XSS can read. PKCE is used as
+well, so an authorization code intercepted from the redirect cannot be
+exchanged without a verifier that never left the server.
+
+**Nothing downstream changed.** A Gmail message goes through the same Phase F
+sender verification, the same triage, the same quarantine, the same attachment
+validation and the same `run_pipeline` as one fetched over IMAP — a test
+asserts both doors produce identical stage lists and identical audit-trail
+keys. Arriving by Gmail makes an invoice no more trusted: an unsigned message
+is quarantined exactly as it would be over IMAP.
+
+**Read-only means the mailbox cannot be marked read**, which is fine, because
+this codebase never depended on that: `mark_handled()` has always been an
+optimisation, with correctness coming from the `UNIQUE (provider,
+provider_message_id)` constraint. The Gmail provider reuses that same hook to
+advance a high-water cursor over Gmail's own `internalDate` instead. Losing an
+update costs a refetch, never a duplicate.
+
+**Setting up the Google OAuth client** (once per deployment) is documented in
+full in [.env.example](.env.example): enable the Gmail API, create a **Web
+application** OAuth client, register the redirect URI exactly, and set
+
+```
+GOOGLE_OAUTH_CLIENT_ID
+GOOGLE_OAUTH_CLIENT_SECRET
+GOOGLE_OAUTH_REDIRECT_URI   = https://<your origin>/api/email/oauth/gmail/callback
+```
+
+Google requires HTTPS for anything that is not `localhost`, so a real
+deployment must be behind TLS before this works at all. **Set `AUTH_SECRET`**
+as well: the token encryption key is derived from it, so rotating it makes a
+stored Gmail credential undecryptable — which fails closed, reports itself, and
+is fixed by clicking Connect again.
+
+**To revoke:** Disconnect in the app, which revokes at Google *and* deletes the
+local credential. If Google cannot be reached, the local credential is still
+deleted and the UI says so, so you can finish the job at
+[myaccount.google.com/permissions](https://myaccount.google.com/permissions).
 
 ### Frontend state
 
@@ -1234,6 +1301,10 @@ GET  /api/email/ingestion        ingestion config + counts         [invoice:admi
 POST /api/email/ingestion/poll   fetch the mailbox now             [invoice:process]
 POST /api/email/messages/{id}/process   run an admitted message    [invoice:process]
 GET  /api/email/messages/{id}/attachments  what arrived            [invoice:read]
+GET  /api/email/oauth/gmail/status      is Gmail connected        [invoice:admin]
+POST /api/email/oauth/gmail/authorize   begin the Google consent flow [invoice:admin]
+GET  /api/email/oauth/gmail/callback    where Google redirects back   (state-validated)
+POST /api/email/oauth/gmail/disconnect  revoke and forget the mailbox [invoice:admin]
 GET  /api/analytics/overview     headline KPIs + decision mix      [invoice:read]
 GET  /api/analytics/trends       one row per UTC day               [invoice:read]
 GET  /api/analytics/processing   run + per-stage timing, quota     [invoice:read]

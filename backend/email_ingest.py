@@ -684,6 +684,17 @@ def _close_if_owned(provider, own: bool):
 # --------------------------------------------------------------------------
 _poller_task = None
 
+# The event loop the application is actually running on.
+#
+# WHY THIS HAS TO BE REMEMBERED (Phase G2). `start_poller()` was previously
+# only ever called from the FastAPI startup handler, which Starlette invokes
+# from inside the running loop -- so reaching for the current loop there just
+# worked. It is now ALSO called from the Gmail OAuth callback, and a sync
+# FastAPI path operation runs in a worker thread with NO running loop at all.
+# Asking for one there raises, which would have made "connecting a mailbox
+# starts reading it" quietly false until the next restart.
+_main_loop = None
+
 
 async def _poll_forever():
     interval = config.email_poll_seconds()
@@ -709,17 +720,88 @@ async def _poll_forever():
         await asyncio.sleep(max(15, config.email_poll_seconds()))
 
 
+def ingestion_configured() -> bool:
+    """Whether there is actually a mailbox for the poller to read.
+
+    IMAP IS UNCHANGED: it polls when `EMAIL_INGEST_ENABLED` is set, exactly as
+    it always has, and nothing about a Gmail connection turns it on or off.
+
+    What is new is that an unset `EMAIL_PROVIDER` now defers to a stored Gmail
+    connection (Phase G2). An administrator who has just walked through
+    Google's consent screen has expressed the intention more concretely than an
+    environment variable could, and requiring them to ALSO edit `.env` and
+    restart the process would make the "Connected" badge in the UI a statement
+    about nothing. Disconnecting removes the connection and stops the poller by
+    the same rule.
+
+    A provider named explicitly always wins over stored state -- `gmail` still
+    needs a live connection to be worth polling, and `imap` is never overridden
+    by one.
+    """
+    provider = config.email_provider()
+    if provider == "imap":
+        return config.email_ingest_enabled()
+    if provider == "gmail":
+        return email_provider.gmail_connection_is_live()
+    return email_provider.gmail_connection_is_live()
+
+
+def remember_event_loop():
+    """Record the loop the app runs on, so a worker thread can reach it later.
+
+    Called once from the FastAPI startup handler, which Starlette runs from
+    inside the loop. See `_main_loop` above for why this is needed at all.
+    """
+    global _main_loop
+    try:
+        _main_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _main_loop = None
+    return _main_loop is not None
+
+
 def start_poller() -> bool:
-    """Start the background poller if ingestion is configured. Idempotent."""
+    """Start the background poller if ingestion is configured. Idempotent.
+
+    Safe to call from a request handler as well as from startup. A sync
+    FastAPI endpoint runs in a worker thread with no running loop, so the task
+    is handed to the remembered loop with `call_soon_threadsafe` -- creating a
+    task directly from another thread is not safe, and asking that thread for
+    "the" event loop raises.
+    """
     global _poller_task
-    if not config.email_ingest_enabled() or config.email_provider() == "none":
+    if not ingestion_configured():
         return False
     if _poller_task is not None and not _poller_task.done():
         return True
+
     try:
-        _poller_task = asyncio.get_event_loop().create_task(_poll_forever())
+        running = asyncio.get_running_loop()
     except RuntimeError:
+        running = None
+    loop = running or _main_loop
+    if loop is None or loop.is_closed():
+        # No loop to run on: a management command, a test calling this
+        # directly, or a process that never started the app. Reported as not
+        # started rather than raising -- ingestion is not what that caller was
+        # doing.
         return False
+
+    def _spawn():
+        # Re-checked inside the loop: between scheduling and running, another
+        # call may have started it, or a disconnect may have removed the
+        # mailbox this was started for.
+        global _poller_task
+        if _poller_task is not None and not _poller_task.done():
+            return
+        if not ingestion_configured():
+            return
+        _poller_task = loop.create_task(_poll_forever())
+
+    if running is loop:
+        _spawn()
+    else:
+        loop.call_soon_threadsafe(_spawn)
     return True
 
 
@@ -745,12 +827,45 @@ def ingestion_status() -> dict:
             pass
     except Exception as exc:
         described, error = {"provider": config.email_provider()}, str(exc)
+    # The Gmail connection, through the projection that does not select the
+    # token columns at all (storage.public_oauth_connection). This endpoint is
+    # admin-scoped, but "only an administrator can see it" is not a reason to
+    # put a refresh token in a JSON body.
+    try:
+        connection = storage.public_oauth_connection("gmail")
+    except Exception:
+        connection = None
+
     return {
         "enabled": config.email_ingest_enabled(),
+        "active": ingestion_configured(),
         "poller_running": poller_running(),
         "poll_seconds": config.email_poll_seconds(),
         "poll_batch": config.email_poll_batch(),
         "provider": described,
         "configuration_error": error,
+        "gmail": {
+            # Whether a Google OAuth CLIENT is configured, which is a different
+            # question from whether a mailbox is connected -- and the two have
+            # different remedies (edit the environment vs. click Connect), so
+            # the UI needs to be able to tell them apart.
+            "oauth_configured": config.google_oauth_configured(),
+            "connection": connection,
+            "scopes_requested": requested_scopes(),
+        },
         "counts": storage.ingestion_summary(),
     }
+
+
+def requested_scopes():
+    """What the consent screen will ask for, or the reason it cannot be built.
+
+    A misconfigured GMAIL_OAUTH_SCOPES raises from config (deliberately -- see
+    `config.gmail_scopes`), and the status endpoint is precisely where an
+    administrator should find out about it rather than at the moment they click
+    Connect.
+    """
+    try:
+        return config.gmail_scopes()
+    except ValueError as exc:
+        return {"error": str(exc)}
