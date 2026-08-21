@@ -32,8 +32,7 @@ dashboard and an activity history.
   already write (§7d), hardened by the Phase K security pass (§7e), and the
   read-only AP assistant (§7f).
 - **Frontend** (`frontend-next/`) — Next.js 15 / React 19 / Tailwind v4,
-  served as a static export by FastAPI. **Has uncommitted redesign work in
-  progress — see §11, read before touching any frontend file.**
+  served as a static export by FastAPI. All phases fully committed.
 - **Frontend fallback** (`frontend/`) — the original vanilla HTML/JS UI,
   kept as a no-build fallback if `frontend-next/out/` was never built.
 - **`data/`** — seed POs, vendors, demo users (JSON, tracked in git,
@@ -70,8 +69,8 @@ history — do not conflate them:
 | H | KPIs + analytics | ✅ Complete | `9bdbeeb` (backend) + `96b3f92` (frontend) |
 | I | Logs + filters + grouping + exports | ✅ Complete | `248009e` |
 | J | Client access / client portal | ⬜ **Next — not started** | — |
-| K | Security hardening | ✅ Implemented + tested — **UNCOMMITTED** | — (working tree) |
-| K2 | Chatbot (read-only invoice/AP assistant) | ✅ Implemented + tested — **UNCOMMITTED** | — (working tree) |
+| K | Security hardening | ✅ Complete | `2b0f97e` |
+| K2 | Chatbot (read-only invoice/AP assistant) | ✅ Complete | `86f4421` |
 | L | Multilingual support | ⬜ Not started | — |
 | M | Final security + deployment hardening | ⬜ Not started | — |
 
@@ -87,12 +86,10 @@ This project has been built one verified phase at a time, each requested
 individually, each committed on its own before the next began. See §9 for
 what J–M are planned to cover — plan only, nothing implemented.
 
-**Do not redo A–I, K or K2.** A–I and K are complete, tested and committed.
-**Phase K2 (the assistant) is complete and tested but NOT YET COMMITTED** — one
-new backend module, one new test file, one new frontend page and the edits that
-wire them in; see §7f for what it does and §13.1 for exactly which files. If
-something in A–I, K or K2 looks wrong, raise it — don't silently "fix" or
-rebuild it.
+**Do not redo A–I, K or K2.** All are complete, tested, and committed. A–I and
+K were committed in their respective phases; K2 (the assistant) was committed
+in `86f4421`. See §7f for what K2 does. If something in A–I, K or K2 looks wrong,
+raise it — don't silently "fix" or rebuild it.
 
 ---
 
@@ -2851,15 +2848,14 @@ something to "fix" without being asked.
 
 ## 11. Frontend state
 
-**Phase K2 added the first uncommitted frontend work since the redesign
-landed** — one new page and four small edits wiring it in (§7f.8). Everything
-else is committed.
+All frontend work is committed. The interface redesign, Phase H Analytics screen,
+and Phase K2 Assistant screen are all in the history.
 
 | What | Commit |
 |---|---|
 | Interface redesign (light-first, explicit dark-mode toggle, `RunDetail` split) | `96b3f92` |
 | Phase H Analytics screen | `96b3f92` |
-| Phase K2 Assistant screen | **uncommitted** (§13.1) |
+| Phase K2 Assistant screen | `86f4421` |
 
 ### 11.1 What the frontend is now
 
@@ -2985,43 +2981,29 @@ is already configured.
 
 ### 13.1 Where the project stands
 
-**Phase K2 (the assistant) is COMPLETE and TESTED but NOT YET COMMITTED.**
-It is the first thing to deal with in a new session: decide whether to commit
-it, then commit it staged BY NAME (§11.3). What is in the working tree:
+**All phases A through K2 are COMPLETE and COMMITTED.**
 
-| Phase K2 part | State |
-|---|---|
-| `backend/chat.py` (new) — intents, retrievers, the provider call | untracked |
-| `tests/test_chat.py` (new) — 87 tests | untracked |
-| `frontend-next/components/pages/AssistantPage.tsx` (new) — the screen | untracked |
-| `backend/main.py` — `POST /api/chat`, `GET /api/chat/suggestions` | modified |
-| `backend/ratelimit.py` — `rate_limit_chat` | modified |
-| `backend/config.py` — `DAILY_QUOTA_CHAT`, `RATE_LIMIT_CHAT_PER_MINUTE` | modified |
-| `backend/quota.py` — the `CHAT` budget key | modified |
-| `frontend-next/lib/types.ts` — the reply/turn types | modified |
-| `frontend-next/components/ui/icons.tsx` — one icon, appended | modified |
-| `frontend-next/components/layout/AppShell.tsx` — the nav row and the unions | modified |
-| `frontend-next/app/page.tsx` — routing the section | modified |
-| `CLAUDE.md` / `README.md` — §7f and the matching entries | modified |
+| Phase | Commit | Status |
+|---|---|---|
+| A–I | (see §13.3 commit list) | ✅ Committed in order |
+| K | `2b0f97e` | ✅ Committed (security hardening) |
+| K2 | `86f4421` | ✅ Committed (read-only assistant) |
+| J | — | ⬜ Not started (next phase) |
+| L, M | — | ⬜ Not started |
 
 **Phase K2 changed NO schema.** Conversation history is not stored (§7f.5), and
 the daily budget reuses `extraction_quota`'s existing (day, provider) shape with
 a new provider string rather than a new table.
 
-**`frontend-next/out/` was rebuilt** (`npm run build`) so the served UI includes
-the Assistant. That directory is not tracked, so it does not appear in git
-status — but a fresh clone must run the build to see the screen (§12).
+**`frontend-next/out/` was rebuilt** during Phase K2 work and is ready to serve.
+That directory is not tracked, so it does not appear in git status — but a fresh
+clone must run the build to see the screen (§12).
 
 `claudee.md` is still untracked and is still not part of the app. **Leave it
 alone and keep it out of any commit** (§11.3).
 
-**Phase K (security hardening) is COMPLETE and committed** at `2b0f97e`, and
-**pushed** — `origin/main` and local `main` were level at that commit before
-this phase began. **Phase I** is committed at `248009e`; **Phase H** remains
-fully committed.
-
 **Phase J (client access / client portal) has NOT been started.** Its brief is
-in §9.
+in §9. Do not start it without being explicitly asked (§2).
 
 | Phase I part | Commit |
 |---|---|
@@ -3055,9 +3037,8 @@ Neither commit contains `claudee.md`.
 
 ### 13.3 Commits
 
-**Phase K2 sits on top of this list, uncommitted** — see §13.1 for the files.
-
 ```
+86f4421 Let someone ask the records a question, without letting the model near them (Phase K2)
 2b0f97e Close what an issued token could still do after the account behind it changed (Phase K)
 248009e Make the history already on file searchable, groupable and exportable (Phase I)
 0e7792c Record that the frontend is committed and Phase H is closed
@@ -3078,8 +3059,9 @@ d351869 Verify what an incoming email can actually prove about its own origin (P
 *(`cd4a348` is named for the state it recorded at the time; `96b3f92` later
 made that state obsolete, which is why §11 now reads differently from it.)*
 
-Branch `main`. Everything through `2b0f97e` **has been pushed**; Phase K2 is
-the only work not yet committed. Push only if explicitly asked.
+Branch `main`. Everything through `86f4421` (K2) **is committed locally** and
+1 commit ahead of `origin/main` (which is at `2b0f97e`). Push only if explicitly
+asked.
 
 **[README.md](README.md)** is kept in sync with the code and is the other
 primary reference — when it and this file disagree on a factual claim about
@@ -3088,31 +3070,23 @@ the code, verify against the code directly rather than trusting either.
 ### Before doing anything in a new session
 
 1. Read this file, then `README.md`.
-2. `git status` — expect the Phase K2 files of §13.1 MODIFIED, and
-   `backend/chat.py`, `tests/test_chat.py`,
-   `frontend-next/components/pages/AssistantPage.tsx` and `claudee.md`
-   UNTRACKED. That is Phase K2 plus the stray file, not a dirty tree to clean
-   up.
-   `git log --oneline -10` — expect `2b0f97e` at the tip.
+2. `git status` — expect only `claudee.md` UNTRACKED, and no uncommitted changes.
+   `git log --oneline -10` — expect `86f4421` at the tip (K2's commit).
+   `git branch -v` — expect `main` 1 commit ahead of `origin/main`.
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
-4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **1,212 passed**
-   and between 4 and 12 failures, ALL of them in `test_extraction_routing.py`,
-   `test_confidence.py`'s end-to-end case and `test_samples.py`'s scanned
-   sample. Those are live-provider cases and the count moves with provider
-   health and daily quota, not with the code. `test_extraction_routing.py`
-   passes **23/23 when run alone** — check that before concluding anything
-   broke, and if you need to attribute a failure, stash and run the untouched
-   tree rather than trusting a number written down here (§10).
-   **Never point a throwaway script at the database without asserting
-   `storage.PG_SCHEMA != "public"` first** — see the warning in §10.
+4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **1,212 passed, 12 failed**
+   (total of 1,224 tests, including 87 from K2, 81 from K security hardening,
+   204 from Phase I logs, 119 from Phase H analytics, plus all A–G tests).
+   The 12 failures are ALL in `test_extraction_routing.py` (10), `test_confidence.py`'s
+   end-to-end case (1), and `test_samples.py`'s scanned sample (1). Those are
+   live-provider cases and the count moves with provider health and daily quota,
+   not with the code. `test_extraction_routing.py` passes **23/23 when run alone**
+   — check that before concluding anything broke, and if you need to attribute a
+   failure, stash and run the untouched tree rather than trusting a number written
+   down here (§10). **Never point a throwaway script at the database without
+   asserting `storage.PG_SCHEMA != "public"` first** — see the warning in §10.
 5. `cd frontend-next && npm run build` after any frontend change — FastAPI
    serves the static export in `out/`, so without a rebuild the browser keeps
-   serving the old UI. There is no frontend test suite (§11.4). **Phase I
-   changed nothing in the frontend.**
-6. **Phase K2 is done but uncommitted.** Committing it is the open task; stage
-   by name (§11.3) and keep `claudee.md` out. It is the first phase since the
-   redesign to touch the frontend, so `cd frontend-next && npm run build` is
-   part of verifying it (§7f.8).
-7. **Next phase is J.** K and K2 were both taken before it (§2); J is still
-   untouched. Do not start it, or any later phase, without being asked
-   (§2, §9).
+   serving the old UI. There is no frontend test suite (§11.4).
+6. **Next phase is J.** K and K2 are both committed and complete (§2); J is still
+   untouched. Do not start it, or any later phase, without being asked (§2, §9).
