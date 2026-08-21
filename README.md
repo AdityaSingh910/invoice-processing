@@ -19,9 +19,9 @@ suite is green.**
 |---|---|
 | Pipeline | Working, 9 stages, streamed live to the browser |
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
-| UI | **Next.js 15 + React 19 + Tailwind v4**, six sections, light-first enterprise design with an explicit dark-mode toggle — plus a separate **supplier portal** shell for external clients |
+| UI | **Next.js 15 + React 19 + Tailwind v4**, seven sections, light-first enterprise design with an explicit dark-mode toggle — plus a separate **supplier portal** shell for external clients |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **1,386 passing** deterministically, 27 files, no live API calls |
+| Automated tests | **1,534 passing** deterministically, 28 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
@@ -31,6 +31,7 @@ suite is green.**
 | Supplier portal | A vendor signs in and sees **their own** invoices, purchase orders and documents — and can send an invoice. Isolation is enforced in SQL against the authenticated account; a client role holds no internal scope at all — see [Supplier portal](#supplier-portal) |
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
 | Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine |
+| Email invoice ingestion | Polls a mailbox, triages cheaply before spending an LLM call, and feeds the same pipeline a browser upload drives — **IMAP, or a Gmail mailbox an administrator connects by OAuth from inside the app** (no mailbox password, read-only scope) — see [Connecting Gmail](#connecting-gmail) |
 | KPIs and analytics | Automation / task-success / review KPIs, per-stage bottlenecks, review latency, vendor + PO + email funnels — **all derived at read time, no stored counters** |
 | Logs, filters & exports | Searchable, groupable, exportable history across invoices, messages and pipeline stages — **a query over the rows already on file, never a second log table** |
 | Email invoice ingestion | IMAP mailbox → cheap sender/relevance filter → security verification → the same invoice pipeline a browser upload uses |
@@ -1620,7 +1621,7 @@ sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
 docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            27 files, 1,398 tests, both providers mocked
+tests/            28 files, 1,546 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

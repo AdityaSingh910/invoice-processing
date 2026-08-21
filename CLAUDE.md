@@ -74,7 +74,7 @@ history — do not conflate them:
 | E | Review workflow hardening | ✅ Complete | `66e6f79` |
 | F | Email security & trusted-source verification | ✅ Complete | `d351869` |
 | G | Email invoice ingestion & extraction | ✅ Complete | `8dfc286` |
-| G2 | Gmail OAuth connection (on top of G) | ✅ Complete | see §13.1 |
+| G2 | Gmail OAuth connection (on top of G) | ✅ Complete | `e1f907b` |
 | H | KPIs + analytics | ✅ Complete | `9bdbeeb` (backend) + `96b3f92` (frontend) |
 | I | Logs + filters + grouping + exports | ✅ Complete | `248009e` |
 | J | Client access / client portal | ✅ Complete | `79b5b54` |
@@ -4063,7 +4063,7 @@ Phase K2 Assistant screen and Phase J supplier portal are all in the history.
 | Phase H Analytics screen | `96b3f92` |
 | Phase K2 Assistant screen | `86f4421` |
 | Phase J supplier portal | `79b5b54` |
-| Phase G2 Gmail connection screen | see §13.1 |
+| Phase G2 Gmail connection screen | `e1f907b` |
 
 ### 11.0 There are TWO frontends in one bundle (Phase J)
 
@@ -4243,7 +4243,7 @@ any of them present.
 | K | `2b0f97e` | ✅ Committed (security hardening) |
 | K2 | `86f4421` | ✅ Committed (read-only assistant) |
 | J | `79b5b54` | ✅ Committed (supplier portal) |
-| G2 | see §13.3 | ✅ Committed (Gmail OAuth connection) |
+| G2 | `e1f907b` | ✅ Committed (Gmail OAuth connection) |
 | L, M | — | ⬜ Not started |
 
 **Phase G2's schema change is TWO TABLES** — `email_oauth_connections` and
@@ -4348,6 +4348,7 @@ Neither commit contains `claudee.md`.
 ### 13.3 Commits
 
 ```
+e1f907b Let an administrator connect Gmail, without ever holding its password (Phase G2)
 79b5b54 Let a supplier see their own invoices, and nothing else (Phase J)
 2514355 Record that phases K and K2 are fully committed and finalized
 86f4421 Let someone ask the records a question, without letting the model near them (Phase K2)
@@ -4371,12 +4372,13 @@ d351869 Verify what an incoming email can actually prove about its own origin (P
 *(`cd4a348` is named for the state it recorded at the time; `96b3f92` later
 made that state obsolete, which is why §11 now reads differently from it.)*
 
-Branch `main`. Everything through the Phase J commit **is committed locally**.
-Push only if explicitly asked.
+Branch `main`. Everything through the Phase G2 commit **is committed and
+pushed to `origin/main`**.
 
-*(The Phase J hashes above were filled in by the short follow-up commit
-immediately after `79b5b54`, because a commit cannot cite itself — the same
-pattern `4e76ef3` used for Phase H.)*
+*(The Phase G2 hash above was filled in by a short follow-up commit
+immediately after `e1f907b`, because a commit cannot cite itself. Phase J did
+the same after `79b5b54`, and `4e76ef3` did it for Phase H — it is the
+established pattern here, not three separate accidents.)*
 
 **[README.md](README.md)** is kept in sync with the code and is the other
 primary reference — when it and this file disagree on a factual claim about
