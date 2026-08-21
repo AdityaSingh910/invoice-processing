@@ -19,7 +19,7 @@ suite is green.**
 |---|---|
 | Pipeline | Working, 9 stages, streamed live to the browser |
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
-| UI | **Next.js 15 + React 19 + Tailwind v4**, five sections, light-first enterprise design with an explicit dark-mode toggle. The redesign and the Analytics screen are complete but **not yet committed** — see [Frontend state](#frontend-state) |
+| UI | **Next.js 15 + React 19 + Tailwind v4**, five sections, light-first enterprise design with an explicit dark-mode toggle |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
 | Automated tests | **848 passing** deterministically, 23 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
@@ -28,7 +28,7 @@ suite is green.**
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
 | Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine |
-| KPIs and analytics | Automation / task-success / review KPIs, per-stage bottlenecks, review latency, vendor + PO + email funnels — **all derived at read time, no stored counters**. API committed; dashboard built and verified, awaiting the frontend commit |
+| KPIs and analytics | Automation / task-success / review KPIs, per-stage bottlenecks, review latency, vendor + PO + email funnels — **all derived at read time, no stored counters** |
 | Email invoice ingestion | IMAP mailbox → cheap sender/relevance filter → security verification → the same invoice pipeline a browser upload uses |
 | Document storage | Uploaded PDFs persist after processing — metadata in Postgres, bytes behind a swappable local/S3 store |
 | Non-invoice detection | Rejects documents that contain no invoice, saying so |
@@ -843,25 +843,25 @@ only — other formats are recorded and skipped with a reason.
 
 ### Frontend state
 
-Two bodies of frontend work sit **complete but uncommitted** in the working
-tree: a light-first redesign of the whole interface, and the Phase H Analytics
-screen built on top of it. Both are finished and verified — neither is a
-work in progress.
-
-They are uncommitted because they cannot be separated. The Analytics page uses
-`DataTable`, a component the redesign introduced, and the two share
-`AppShell.tsx`, `app/page.tsx` and `charts.tsx`. Compiling the Phase H files
-against the last commit fails on exactly that:
+Everything is committed; the working tree is clean. The interface redesign and
+the Phase H Analytics screen landed in one commit (`96b3f92`) because they
+could not be separated — the Analytics page uses `DataTable`, a component the
+redesign introduces, and the two share the app shell, the page router and the
+chart module. Compiling the Phase H files against the pre-redesign commit fails
+on exactly that:
 
 ```
 components/pages/AnalyticsPage.tsx(53,3): error TS2305:
     Module '"@/components/ui"' has no exported member 'DataTable'.
 ```
 
-So at the committed revision the **analytics API is complete and fully tested,
-but the analytics screen does not exist** — it appears only with the working
-tree applied. The intended fix is a single frontend commit carrying both.
-`CLAUDE.md` §11 has the full breakdown of which file belongs to which.
+The Phase H **backend** was committed separately and first (`9bdbeeb`), so the
+API and its 119 tests have their own reviewable commit.
+
+There is no frontend test suite and no ESLint config in this project. The
+frontend gate is `npx tsc --noEmit` plus `npm run build`, which type-checks.
+**Rebuild after any frontend change** — FastAPI serves the static export in
+`frontend-next/out/`, not the source.
 
 ---
 
@@ -1160,8 +1160,7 @@ availability, so the badge can briefly contradict the run beside it.
 numbered table above is the original case-study track (0–7). A separate
 **lettered deployment-prep track (A–M)** turned the case study into a
 deployable multi-user platform: **A–H are complete**, with Phase H (KPIs &
-analytics) the most recent — its backend committed, its dashboard built and
-verified but awaiting the frontend commit ([Frontend state](#frontend-state)).
+analytics) the most recent — backend at `9bdbeeb`, dashboard at `96b3f92`.
 **Phase I — logs, filtering, grouping and exports — is next and has not been
 started.** `CLAUDE.md` is the authority on that track.
 
