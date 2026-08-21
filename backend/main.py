@@ -1,5 +1,6 @@
 """FastAPI app: invoice processing pipeline with a live (SSE) run view + dashboard."""
 import asyncio
+import hashlib
 import json
 import time
 import os
@@ -11,12 +12,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 from fastapi import (Body, Depends, FastAPI, File, HTTPException, Request,
                      Security, UploadFile, status)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 
 import auth
 import config
+import documents
 import extraction
 import matching
 import ratelimit
@@ -106,7 +108,38 @@ _REMAINING_AFTER_TEXT = ["EXTRACT_FIELDS", "VALIDATE", "VENDOR_CHECK", "PO_MATCH
                          "DUPLICATE_CHECK", "TOLERANCE_CHECK"]
 
 
-async def _abort_unreadable(filename, message, stages, stage):
+def _persist_document(run_id, filename, pdf_bytes, uploaded_by, source):
+    """Store the uploaded PDF and record its metadata against the run.
+
+    Deliberately never allowed to fail the run it belongs to: by the time
+    this runs the automated decision is already made and, in most call
+    sites, already committed to `runs`. A storage-layer problem (a full disk,
+    an unreachable S3 endpoint) is real and worth knowing about, but it must
+    not turn a completed, correctly-decided invoice run into a pipeline
+    error the operator has to re-run -- the same fail-safe posture as the
+    daily quota breaker (config.py), just applied to a different resource.
+    """
+    try:
+        key = documents.new_storage_key()
+        documents.get_store().save(key, pdf_bytes)
+        storage.save_document(
+            run_id=run_id,
+            original_filename=filename,
+            mime_type="application/pdf",
+            size_bytes=len(pdf_bytes),
+            sha256_hex=hashlib.sha256(pdf_bytes).hexdigest(),
+            uploaded_by=uploaded_by,
+            source=source,
+            storage_backend=config.document_store_backend(),
+            storage_key=key,
+        )
+    except Exception as exc:
+        print(f"[error] failed to persist document for run {run_id}: "
+              f"{exc.__class__.__name__}", file=sys.stderr)
+
+
+async def _abort_unreadable(filename, message, stages, stage, pdf_bytes=b"",
+                            uploaded_by=None, source="MANUAL_UPLOAD"):
     """Close out a run whose file could not be opened at all.
 
     The remaining checks are reported as skipped rather than silently dropped, so
@@ -128,13 +161,19 @@ async def _abort_unreadable(filename, message, stages, stage):
     extracted = ExtractedInvoice(raw_text="", extraction_method="none").to_dict()
     po_match = matching.empty_match(None)
     run_id = storage.save_run(filename, status, extracted, po_match, stages, reasons)
+    # An unreadable file is still a real upload worth keeping -- a reviewer
+    # routing it for manual handling needs the original document, not just
+    # the fact that nothing could be read from it.
+    if pdf_bytes:
+        _persist_document(run_id, filename, pdf_bytes, uploaded_by, source)
     yield sse("final", {"result": {
         "run_id": run_id, "filename": filename, "status": status, "reasons": reasons,
         "extracted": extracted, "po_match": po_match, "stages": stages,
     }})
 
 
-async def run_pipeline(filename: str, pdf_bytes: bytes):
+async def run_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str = None,
+                       source: str = "MANUAL_UPLOAD"):
     stages = []
     # Timing measures real work only. The small asyncio.sleep pauses between stages
     # exist so a human can watch the run unfold; they are deliberately excluded so
@@ -165,7 +204,9 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
         text, page_count, has_text_layer = extraction.extract_text(pdf_bytes)
     except extraction.PdfUnreadable as exc:
         yield sse("stage", {"stage": stage("EXTRACT_TEXT", "fail", str(exc))})
-        async for evt in _abort_unreadable(filename, str(exc), stages, stage):
+        async for evt in _abort_unreadable(filename, str(exc), stages, stage,
+                                           pdf_bytes=pdf_bytes, uploaded_by=uploaded_by,
+                                           source=source):
             yield evt
         return
 
@@ -341,6 +382,8 @@ async def run_pipeline(filename: str, pdf_bytes: bytes):
         if stored and stored.get("audit"):
             audit = stored["audit"]
 
+    _persist_document(run_id, filename, pdf_bytes, uploaded_by, source)
+
     result = {
         "run_id": run_id,
         "filename": filename,
@@ -459,13 +502,13 @@ async def create_run_stream(
     pdf_bytes = await _read_capped(file)
     _validate_pdf(pdf_bytes)
     return StreamingResponse(
-        _guarded_pipeline(_safe_filename(file.filename), pdf_bytes),
+        _guarded_pipeline(_safe_filename(file.filename), pdf_bytes, principal.username),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-async def _guarded_pipeline(filename: str, pdf_bytes: bytes):
+async def _guarded_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str):
     """Run the pipeline, converting any unexpected failure into a safe event.
 
     The exception handlers above cannot help here: by the time the generator
@@ -475,7 +518,12 @@ async def _guarded_pipeline(filename: str, pdf_bytes: bytes):
     gets one clean event and the detail stays in the server log.
     """
     try:
-        async for event in run_pipeline(filename, pdf_bytes):
+        # Every upload through this endpoint is, definitionally, a manual
+        # upload -- it is a human at a browser posting a file. EMAIL is a
+        # source this schema already recognises (config.DOCUMENT_SOURCES) for
+        # when Phase J's ingestion path exists, but nothing writes it yet.
+        async for event in run_pipeline(filename, pdf_bytes, uploaded_by=uploaded_by,
+                                        source="MANUAL_UPLOAD"):
             yield event
     except Exception as exc:
         print(f"[error] pipeline failed on {filename!r}: {exc.__class__.__name__}",
@@ -500,6 +548,83 @@ def get_run(run_id: int,
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return run
+
+
+def _get_run_document_or_404(run_id: int):
+    """The document row for a run, or raise. Shared by the metadata and
+    download endpoints so a run that does not exist and a run with no stored
+    document are told apart identically in both places."""
+    if not storage.get_run(run_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    doc = storage.get_document_for_run(run_id)
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="No document is stored for this run")
+    return doc
+
+
+@app.get("/api/runs/{run_id}/document")
+def get_run_document(run_id: int,
+                     principal: auth.Principal = Security(auth.current_principal,
+                                                          scopes=["invoice:read"])):
+    """Metadata for the PDF a run was processed from.
+
+    Same permission as reading the run itself -- a document is invoice data,
+    not a separate resource with its own authorization story. Deliberately
+    never includes `storage_backend` or `storage_key`: those name where the
+    file physically lives, which is nobody's business outside this process.
+    """
+    doc = _get_run_document_or_404(run_id)
+    return {
+        "id": doc["id"],
+        "run_id": doc["run_id"],
+        "original_filename": doc["original_filename"],
+        "mime_type": doc["mime_type"],
+        "size_bytes": doc["size_bytes"],
+        "sha256": doc["sha256"],
+        "uploaded_by": doc["uploaded_by"],
+        "uploaded_at": doc["uploaded_at"],
+        "source": doc["source"],
+    }
+
+
+@app.get("/api/runs/{run_id}/document/download")
+def download_run_document(run_id: int, inline: bool = False,
+                          principal: auth.Principal = Security(auth.current_principal,
+                                                               scopes=["invoice:read"])):
+    """The invoice PDF itself, for viewing or downloading.
+
+    Authorization is checked (the Security dependency above) before the
+    handler body runs at all -- before the document row is even looked up,
+    let alone the file read off disk or a bucket -- so an unauthorised
+    caller learns nothing about whether run_id even has a document.
+
+    `inline=1` asks for `Content-Disposition: inline`, which is what an
+    embedded viewer (an <object>/<iframe> in the browser) needs to render the
+    PDF instead of prompting a download; the default is `attachment`, for an
+    explicit "download" action. Either way the bytes served are the same
+    real file that was uploaded -- there is no placeholder path here.
+    """
+    doc = _get_run_document_or_404(run_id)
+    try:
+        data = documents.get_store().read(doc["storage_key"])
+    except (FileNotFoundError, OSError, ValueError):
+        # The metadata survived but the content did not (disk cleared by
+        # hand, bucket object expired, backend switched mid-project). Say so
+        # without naming a path or a bucket.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Document content is no longer available")
+
+    # original_filename was already reduced to a safe, control-character-free
+    # basename at upload time (main.py's _safe_filename) before it was ever
+    # stored, so it is safe to place directly in this header.
+    filename = doc["original_filename"] or f"invoice-{run_id}.pdf"
+    disposition = "inline" if inline else "attachment"
+    return Response(
+        content=data,
+        media_type=doc["mime_type"] or "application/pdf",
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
 
 
 @app.post("/api/runs/{run_id}/status")

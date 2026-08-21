@@ -21,10 +21,12 @@ suite is green.**
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light-first enterprise design with an explicit dark-mode toggle |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **446 passing** deterministically, 18 files, no live API calls |
+| Automated tests | **480 passing** deterministically, 19 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | API security | OAuth 2.0 bearer tokens, scopes, rate limits, input validation |
+| Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
+| Document storage | Uploaded PDFs persist after processing — metadata in Postgres, bytes behind a swappable local/S3 store |
 | Non-invoice detection | Rejects documents that contain no invoice, saying so |
 | Demo reset | One click for an admin, or `.\reset-demo.ps1` |
 | Original audit defects | **All fixed** — see [Known problems](#known-problems) |
@@ -618,6 +620,43 @@ authenticated token and nothing else; a `reviewer` field in the request body is
 ignored. One ruling per run: reversing one is an admin action through the status
 endpoint, which leaves its own trail.
 
+### Document storage
+
+The uploaded PDF survives the run that processed it. The database only ever
+holds **metadata** — original filename, MIME type, size, a SHA-256 hash, who
+uploaded it, when, and how (`MANUAL_UPLOAD` today; `EMAIL` is recognised for
+when ingestion exists) — plus an opaque storage key. The bytes live behind a
+small `DocumentStore` interface (`backend/documents.py`), so the invoice
+pipeline never knows or cares whether a document sits on local disk or in an
+S3 bucket:
+
+- **`local`** (the default) — files under `DOCUMENT_STORAGE_DIR`
+  (`./data/documents`). Needs nothing installed or configured.
+- **`s3`** — an S3-compatible bucket, for a deployment with no shared local
+  disk between instances. `boto3` is imported lazily, only when this backend
+  is selected, so a local-only install never needs it.
+
+The storage key is **never** the original filename — it is a server-generated
+UUID, checked against a fixed shape before it is ever joined onto a path or an
+object key, so a corrupted or hand-edited database row can never be used to
+read or write outside where documents actually live. The original filename is
+kept only as display metadata, and it is already the sanitised name (no
+directory component, no control characters) computed at upload time, not the
+raw client-supplied one.
+
+`GET /api/runs/{id}/document` returns metadata only — never the storage
+backend or key, which are nobody's business outside the process.
+`GET /api/runs/{id}/document/download` returns the real bytes, requiring the
+same `invoice:read` scope as reading the run itself; `?inline=1` asks for
+`Content-Disposition: inline` (for an embedded viewer) instead of the default
+`attachment`. Persisting the document is never allowed to fail the run it
+belongs to — a storage problem is logged and the run still completes with its
+decision, the same fail-safe posture as the daily extraction-quota breaker.
+
+`POST /api/admin/reset-demo` (and `.\reset-demo.ps1`) clears document rows and
+their backing files along with the runs they belong to, so the samples stay
+repeatable exactly as before.
+
 ### API security
 
 The frontend is treated as an untrusted client. CORS is configured but is not a
@@ -697,6 +736,8 @@ GET  /api/auth/me                who you are and what your token permits
 POST /api/runs/stream            multipart PDF → SSE stage stream  [invoice:process]
 GET  /api/runs                   run history                       [invoice:read]
 GET  /api/runs/{id}              one run, including its audit trail[invoice:read]
+GET  /api/runs/{id}/document     metadata for the source PDF       [invoice:read]
+GET  /api/runs/{id}/document/download  the PDF itself (?inline=1)  [invoice:read]
 POST /api/runs/{id}/review       accept / reject a held invoice    [invoice:review]
 POST /api/runs/{id}/status       override any run's status         [invoice:admin]
 POST /api/admin/reset-demo       clear run history so samples replay[invoice:admin]
@@ -741,6 +782,9 @@ CORS_ORIGINS=                 # empty means same-origin only
 RATE_LIMIT_PROCESS_PER_MINUTE=20
 DAILY_QUOTA_VISION=20         # matches Gemini's free tier
 DAILY_QUOTA_TEXT=500
+DOCUMENT_STORE_BACKEND=local  # local | s3 -- see "Document storage" below
+DOCUMENT_STORAGE_DIR=./data/documents
+DOCUMENT_S3_BUCKET=           # required if DOCUMENT_STORE_BACKEND=s3
 ```
 
 ---
@@ -822,6 +866,7 @@ backend/
   matching.py     PO lookup, split-PO balance maths, tolerance, currency
   rules.py        Validation, vendor, duplicates, decision + audit trail
   storage.py      PostgreSQL: seed data, run history, ledger, human review
+  documents.py    Document storage abstraction: local disk or S3-compatible
   auth.py         OAuth 2.0 bearer tokens, scopes, production config checks
   ratelimit.py    Per-user / per-IP sliding-window limits
   quota.py        Daily per-provider extraction budget (circuit breaker)
@@ -838,12 +883,13 @@ frontend-next/    The UI. Next.js 15 + React 19 + Tailwind v4, TypeScript
                   formatting, types
 frontend/         The original vanilla UI, kept as a no-build fallback
 data/             Seed POs + vendors + demo users (tracked); app.db is vestigial
-                  (pre-Postgres SQLite file, unused by any code now)
+                  (pre-Postgres SQLite file, unused by any code now);
+                  documents/ holds uploaded PDFs (local backend, gitignored)
 sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
 docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            18 files, 446 tests, both providers mocked
+tests/            19 files, 480 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

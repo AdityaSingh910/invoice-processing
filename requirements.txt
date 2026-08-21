@@ -41,3 +41,10 @@ pyjwt==2.13.0
 # the plain (non-binary) package is recommended for production builds that
 # compile their own dependencies, but this project has no such build step.
 psycopg2-binary==2.9.10
+
+# Document storage (backend/documents.py). NOT installed by default: the
+# local filesystem backend (DOCUMENT_STORE_BACKEND=local, the default) needs
+# nothing beyond the standard library. Uncomment only when running with
+# DOCUMENT_STORE_BACKEND=s3, which imports boto3 lazily and raises a clear
+# error at call time if it is missing rather than failing every import.
+# boto3==1.35.0

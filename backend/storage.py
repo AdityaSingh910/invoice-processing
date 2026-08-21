@@ -51,6 +51,7 @@ import psycopg2.extras
 import psycopg2.pool
 
 import config
+import documents
 
 PO_SEED = os.path.join(os.path.dirname(__file__), "..", "data", "purchase_orders.json")
 VENDOR_SEED = os.path.join(os.path.dirname(__file__), "..", "data", "approved_vendors.json")
@@ -298,6 +299,49 @@ def allocations_for_run(run_id: int):
         conn.close()
 
 
+def save_document(run_id: int, original_filename: str, mime_type: str, size_bytes: int,
+                  sha256_hex: str, uploaded_by: str, source: str, storage_backend: str,
+                  storage_key: str) -> int:
+    """Record metadata for a document whose bytes are already written to the
+    store. Returns the new document id.
+
+    `source` is validated against `config.DOCUMENT_SOURCES` here rather than
+    trusted from the caller -- this function is the one place a document row
+    can be created, so it is also the one place that can refuse a value that
+    is not one of the sources this application actually recognises.
+    """
+    if source not in config.DOCUMENT_SOURCES:
+        raise ValueError(f"unknown document source: {source!r}")
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO documents (run_id, original_filename, mime_type, size_bytes,
+                   sha256, uploaded_by, uploaded_at, source, storage_backend, storage_key)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                (run_id, original_filename, mime_type, size_bytes, sha256_hex, uploaded_by,
+                 datetime.now(timezone.utc).isoformat(), source, storage_backend, storage_key),
+            )
+            return cur.fetchone()["id"]
+
+
+def get_document_for_run(run_id: int):
+    """The document recorded against a run, or None if the run has none --
+    either because it predates this feature, or because persisting the file
+    failed at upload time (see main.py's `_persist_document`, which never
+    lets that failure fail the run itself). The most recent row wins; nothing
+    in this application writes more than one per run today."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM documents WHERE run_id=%s ORDER BY id DESC LIMIT 1",
+                (run_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def init_db(reset_runs: bool = False):
     """Create/upgrade the schema, then (re)load seed reference data.
 
@@ -413,6 +457,32 @@ def init_db(reset_runs: bool = False):
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_alloc_po ON run_allocations(po_number)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_alloc_run ON run_allocations(run_id)")
+
+            # METADATA about the uploaded invoice PDF, never the bytes -- the
+            # bytes live behind the DocumentStore abstraction (documents.py),
+            # keyed by `storage_key`, which is a server-generated identifier and
+            # never the original filename (see documents.py's module docstring
+            # for why). `original_filename` here is display-only, and is already
+            # the sanitised name main.py computed at upload time (no directory
+            # component, no control characters) -- not the raw client-supplied
+            # one, which never reaches storage at all.
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS documents (
+                    id SERIAL PRIMARY KEY,
+                    run_id INTEGER NOT NULL,
+                    original_filename TEXT,
+                    mime_type TEXT,
+                    size_bytes INTEGER,
+                    sha256 TEXT,
+                    uploaded_by TEXT,
+                    uploaded_at TEXT,
+                    source TEXT,
+                    storage_backend TEXT,
+                    storage_key TEXT,
+                    FOREIGN KEY (run_id) REFERENCES runs(id)
+                )"""
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_run_id ON documents(run_id)")
             # Read heavily by find_duplicate() (invoice_number equality) and by every
             # ledger query that filters on status -- neither existed as an index under
             # SQLite because a single-file database at this volume never needed one;
@@ -989,7 +1059,8 @@ def clear_run_history():
     demonstrate. Clearing the history is what makes them repeatable.
 
     Deliberately narrow. Purchase orders, vendors and users are seed data owned
-    by data/*.json and are re-seeded on startup; this touches only `runs`, so it
+    by data/*.json and are re-seeded on startup; this touches only `runs` (and,
+    since Phase C, the document rows/files that belong to those runs), so it
     cannot destroy anything that is not reproducible by re-running an invoice.
 
     Runs inside the same write transaction the ledger uses, so it cannot land
@@ -997,9 +1068,25 @@ def clear_run_history():
     """
     with write_txn() as conn:
         with conn.cursor() as cur:
-            # Allocations first: they are rows ABOUT runs, and leaving them behind
-            # would charge every PO against invoices that no longer exist.
+            # Read what to delete from the store BEFORE the rows are gone --
+            # once the transaction commits there is no way back to the keys.
+            cur.execute("SELECT storage_backend, storage_key FROM documents")
+            to_delete = [dict(r) for r in cur.fetchall()]
+            # Allocations and documents are rows ABOUT runs, and leaving them
+            # behind would charge every PO against invoices that no longer
+            # exist, or point the document viewer at a run that is gone.
             cur.execute("DELETE FROM run_allocations")
+            cur.execute("DELETE FROM documents")
             cur.execute("DELETE FROM runs")
             deleted = cur.rowcount
+
+    # Best-effort, outside the transaction and never fatal: a reset that fails
+    # to remove a file on disk must not fail to clear the run history, which
+    # is the actual guarantee reset-demo exists to provide (§9 issue 3).
+    for doc in to_delete:
+        try:
+            if doc.get("storage_backend") == config.document_store_backend():
+                documents.get_store().delete(doc["storage_key"])
+        except Exception:
+            pass
     return deleted

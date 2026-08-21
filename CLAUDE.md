@@ -40,13 +40,14 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Samples | ✅ 10/10 match the manifest, driven through the real pipeline |
 | UI | ✅ **Next.js 15 + React 19 + Tailwind v4**, 4 sections, redesigned as a light-first enterprise finance interface with an explicit (not OS-linked) dark-mode toggle |
 | Extraction | ✅ **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | ✅ **446 passing** deterministically, 18 files, both providers mocked |
+| Automated tests | ✅ **480 passing** deterministically, 19 files, both providers mocked |
 | Audit trail | ✅ Structured, deterministic, emitted by the rule engine itself |
 | Human review | ✅ Accept/reject, recorded beside the automated decision |
 | API security | ✅ OAuth2 bearer tokens, scopes, rate limits, input validation |
 | Production safety | ✅ `APP_ENV=production` refuses demo creds / missing secret |
 | Daily AI budget | ✅ Per-provider circuit breaker, PostgreSQL-backed |
 | Database | ✅ **Migrated SQLite → PostgreSQL** (2026-08-21) — `DATABASE_URL`, same schema shape, row-level locking replaces SQLite's whole-file lock |
+| Document storage | ✅ **Phase C** (2026-08-21) — uploaded PDFs persist past the run; metadata in Postgres, bytes behind a local/S3 `DocumentStore` abstraction |
 | Non-invoice detection | ✅ Rejects documents containing no invoice, saying so |
 | Multi-PO invoices | ✅ `run_allocations` ledger; split calculated, always held |
 | Currency mismatch + FX | ✅ Pinned-rate conversion; same-number collision rejects |
@@ -60,10 +61,19 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Deployed (hosted) | ❌ Runs locally only |
 | Demo video | ❌ Not recorded |
 
-**Git:** 47 commits on `main`, pushed to
-<https://github.com/AdityaSingh910/invoice-processing> (public). **Working tree has uncommitted changes** — frontend redesign + dark-mode toggle + two new components. Local and remote `main` are identical. Verified at push time that `.env`, `data/app.db` and `data/app.db.bak` are absent from the published tree, that `frontend-next/node_modules`, `.next/` and `out/` are ignored, and that no key material appears in any commit. Recent:
+**Git:** 50 commits on `main` (this session's Phase C commit included),
+**ahead of `origin/main` by 3 — not yet pushed** (verified via `git status`;
+the previous session's Postgres-migration commit was already unpushed when
+this session started, and that is still accurate, not a regression). Push
+only if the user asks. **Working tree still has uncommitted changes** —
+the frontend redesign + dark-mode toggle + `DocumentPreview.tsx` +
+`ReviewWorkspace.tsx`, exactly as it was at the start of this session; Phase C
+did not touch, commit, or discard any of it. Recent (before this session's
+commit):
 
 ```
+147c0ce Migrate persistence from SQLite to PostgreSQL
+cba2f01 Bring README and CLAUDE.md up to date with the frontend redesign
 2a8f5c7 Add an explicit dark-mode toggle to the sidebar
 859dca9 Redesign the frontend as a light-first enterprise finance interface
 2a1d56c Let "Open review queue" actually open a filtered queue
@@ -76,8 +86,6 @@ fbe479f Bring README and CLAUDE.md up to date with the current build
 824d45b Recognise documents that are not invoices, and reject them saying so
 8da60b7 Let an admin clear run history from the UI, and explain duplicate rejections
 634bdc7 Add a one-command reset so the samples keep telling their intended story
-e71d34c Redesign the UI as a premium AP product: surfaces, hierarchy, density
-bdf12a0 Rebuild the UI as a production-grade AP application
 ```
 
 **[README.md](README.md) is current and accurate** — every figure re-verified
@@ -122,7 +130,7 @@ this context never means Phase 2 above.
 |---|---|---|
 | A | Understand the current architecture before changing anything | ✅ done |
 | B | SQLite → PostgreSQL migration | ✅ **done and verified** — see §Stack. 447/447 tests pass against real Postgres; the live server was started against it, all 10 samples replayed through the real HTTP pipeline with correct verdicts, the PO ledger derivation checked against documented figures, a human review + cascade exercised end to end (multi-PO accept → both POs to $0.00), and auth boundaries (401/403/200) checked against the live server, not just TestClient. |
-| C | Persistent invoice PDF storage | ⬜ not started |
+| C | Persistent invoice PDF storage | ✅ **done and verified** (2026-08-21) — see § Document storage (Phase C). New `documents` table (metadata only) + `backend/documents.py` (`DocumentStore` abstraction: `LocalDocumentStore` default, `S3DocumentStore` lazy-imports boto3). 33 new tests plus the full 480-test suite pass; the live server was started against the real Postgres instance and a real upload/download/hash round-trip was verified over HTTP (not just TestClient) — see the verification note below the table. |
 | D | Collaborative multi-user activity/history | ⬜ not started |
 | E | Review claim/locking system | ⬜ not started |
 | F | Analytics/KPIs backend | ⬜ not started |
@@ -133,17 +141,38 @@ this context never means Phase 2 above.
 | K | Multilingual backend support | ⬜ not started |
 | L | Deployment/security review | ⬜ not started |
 
-**Stopped after Phase B on explicit instruction** ("STOP and report the result
-before proceeding to the next major phase"). Do not start Phase C or later
-without being asked, for the same reason §3 above applies to the case-study
-phases: this is deliberately incremental, one verified phase at a time.
+**Stopped after Phase C on explicit instruction** ("STOP after Phase C. Do NOT
+proceed to Phase D until I explicitly tell you to continue"). Phase B was the
+same pattern one phase earlier. Do not start Phase D or later without being
+asked, for the same reason §3 above applies to the case-study phases: this is
+deliberately incremental, one verified phase at a time.
+
+**Phase C verification note.** Beyond the automated suite: the live server
+was started against the real Postgres instance (`uvicorn` on a scratch port,
+not through `start.ps1` — see the gotcha in §4 about tool-launched servers not
+surviving), a real invoice was uploaded as `analyst`, and `GET
+.../document/download` was fetched and compared byte-for-byte
+(`sha256sum`) against the original file on disk — identical. Unauthorized
+access (no token) returned 401 on both the metadata and download endpoints. A
+crafted filename of `../../../../etc/passwd.pdf` was uploaded and confirmed
+stored as `passwd.pdf` (the existing `_safe_filename()` sanitizer, reused
+unchanged, already neutralizes this — Phase C did not need its own copy of
+that logic). Invalid file type returned 415; a byte-capped oversized upload
+returned 413; neither created a run or a document row. A found-and-fixed
+issue during this verification, not shipped: the first full-suite run leaked
+43 real PDF files into `data/documents/` because most test files' fixtures
+isolate the Postgres schema but had no reason to know document *content* also
+needed isolating — fixed with one `autouse` fixture in `tests/conftest.py`
+(`_isolate_document_storage`) that redirects `config.DOCUMENT_STORAGE_DIR` to
+a per-test `tmp_path` for every test in the suite, confirmed by re-running the
+full suite and observing zero new files on disk afterward.
 
 Environment needed for local development now: PostgreSQL reachable via
-`DATABASE_URL` (see §4, §Stack). The dev machine this was built on had no
-Docker and no local Postgres; `docker-compose.yml` is provided for a clone
-that has Docker, and a `winget install PostgreSQL.PostgreSQL.16` local service
-is the alternative this project's own instance actually uses — either is
-fine, only `DATABASE_URL` matters to the application.
+`DATABASE_URL` (see §4, §Stack) — unchanged since Phase B. Phase C's default
+document-storage backend (`local`, writing under `data/documents/`) needs
+nothing additional installed or configured; `DOCUMENT_STORE_BACKEND=s3` is
+available for later but requires `boto3` (not installed by default) and
+`DOCUMENT_S3_BUCKET`.
 
 ---
 
@@ -535,6 +564,80 @@ silently rewrite who decided what. Reversal is an admin action through `/status`
 
 Reviewer identity comes from the **token**, never the request body.
 
+### Document storage (Phase C)
+
+**Built at explicit request**, as the first step of the deployment-prep
+initiative's own phase table (§3a), not the case-study phases in §8.
+
+The uploaded PDF now survives the run that processed it. The database
+(`storage.py`'s new `documents` table) holds **metadata only** — original
+filename, MIME type, size, a SHA-256 hash, `uploaded_by`, `uploaded_at`,
+`source`, and an opaque `storage_key` — never the PDF bytes. The bytes live
+behind `backend/documents.py`'s `DocumentStore` interface, so nothing else in
+the application (main.py's pipeline, storage.py's row) knows or cares which
+backend is active:
+
+- `LocalDocumentStore` (default, `DOCUMENT_STORE_BACKEND=local`) — files under
+  `config.DOCUMENT_STORAGE_DIR` (`data/documents/`, gitignored). Writes
+  atomically (temp file + `os.replace`), so a reader can never observe a
+  partially-written document.
+- `S3DocumentStore` (`DOCUMENT_STORE_BACKEND=s3`) — an S3-compatible bucket,
+  for a deployment with no shared local disk between instances (several
+  workers, ephemeral containers). `boto3` is imported **lazily**, inside the
+  constructor, so a local-only install never needs the package — it is
+  commented out in `requirements.txt` for that reason, same principle as the
+  provider SDKs in `extraction.py` being optional.
+
+**The storage key is never the original filename, sanitised or not.** It is
+always `new_storage_key()` — a UUID4 the server generates, never anything the
+caller sent. `LocalDocumentStore._path()` additionally refuses any key that
+does not match the fixed shape (`^[0-9a-f]{32}\.pdf$`) and re-checks the
+resolved path sits inside the storage root before touching disk — belt and
+braces on top of a key that HTTP can never actually submit malformed in the
+first place, because a corrupted or hand-edited database row should still be
+refused rather than trusted. The original filename is kept purely as display
+metadata, and it is already the sanitised name `main.py`'s existing
+`_safe_filename()` computed at upload time (bug #12's fix, reused unchanged)
+— the raw client-supplied name never reaches storage at all.
+
+**Two new endpoints, both `invoice:read`** — a document is invoice data, not
+a separately-permissioned resource:
+
+- `GET /api/runs/{id}/document` — metadata. Deliberately never returns
+  `storage_backend` or `storage_key`: where the file physically lives is
+  nobody's business outside this process.
+- `GET /api/runs/{id}/document/download` — the real bytes. `?inline=1` sets
+  `Content-Disposition: inline` for an embedded viewer instead of the default
+  `attachment`. Authorization is checked by the `Security(...)` dependency
+  before the handler body runs at all, so an unauthorised caller learns
+  nothing about whether a document even exists for that run — the 401/403 is
+  identical whether or not `run_id` is valid.
+
+**Persisting a document is never allowed to fail the run it belongs to.**
+`_persist_document()` in `main.py` wraps the save (content write +
+`storage.save_document()`) in a try/except that only logs — by the time it
+runs, the automated decision is already made and, on the success path,
+already committed to `runs`. A storage-layer problem (a full disk, an
+unreachable bucket) must not turn a completed, correctly-decided run into a
+pipeline error the operator has to re-run. Same fail-safe posture as the
+daily quota breaker (§ API security), applied to a different resource. An
+unreadable-document run (`_abort_unreadable`) persists its document too — a
+reviewer routing it for manual handling still needs the original file.
+
+**`source` is `MANUAL_UPLOAD` today.** `config.DOCUMENT_SOURCES =
+("MANUAL_UPLOAD", "EMAIL")` recognises `EMAIL` now so the schema and the
+`DocumentStore` abstraction do not need to change shape when Phase J's
+ingestion path exists — nothing in Phase C writes that value yet, and
+`storage.save_document()` rejects anything outside this tuple rather than
+trusting the caller.
+
+**`POST /api/admin/reset-demo`** (and `.\reset-demo.ps1`) now also clears
+document rows and their backing files, in the same write transaction as the
+runs they belong to (rows) plus a best-effort, non-fatal cleanup pass after
+commit (files) — otherwise a reset would leave the samples' PDFs
+accumulating on disk forever with no database row left to reference them,
+the same accumulation problem §9 issue 3 already describes for `runs` itself.
+
 ### API security
 
 The frontend is an untrusted client. CORS is configured but is **not** a security
@@ -731,9 +834,10 @@ The backend is a single-process FastAPI app that:
 | `extraction.py` | PDF → structured fields. Routes by document type (text vs scanned). Groq (text) → Gemini (vision) → regex → empty (none). **The ONLY module calling a model.** Captures confidence + evidence per field. Both provider SDKs imported lazily. |
 | `rules.py` | Deterministic decision engine: `decide(extracted, po_match, ...) → (verdict, reasons, audit_trail)`. Emits audit as it evaluates, never a second pass. Handles vendor tri-state, is_not_an_invoice(), duplicates, confidence gate. No model, no approximation. |
 | `matching.py` | PO lookup (exact + fuzzy). Tolerance (one-sided). Multi-PO binding + `split_across()` ledger math. Currency detection + `fx_convert()` at pinned rates. All deterministic. |
-| `storage.py` | PostgreSQL schema, seed data load, ledger queries, write transactions (`SELECT ... FOR UPDATE` on the specific PO row(s) for race safety), human review recording, run clearing, `run_allocations` migration. Balances derived per run by summing APPROVED allocations. Pooled connections via `psycopg2.pool`. |
+| `storage.py` | PostgreSQL schema, seed data load, ledger queries, write transactions (`SELECT ... FOR UPDATE` on the specific PO row(s) for race safety), human review recording, run clearing, `run_allocations` migration, document metadata (`save_document`, `get_document_for_run`). Balances derived per run by summing APPROVED allocations. Pooled connections via `psycopg2.pool`. |
+| `documents.py` | Document **content** storage abstraction (Phase C): `DocumentStore` interface, `LocalDocumentStore` (default, local disk), `S3DocumentStore` (boto3 imported lazily). Never holds metadata — that's `storage.py`'s `documents` table. Storage keys are always server-generated (`new_storage_key()`), never the original filename. |
 | `auth.py` | OAuth2 resource-server: JWT validation (pyjwt), scopes, password grant, production mode enforcement (no demo creds, no missing secret). |
-| `config.py` | .env loader, `APP_ENV` switch, provider model IDs, business thresholds (PO_TOLERANCE_PERCENT, CONFIDENCE_THRESHOLD, DAILY_QUOTA_VISION, FX_RATES + version). |
+| `config.py` | .env loader, `APP_ENV` switch, provider model IDs, business thresholds (PO_TOLERANCE_PERCENT, CONFIDENCE_THRESHOLD, DAILY_QUOTA_VISION, FX_RATES + version), document-storage settings (DOCUMENT_STORE_BACKEND, DOCUMENT_STORAGE_DIR, DOCUMENT_S3_*). |
 | `quota.py` | Per-provider daily extraction budget, PostgreSQL-backed counter (`extraction_quota` table). Fails open (cost guard, not security). |
 | `ratelimit.py` | Sliding-window per user/IP (per-process, not shared across workers). |
 | `schemas.py` | Pydantic dataclasses: `ExtractedInvoice` (fields + provenance dict), `LineItem`, `StageLog`, `RunResult`. |
@@ -765,6 +869,14 @@ run_allocations:       id (PK, SERIAL), run_id (FK -> runs.id), po_number,
 extraction_quota:      day, provider, used (PK is (day, provider))
                       (this table is named `extraction_quota`, not
                       `daily_quota`, and lives in quota.py not storage.py)
+
+documents:             id (PK, SERIAL), run_id (FK -> runs.id),
+                      original_filename, mime_type, size_bytes, sha256,
+                      uploaded_by, uploaded_at, source, storage_backend,
+                      storage_key
+                      (Phase C. Metadata only -- the PDF bytes live behind
+                      documents.py's DocumentStore, keyed by storage_key,
+                      never in this table and never named `path`)
 ```
 
 **Not database tables, despite looking like they should be:** users live in
@@ -854,6 +966,7 @@ column on `runs` itself, one JSON array per run.
 **`data/`** — Seed data, reloaded into Postgres on every startup:
 - `purchase_orders.json`, `approved_vendors.json`, `users.json` — tracked in git, reloaded on startup
 - `app.db` / `app.db.bak` — **vestigial**, the old SQLite runtime database from before the Postgres migration. Not tracked, not read by any code any more. Safe to delete; kept only because `scripts/migrate_sqlite_to_postgres.py` can still import history out of one if it exists.
+- `documents/` — **Phase C**, gitignored. Uploaded invoice PDFs under the local `DocumentStore` backend, named by their server-generated storage key (never the original filename). Runtime state, not seed data; cleared along with run history by `reset-demo.ps1` / `POST /api/admin/reset-demo`.
 
 **`sample_invoices/`** — Test fixtures:
 - 10 PDFs, order-dependent by design
@@ -866,15 +979,15 @@ column on `runs` itself, one JSON array per run.
 
 **`docker-compose.yml`** — a local PostgreSQL instance matching `.env.example`'s `DATABASE_URL`, for a clone that would rather not install Postgres system-wide. `docker-compose up -d` and go. Not used in production; a real deployment points `DATABASE_URL` at a managed instance.
 
-**`reset-demo.ps1`** — clears run history (and optionally replays samples), by calling `storage.clear_run_history()` directly — the same function `POST /api/admin/reset-demo` calls, so the script and the endpoint can never disagree about what "reset" means. Callable from terminal or from UI (admin). No longer needs to stop the server first (that was a SQLite file-lock workaround; Postgres has no equivalent).
+**`reset-demo.ps1`** — clears run history (and optionally replays samples), by calling `storage.clear_run_history()` directly — the same function `POST /api/admin/reset-demo` calls, so the script and the endpoint can never disagree about what "reset" means. Callable from terminal or from UI (admin). No longer needs to stop the server first (that was a SQLite file-lock workaround; Postgres has no equivalent). Since Phase C, also clears document rows and their backing files, in the same transaction as the runs they belong to.
 
-**`tests/`** — 18 files, 447 tests:
+**`tests/`** — 19 files, 480 tests:
 - Both Groq and Gemini mocked at HTTP transport boundary, so suite needs no key, no network, no quota
-- `conftest.py` provides `auth_headers(role)` as a plain function (not a pytest fixture — callers import and call it)
+- `conftest.py` provides `auth_headers(role)` as a plain function (not a pytest fixture — callers import and call it). Also defines an **autouse** fixture, `_isolate_document_storage` (Phase C) — every test in the suite gets `config.DOCUMENT_STORAGE_DIR` redirected to a per-test `tmp_path`, the same isolation guarantee `pg_schema.py` gives the database, applied automatically to every test file without each one needing to know document content exists. Found the hard way: before this fixture existed, a full suite run wrote 43 real PDF files under the actual `data/documents/` with no surviving database row to reference them, because every other test file's `db` fixture only knew to isolate the Postgres schema.
 - `pg_schema.py` — shared helper for per-test Postgres isolation: a fresh, uniquely-named schema per test (`fresh_schema()`), dropped on teardown (`drop_schema()`). Every `db(...)` fixture across the suite calls this instead of monkeypatching a SQLite file path.
-- Real, isolated database state per test. Exceptions: `test_samples.py` honours a live key and exercises real routes (module-scoped schema, since the ten samples build on each other); **`test_reset_demo.py` and `test_extraction_routing.py` have no `db`/schema fixture at all and run directly against whatever `storage.PG_SCHEMA` currently is** — i.e. the real application schema (`public`), exactly as they ran directly against the real `data/app.db` before the migration (`test_extraction_routing.py` never imports `storage` itself, but `extraction.extract_invoice()` calls `quota.try_consume()` internally, which does). Both discovered, not introduced, while migrating; documented here rather than silently fixed, per §3. Practical effect: `test_extraction_routing.py` can fail if the real vision quota is already spent, and running the full suite clears real run history as a side effect of `test_reset_demo.py` actually exercising the reset endpoint against a live schema.
+- Real, isolated database state per test. Exceptions: `test_samples.py` honours a live key and exercises real routes (module-scoped schema, since the ten samples build on each other); **`test_reset_demo.py` and `test_extraction_routing.py` have no `db`/schema fixture at all and run directly against whatever `storage.PG_SCHEMA` currently is** — i.e. the real application schema (`public`), exactly as they ran directly against the real `data/app.db` before the migration (`test_extraction_routing.py` never imports `storage` itself, but `extraction.extract_invoice()` calls `quota.try_consume()` internally, which does). Both discovered, not introduced, while migrating; documented here rather than silently fixed, per §3. Practical effect: `test_extraction_routing.py` can fail if the real vision quota is already spent, and running the full suite clears real run history as a side effect of `test_reset_demo.py` actually exercising the reset endpoint against a live schema. One further Phase C wrinkle in the same vein: because the autouse document-storage fixture applies to `test_reset_demo.py` too, a reset it triggers against the real `public` schema deletes real `documents` rows but looks for their backing files in that test's own redirected (and irrelevant) tmp_path — so any real files that predated the test run are not found and not deleted. Harmless (an orphan file under `data/documents/`, not a correctness or security issue) and not worth solving with more machinery for a corner this narrow; noted here rather than silently left unexplained.
 
-### Test suite — 447 tests, 18 files
+### Test suite — 480 tests, 19 files
 
 | File | n | Covers |
 |---|---|---|
@@ -896,6 +1009,7 @@ column on `runs` itself, one JSON array per run.
 | `test_samples.py` | 10 | the 10 samples end to end, in manifest order |
 | `test_multi_po.py` | 28 | multi-PO binding, the split, the ledger, the hold |
 | `test_allocations.py` | 13 | the allocation ledger, its migration and idempotence |
+| `test_documents.py` | 33 | Phase C: persistence, metadata, download, authorization, storage-key path safety, reset-demo cleanup |
 
 Notes for whoever changes them:
 
@@ -923,9 +1037,11 @@ GET  /api/auth/me                authenticated
 POST /api/runs/stream            [invoice:process]  + rate limit + daily budget
 GET  /api/runs                   [invoice:read]
 GET  /api/runs/{id}              [invoice:read]   includes the audit trail
+GET  /api/runs/{id}/document     [invoice:read]   metadata only, no storage path
+GET  /api/runs/{id}/document/download [invoice:read]  the PDF; ?inline=1 for inline
 POST /api/runs/{id}/review       [invoice:review]
 POST /api/runs/{id}/status       [invoice:admin]  cascades to held invoices
-POST /api/admin/reset-demo       [invoice:admin]  clears run history only
+POST /api/admin/reset-demo       [invoice:admin]  clears run history + documents
 GET  /api/reference              [invoice:read]
 GET  /api/sample-invoices        [invoice:read]
 GET  /api/sample-invoices/{name} [invoice:read]
@@ -1081,6 +1197,20 @@ true result, or point `DATABASE_URL` at a scratch database while testing.
 amount, so `Total Due: -500.00` extracts as +500. Accounting parentheses are
 unaffected. The amount rule cannot catch a sign the extractor discarded.
 
+⚠️ **6. A `reset-demo` triggered from inside the test suite can leave orphan
+document files on real disk.** `test_reset_demo.py` runs against the real
+`public` Postgres schema by design (see issue 5's sibling note in §Test
+suite) — but the autouse `_isolate_document_storage` fixture (Phase C, in
+`conftest.py`) also redirects `config.DOCUMENT_STORAGE_DIR` for that same
+test to a throwaway `tmp_path`. So when that test's reset call deletes real
+`documents` rows from `public`, it looks for their backing files in the
+wrong (test-local, irrelevant) directory and never finds them. The database
+stays correct — no dangling row, no security exposure — but a file that
+predated the test run can be left behind under the real `data/documents/`.
+Narrow (only triggers when real files already exist AND a test process calls
+the real reset endpoint) and harmless enough that it is documented rather
+than fixed with more machinery, per §3.
+
 ### Design gaps (deliberate, queued)
 
 - Business rules are **constants in `config.py`**, not versioned policy. Phase 3.
@@ -1117,8 +1247,8 @@ unaffected. The amount rule cannot catch a sign the extractor discarded.
    app and the test suite both require it now; there is no SQLite fallback.
    `docker-compose up -d` if using the provided compose file, or point it at
    whatever local/managed instance is already running.
-4. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **447 passed**.
-   No key or network needed. If it is not 447, find out what changed before
+4. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **480 passed**.
+   No key or network needed. If it is not 480, find out what changed before
    building anything. Known non-regressions: `test_samples` 05 depends on
    Gemini being reachable (503 and 429 both happen), and
    `test_extraction_routing` can fail when the local vision quota is spent
@@ -1176,9 +1306,14 @@ demo first (§4), and settle the sample-05 badge question (§9 issue 2).
 | HTML shell served `no-store` | The shell names which hashed bundle to load, so a cached copy pins the browser to a build that no longer exists. Cost two debugging sessions before it was fixed. |
 | Non-invoice detection uses **extraction output, not keywords** | Searching for the word "invoice" misses other languages and fires on any document that merely discusses invoicing — including this project's own brief. A model that reads a page and finds no field is the classifier. |
 | Not-an-invoice **rejects**, unreadable **holds** | A hold means "a human must decide whether to pay this"; there is nothing to decide about a CV. But an empty result from a failed extractor is evidence about the extractor, so degraded routes never hard-reject. |
-| Demo reset is an endpoint, not just a script | It was reported twice as a bug. Recovery should not require deleting a file on the server. Admin-scoped, deletes runs only. |
+| Demo reset is an endpoint, not just a script | It was reported twice as a bug. Recovery should not require deleting a file on the server. Admin-scoped, deletes runs (and, since Phase C, the documents that belong to them) only. |
 | ~~No per-field confidence shown~~ **REVERSED, at the user's explicit request** | Was: the pipeline did not produce one, and rendering an invented percentage would be fabricating evidence. Now: it is a genuine per-instance signal (model self-report, or a regex heuristic) computed by extraction and stored — see § Confidence, provenance and the confidence gate. |
 | Dark mode is an explicit toggle, never `prefers-color-scheme` | A finance product should look the same in a demo as it did in design review; a form this dense reads as a "hacker" tool the instant the OS decides to darken it. Built as `:root[data-theme="dark"]`, opt-in only, persisted to localStorage — see § Visual design system and dark mode. |
+| Document metadata and content are two different tables/abstractions, not one | `storage.py`'s `documents` table is queryable, joinable, backupable with the rest of the ledger; `documents.py`'s `DocumentStore` can be swapped (local disk → S3) without touching a single SQL statement. Mirrors why PO balances are derived rather than stored: separating "what is true" from "where the bytes live" keeps each concern replaceable on its own. |
+| Storage key is always server-generated, never the original filename | The filename is attacker-controlled input; sanitising it is not the same guarantee as never using it as a path component at all. A UUID key removes the entire traversal/collision class rather than mitigating it. |
+| `boto3` imported lazily inside `S3DocumentStore.__init__`, not at module top | A local-only install (`DOCUMENT_STORE_BACKEND=local`, the default) must never need a dependency it doesn't use — same principle as `extraction.py`'s provider SDKs being optional. |
+| Document persistence can never fail the run it belongs to | By the time it runs the automated decision already exists; a storage hiccup is real but must not turn a correctly-decided invoice into a pipeline error the operator has to re-run. Same fail-safe posture as the daily quota breaker, logged not raised. |
+| `EMAIL` recognised as a document source now, even though nothing produces it yet | So the schema and the `DocumentStore` abstraction do not need to change shape when Phase J's ingestion path exists. `storage.save_document()` still rejects any value outside `config.DOCUMENT_SOURCES` — recognising a future source is not the same as trusting an unvalidated one today. |
 
 ### Bugs already found and fixed — don't reintroduce
 

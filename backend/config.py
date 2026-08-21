@@ -264,6 +264,57 @@ DAILY_QUOTA_ENABLED = os.environ.get("DAILY_QUOTA_ENABLED", "1").strip() not in 
 DAILY_QUOTA_VISION = int(os.environ.get("DAILY_QUOTA_VISION", "20") or 20)
 DAILY_QUOTA_TEXT = int(os.environ.get("DAILY_QUOTA_TEXT", "500") or 500)
 
+# --------------------------------------------------------------------------
+# Document storage (Phase C)
+#
+# The uploaded PDF itself, kept after processing so a run can still be opened
+# and its source document viewed or downloaded later -- the database only ever
+# holds METADATA and an opaque storage key, never the PDF bytes (see
+# backend/documents.py, backend/storage.py's `documents` table).
+#
+# Backend selection is a config switch, not a code fork: "local" writes files
+# under DOCUMENT_STORAGE_DIR (the default, needs nothing installed or
+# configured), "s3" writes to an S3-compatible bucket for a real deployment.
+# Nothing outside documents.py knows which one is active.
+# --------------------------------------------------------------------------
+DOCUMENT_STORE_BACKEND_ENV = "DOCUMENT_STORE_BACKEND"
+DOCUMENT_STORAGE_DIR = os.environ.get(
+    "DOCUMENT_STORAGE_DIR", os.path.join(ROOT, "data", "documents"))
+
+DOCUMENT_S3_BUCKET_ENV = "DOCUMENT_S3_BUCKET"
+DOCUMENT_S3_PREFIX_ENV = "DOCUMENT_S3_PREFIX"
+DOCUMENT_S3_REGION_ENV = "DOCUMENT_S3_REGION"
+DOCUMENT_S3_ENDPOINT_ENV = "DOCUMENT_S3_ENDPOINT_URL"  # for S3-compatible, non-AWS hosts
+
+# The only source this process can currently produce a document from is a
+# browser upload. EMAIL is recognised here so the schema and the storage
+# abstraction do not need to change when ingestion (Phase J) adds a second
+# producer -- nothing in this phase writes a document with that source yet.
+DOCUMENT_SOURCES = ("MANUAL_UPLOAD", "EMAIL")
+
+
+def document_store_backend() -> str:
+    """'local' or 's3'. Read at call time, like every other env-backed
+    setting here, so a value set in .env after import is still honoured."""
+    backend = os.environ.get(DOCUMENT_STORE_BACKEND_ENV, "local").strip().lower()
+    return backend if backend in ("local", "s3") else "local"
+
+
+def document_s3_bucket() -> str:
+    return os.environ.get(DOCUMENT_S3_BUCKET_ENV, "").strip()
+
+
+def document_s3_prefix() -> str:
+    return os.environ.get(DOCUMENT_S3_PREFIX_ENV, "").strip()
+
+
+def document_s3_region() -> str:
+    return os.environ.get(DOCUMENT_S3_REGION_ENV, "").strip() or None
+
+
+def document_s3_endpoint_url() -> str:
+    return os.environ.get(DOCUMENT_S3_ENDPOINT_ENV, "").strip() or None
+
 
 def load_dotenv():
     """Minimal .env loader (KEY=VALUE per line). Real environment wins."""

@@ -13,6 +13,10 @@ __pycache__/
 data/app.db
 data/app.db.bak
 
+# Uploaded invoice PDFs (local DocumentStore backend, backend/documents.py).
+# Runtime state written per-run, not seed data -- never committed.
+data/documents/
+
 # Local scratch
 _shots/
 _*.py
