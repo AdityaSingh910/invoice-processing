@@ -1459,7 +1459,7 @@ numbered table above is the original case-study track (0–7). A separate
 deployable multi-user platform: **A–I, K, K2 and J are all complete and
 committed** (Phase I at `248009e`; Phase K, the security hardening pass, at
 `2b0f97e`; Phase K2, the read-only assistant, at `86f4421`; Phase J, the
-supplier portal, in its own commit after `2514355`). K and K2 were both taken
+supplier portal, at `79b5b54`). K and K2 were both taken
 before Phase J deliberately: J opens the application to people outside the
 company, and the right order is to fix and finish what is already reachable
 before widening who can reach it — an ordering that paid off, since the portal
