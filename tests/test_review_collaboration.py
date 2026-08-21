@@ -308,6 +308,102 @@ def test_completing_a_review_releases_the_claim_it_was_submitted_under(db):
 
 
 # --------------------------------------------------------------------------
+# 4b. Phase E -- decision atomicity under concurrency
+#
+# record_human_review()'s eligibility check and its write used to happen
+# across three separate, unlocked transactions. Two callers could both read
+# human_decision IS NULL before either committed, and both would then write --
+# corrupting the activity history with two conflicting rulings on one run.
+# Fixed by moving the whole check-then-act sequence under one
+# SELECT ... FOR UPDATE on the run row, the same lock claim_review() already
+# uses. These tests exercise the actual race under real threads against real
+# Postgres, the same pattern test_simultaneous_claims_produce_exactly_one_winner
+# already established above -- not a mock, not a sleep-based approximation.
+# --------------------------------------------------------------------------
+
+def test_concurrent_conflicting_decisions_only_one_wins(db):
+    """Ten reviewers race to decide the same unclaimed run at once -- half try
+    ACCEPT, half try REJECT. Exactly one decision may land; every other
+    attempt must be refused, never silently applied on top."""
+    run_id = held_invoice()
+    n = 10
+    results, lock, barrier = [], threading.Lock(), threading.Barrier(n)
+
+    def worker(i):
+        decision = "ACCEPTED" if i % 2 == 0 else "REJECTED"
+        barrier.wait()
+        r = storage.record_human_review(run_id, decision, reviewer=f"employee-{i}")
+        with lock:
+            results.append((decision, r))
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    winners = [(d, r) for d, r in results if r["ok"]]
+    losers = [(d, r) for d, r in results if not r["ok"]]
+    assert len(winners) == 1, f"expected exactly one decision to land, got {len(winners)}"
+    assert len(losers) == n - 1
+    assert all(r["error"] == "already been reviewed" or "already been reviewed" in r["error"]
+              for _, r in losers)
+
+    # The database agrees with the one decision that actually won.
+    winning_decision, _ = winners[0]
+    run = storage.get_run(run_id)
+    assert run["human_decision"] == winning_decision
+    assert run["status"] == ("APPROVED" if winning_decision == "ACCEPTED" else "REJECTED")
+
+    # The activity history carries exactly that one ruling -- not a mix of
+    # ACCEPTED and REJECTED entries from callers that should have been refused.
+    activity = storage.list_activity(run_id)
+    decision_events = [a["event_type"] for a in activity if a["event_type"] in ("ACCEPTED", "REJECTED")]
+    assert decision_events == [winning_decision]
+
+
+def test_concurrent_duplicate_accepts_only_one_lands(db):
+    """The classic double-click: the same decision, submitted at once by the
+    same reviewer. Exactly one must be recorded; the ledger must not see the
+    invoice approved twice or its activity doubled."""
+    run_id = held_invoice()
+    n = 8
+    results, lock, barrier = [], threading.Lock(), threading.Barrier(n)
+
+    def worker():
+        barrier.wait()
+        r = storage.record_human_review(run_id, "ACCEPTED", reviewer="alice")
+        with lock:
+            results.append(r)
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    winners = [r for r in results if r["ok"]]
+    assert len(winners) == 1
+
+    activity = storage.list_activity(run_id)
+    accepted_events = [a for a in activity if a["event_type"] == "ACCEPTED"]
+    assert len(accepted_events) == 1
+
+    # Consumption is derived from run history, so a double-application would
+    # show up as the PO balance being charged twice for one invoice.
+    remaining = storage.remaining_for_po(PO)
+    consumed = storage.consumed_amount_for_po(PO)
+    assert consumed == 6000.00, "the $6,000 invoice must be charged to the PO exactly once"
+    assert remaining == round(5000.00 - 6000.00, 2)
+
+
+def test_release_on_an_unknown_run_is_refused_not_a_500(db):
+    result = storage.release_review_claim(999999, "alice")
+    assert result["ok"] is False
+    assert result["error"] == "unknown run"
+
+
+# --------------------------------------------------------------------------
 # 5. activity history -- chronology, immutability, actor attribution
 # --------------------------------------------------------------------------
 
@@ -491,6 +587,28 @@ def test_review_endpoint_refuses_when_claimed_by_someone_else(client):
                     json={"decision": "ACCEPTED"})
     assert r.status_code == 409
     assert "alice" in r.json()["detail"]["error"]
+
+
+def test_review_endpoint_refuses_a_second_submission_not_a_500(client):
+    """A retried or double-clicked Accept over HTTP: the first call decides,
+    the second is refused with a 409 naming the conflict, never a 500 and
+    never a second ruling applied on top."""
+    run_id = held_invoice()
+    r1 = client.post(f"/api/runs/{run_id}/review", json={"decision": "ACCEPTED"})
+    assert r1.status_code == 200
+
+    r2 = client.post(f"/api/runs/{run_id}/review", json={"decision": "REJECTED"})
+    assert r2.status_code == 409
+    assert "already been reviewed" in r2.json()["error"]
+
+    run = client.get(f"/api/runs/{run_id}").json()
+    assert run["human_decision"] == "ACCEPTED"
+    assert run["status"] == "APPROVED"
+
+
+def test_release_on_an_unknown_run_is_404_over_http(client):
+    r = client.post("/api/runs/999999/review/release")
+    assert r.status_code == 404
 
 
 def test_comment_endpoint_over_http(client):

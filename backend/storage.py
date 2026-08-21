@@ -440,9 +440,22 @@ def release_review_claim(run_id: int, username: str, is_admin: bool = False,
     admin -- the same override authority `invoice:admin` already carries for
     `/status`, applied here so a departed or unreachable employee's claim can
     be freed without waiting out the full lease.
+
+    Locks the `runs` row first (Phase E), before locking the claim row itself
+    -- the same lock, in the same order, claim_review()/record_human_review()/
+    set_run_status() already take. Two effects: an unknown run now reads as
+    "unknown run" rather than the misleading "no active claim on this run" it
+    would previously report (there being no claim rows for a run that does not
+    exist at all), and a release can no longer land in the same instant as a
+    concurrent claim or decision on the same run -- one fully commits before
+    the other's transaction can proceed.
     """
     with write_txn() as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT id FROM runs WHERE id=%s FOR UPDATE", (run_id,))
+            if cur.fetchone() is None:
+                return {"ok": False, "error": "unknown run"}
+
             cur.execute(
                 """SELECT id, claimed_by FROM review_claims
                    WHERE run_id=%s AND released_at IS NULL ORDER BY id DESC LIMIT 1 FOR UPDATE""",
@@ -1110,6 +1123,57 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
         return run_id, status, extra
 
 
+def _apply_status_transition(cur, run_id: int, old_status: str, new_status: str,
+                             reasons_json: str, note: str, claim_release_reason: str):
+    """Write a status transition the caller has already decided on and locked.
+
+    Shared by set_run_status() and record_human_review() (Phase E) so both go
+    through exactly one implementation of "what happens when a run's status
+    moves" -- the reasons trail, final_decision, and the claim-release side
+    effect -- instead of two copies that could drift apart. ASSUMES the caller
+    already holds a `SELECT ... FOR UPDATE` lock on this run's row for the
+    duration of the enclosing transaction; this function does no locking of
+    its own and must never be called outside one.
+    """
+    reasons = json.loads(reasons_json or "[]")
+    reasons.append({
+        "text": note or f"Status changed from {old_status} to {new_status} by an operator.",
+        "level": "info",
+    })
+    cur.execute("UPDATE runs SET status=%s, reasons_json=%s WHERE id=%s",
+               (new_status, json.dumps(reasons), run_id))
+    # An automated status change (a cascade re-evaluation, an operator
+    # reversal) moves the final decision with it. A run a human has already
+    # ruled on keeps its HUMAN_* outcome -- that verdict belongs to a person
+    # and is not something a later automated pass gets to relabel.
+    cur.execute("""UPDATE runs SET final_decision=%s
+                  WHERE id=%s AND human_decision IS NULL""",
+               (new_status, run_id))
+
+    # A review claim exists to protect a NEEDS_REVIEW invoice from being
+    # worked by two employees at once. The moment the run leaves that state
+    # -- a human ruling, a cascade re-evaluation, an admin override -- there
+    # is nothing left to protect, so any active claim is released
+    # automatically here rather than sitting there until its lease happens
+    # to expire on its own.
+    if old_status == "NEEDS_REVIEW" and new_status != "NEEDS_REVIEW":
+        cur.execute(
+            """SELECT id, claimed_by FROM review_claims
+               WHERE run_id=%s AND released_at IS NULL ORDER BY id DESC LIMIT 1""",
+            (run_id,))
+        active = cur.fetchone()
+        if active:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            cur.execute(
+                "UPDATE review_claims SET released_at=%s, release_reason=%s WHERE id=%s",
+                (now_iso, claim_release_reason, active["id"]))
+            _insert_activity(
+                cur, run_id, "REVIEW_RELEASED", None,
+                note=f"Released automatically: the invoice left NEEDS_REVIEW "
+                     f"({claim_release_reason}).",
+                metadata={"claim_id": active["id"], "previous_holder": active["claimed_by"]})
+
+
 def set_run_status(run_id: int, new_status: str, note: str = None,
                    claim_release_reason: str = "resolved"):
     """Change a run's status. This is the reversal mechanism.
@@ -1120,6 +1184,12 @@ def set_run_status(run_id: int, new_status: str, note: str = None,
     need an explicit refund here, and would be one missed code path away from a
     PO that can never be spent again.
 
+    `SELECT ... FOR UPDATE` on the run row (Phase E) -- the same tool
+    claim_review already uses to serialise two employees racing a claim, here
+    serialising two concurrent status changes on the same run (an admin
+    override racing a cascade re-evaluation, or either racing a human
+    decision via record_human_review, which takes this same lock).
+
     Returns (ok, old_status, po_number).
     """
     if new_status not in ("APPROVED", "NEEDS_REVIEW", "REJECTED"):
@@ -1127,7 +1197,7 @@ def set_run_status(run_id: int, new_status: str, note: str = None,
 
     with write_txn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT status, po_number, reasons_json FROM runs WHERE id=%s",
+            cur.execute("SELECT status, po_number, reasons_json FROM runs WHERE id=%s FOR UPDATE",
                        (run_id,))
             row = cur.fetchone()
             if row is None:
@@ -1136,43 +1206,8 @@ def set_run_status(run_id: int, new_status: str, note: str = None,
             if old_status == new_status:
                 return True, old_status, po_number
 
-            reasons = json.loads(row["reasons_json"] or "[]")
-            reasons.append({
-                "text": note or f"Status changed from {old_status} to {new_status} by an operator.",
-                "level": "info",
-            })
-            cur.execute("UPDATE runs SET status=%s, reasons_json=%s WHERE id=%s",
-                       (new_status, json.dumps(reasons), run_id))
-            # An automated status change (a cascade re-evaluation, an operator
-            # reversal) moves the final decision with it. A run a human has already
-            # ruled on keeps its HUMAN_* outcome -- that verdict belongs to a person
-            # and is not something a later automated pass gets to relabel.
-            cur.execute("""UPDATE runs SET final_decision=%s
-                          WHERE id=%s AND human_decision IS NULL""",
-                       (new_status, run_id))
-
-            # A review claim exists to protect a NEEDS_REVIEW invoice from
-            # being worked by two employees at once. The moment the run
-            # leaves that state -- a human ruling, a cascade re-evaluation,
-            # an admin override -- there is nothing left to protect, so any
-            # active claim is released automatically here rather than
-            # sitting there until its lease happens to expire on its own.
-            if old_status == "NEEDS_REVIEW" and new_status != "NEEDS_REVIEW":
-                cur.execute(
-                    """SELECT id, claimed_by FROM review_claims
-                       WHERE run_id=%s AND released_at IS NULL ORDER BY id DESC LIMIT 1""",
-                    (run_id,))
-                active = cur.fetchone()
-                if active:
-                    now_iso = datetime.now(timezone.utc).isoformat()
-                    cur.execute(
-                        "UPDATE review_claims SET released_at=%s, release_reason=%s WHERE id=%s",
-                        (now_iso, claim_release_reason, active["id"]))
-                    _insert_activity(
-                        cur, run_id, "REVIEW_RELEASED", None,
-                        note=f"Released automatically: the invoice left NEEDS_REVIEW "
-                             f"({claim_release_reason}).",
-                        metadata={"claim_id": active["id"], "previous_holder": active["claimed_by"]})
+            _apply_status_transition(cur, run_id, old_status, new_status,
+                                     row["reasons_json"], note, claim_release_reason)
             return True, old_status, po_number
 
 
@@ -1201,13 +1236,30 @@ def record_human_review(run_id: int, decision: str, reviewer: str = None, note: 
 
     `status` does move, because that is the column the ledger reads: an accepted
     invoice has to consume its PO budget, and a rejected one has to release it.
-    Moving it through `set_run_status` rather than with a bare UPDATE is
-    deliberate -- that path already handles reversal correctly and is what the
-    cascade re-evaluation hangs off.
+    The transition itself is applied by `_apply_status_transition` -- the exact
+    same logic `set_run_status` uses -- so reversal and the claim-release side
+    effect stay correct here too.
 
     Only a run whose AUTOMATED decision was NEEDS_REVIEW is eligible. An invoice
     the process rejected outright is not something to wave through from a review
     screen, and one it approved needs no ruling.
+
+    ATOMICITY (Phase E). The eligibility check (not already reviewed, not
+    claimed by someone else) and the write that records the ruling now happen
+    under ONE `SELECT ... FOR UPDATE` lock on the run row, held for the whole
+    transaction. Previously these were three separate transactions -- a bare
+    read with no lock, set_run_status()'s own transaction, then a further
+    UPDATE -- which left a real gap: two concurrent submissions (a
+    double-clicked Accept, a retried request, or a genuine ACCEPT-vs-REJECT
+    race) could both read `human_decision IS NULL` before either committed,
+    and both would then go on to write -- corrupting the activity history
+    with two conflicting rulings on one run, with the final `status` decided
+    by commit order rather than either caller being told "no". Locking the
+    row first means the second request necessarily waits for the first to
+    commit, then re-reads `human_decision` and is correctly refused with
+    "already been reviewed". Same row, same lock as claim_review() and
+    set_run_status() -- consistent lock ordering (runs, then review_claims)
+    rules out a deadlock between them.
 
     Returns a dict; `ok` is False with a `error` when the run is not eligible.
     """
@@ -1219,62 +1271,69 @@ def record_human_review(run_id: int, decision: str, reviewer: str = None, note: 
     if decision not in HUMAN_OUTCOMES:
         return {"ok": False, "error": "decision must be ACCEPTED or REJECTED"}
     new_status, final_decision = HUMAN_OUTCOMES[decision]
-
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT status, automated_decision, human_decision, po_number FROM runs WHERE id=%s",
-                (run_id,))
-            row = cur.fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        return {"ok": False, "error": "unknown run"}
-
-    # Runs written before these columns existed fall back to their status, which
-    # at that point was the automated decision.
-    automated = row["automated_decision"] or row["status"]
-    if automated != "NEEDS_REVIEW":
-        return {"ok": False,
-                "error": f"only NEEDS_REVIEW runs can be reviewed (this one is {automated})"}
-
-    # A run may be ruled on ONCE. Because `automated_decision` deliberately stays
-    # NEEDS_REVIEW forever, the eligibility check above keeps passing after a
-    # ruling -- which would let a caller post again and quietly rewrite who
-    # decided, what they decided and when. That is precisely the audit record
-    # that must not be editable from a client. Reversing a ruling is an
-    # administrative act and goes through the status endpoint, which requires
-    # 'invoice:admin' and leaves its own trail.
-    if row["human_decision"]:
-        return {"ok": False,
-                "error": f"this run has already been reviewed ({row['human_decision']})"}
-
     reviewer = (reviewer or "").strip() or None    # never invent an identity
 
-    # A run actively claimed by someone else is off-limits to a review
-    # submitted under a different identity -- the same ownership guarantee
-    # claim_review() enforces at claim time, checked again here so a second
-    # reviewer cannot simply skip the claim step and submit anyway. Claiming
-    # is optional in this application (an unclaimed NEEDS_REVIEW run has
-    # nothing to check against, and every review submitted before this phase
-    # existed was exactly that), so this only ever refuses when a claim is
-    # actually in force and belongs to someone else.
-    claim = get_active_claim(run_id)
-    if claim and claim["claimed_by"] != reviewer:
-        return {"ok": False, "error": "claimed",
-                "claimed_by": claim["claimed_by"], "expires_at": claim["expires_at"]}
-
-    ok, old_status, po_number = set_run_status(
-        run_id, new_status,
-        note or f"Human review: {decision} by {reviewer or 'an unattributed reviewer'}.",
-        claim_release_reason="completed")
-    if not ok:
-        return {"ok": False, "error": "could not update run status"}
-
-    reviewed_at = datetime.now(timezone.utc).isoformat()
     with write_txn() as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                """SELECT status, automated_decision, human_decision, po_number, reasons_json
+                   FROM runs WHERE id=%s FOR UPDATE""",
+                (run_id,))
+            row = cur.fetchone()
+            if row is None:
+                return {"ok": False, "error": "unknown run"}
+
+            # Runs written before these columns existed fall back to their
+            # status, which at that point was the automated decision.
+            automated = row["automated_decision"] or row["status"]
+            if automated != "NEEDS_REVIEW":
+                return {"ok": False, "error":
+                        f"only NEEDS_REVIEW runs can be reviewed (this one is {automated})"}
+
+            # A run may be ruled on ONCE. Because `automated_decision`
+            # deliberately stays NEEDS_REVIEW forever, this check is what
+            # actually enforces that -- and now that it runs under the same
+            # lock as the write below, a second, concurrent submission cannot
+            # slip in between this check and the one that got here first.
+            # Reversing a ruling is an administrative act and goes through
+            # the status endpoint, which requires 'invoice:admin' and leaves
+            # its own trail.
+            if row["human_decision"]:
+                return {"ok": False, "error":
+                        f"this run has already been reviewed ({row['human_decision']})"}
+
+            # A run actively claimed by someone else is off-limits to a review
+            # submitted under a different identity -- the same ownership
+            # guarantee claim_review() enforces at claim time, checked again
+            # here so a second reviewer cannot simply skip the claim step and
+            # submit anyway. Read from `review_claims` inside this SAME
+            # transaction (not via get_active_claim(), which would open a
+            # second connection) so the claim state examined here is exactly
+            # the state the write below commits against -- no window for a
+            # concurrent claim/release to land in between. Claiming is
+            # optional in this application (an unclaimed NEEDS_REVIEW run has
+            # nothing to check against, and every review submitted before
+            # Phase D existed was exactly that), so this only ever refuses
+            # when a claim is actually in force and belongs to someone else.
+            cur.execute(
+                """SELECT claimed_by, expires_at FROM review_claims
+                   WHERE run_id=%s AND released_at IS NULL ORDER BY id DESC LIMIT 1""",
+                (run_id,))
+            claim_row = cur.fetchone()
+            now_iso = datetime.now(timezone.utc).isoformat()
+            active_claim = claim_row if (claim_row and claim_row["expires_at"] > now_iso) else None
+            if active_claim and active_claim["claimed_by"] != reviewer:
+                return {"ok": False, "error": "claimed",
+                        "claimed_by": active_claim["claimed_by"],
+                        "expires_at": active_claim["expires_at"]}
+
+            old_status, po_number = row["status"], row["po_number"]
+            review_note = (note
+                          or f"Human review: {decision} by {reviewer or 'an unattributed reviewer'}.")
+            _apply_status_transition(cur, run_id, old_status, new_status,
+                                     row["reasons_json"], review_note, "completed")
+
+            reviewed_at = now_iso
             cur.execute(
                 """UPDATE runs SET human_decision=%s, final_decision=%s, reviewed_by=%s,
                    reviewed_at=%s, review_note=%s WHERE id=%s""",

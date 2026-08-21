@@ -21,7 +21,7 @@ suite is green.**
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, four sections, light-first enterprise design with an explicit dark-mode toggle |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **523 passing** deterministically, 20 files, no live API calls |
+| Automated tests | **528 passing** deterministically, 20 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
@@ -701,6 +701,16 @@ reading activity requires only `invoice:read`, matching every other run-level
 read. Reviewer identity is always the authenticated token's username, never a
 request-body field — the claim endpoints do not even accept one.
 
+**The decision itself is submitted atomically, not just the claim.** Two
+concurrent submissions on one run — a double-clicked Accept, a retried
+request, or a genuine Accept-vs-Reject race — resolve to exactly one landed
+ruling; the loser gets the same `409` "already been reviewed" a repeat
+submission always got, rather than both writes landing and the activity
+history recording two conflicting outcomes for one invoice. Enforced with the
+same `SELECT ... FOR UPDATE` row lock claiming already uses, now held for the
+whole check-then-write sequence rather than across several separate
+transactions.
+
 ### API security
 
 The frontend is treated as an untrusted client. CORS is configured but is not a
@@ -938,7 +948,7 @@ sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
 docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
 scripts/          replay_samples.py — drives the samples in manifest order
-tests/            20 files, 523 tests, both providers mocked
+tests/            20 files, 528 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
 AUDIT.md              Architecture self-audit — what is wrong and why
 REFACTOR_STRATEGY.md  Architect review — fix logic, schemas, sequencing

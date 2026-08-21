@@ -40,10 +40,10 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Samples | ✅ 10/10 match the manifest, driven through the real pipeline |
 | UI | ✅ **Next.js 15 + React 19 + Tailwind v4**, 4 sections, redesigned as a light-first enterprise finance interface with an explicit (not OS-linked) dark-mode toggle |
 | Extraction | ✅ **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | ✅ **523 passing** deterministically, 20 files, both providers mocked |
+| Automated tests | ✅ **528 passing** deterministically, 20 files, both providers mocked |
 | Audit trail | ✅ Structured, deterministic, emitted by the rule engine itself |
 | Human review | ✅ Accept/reject, recorded beside the automated decision |
-| Review collaboration | ✅ **Phase D** (2026-08-21) — database-enforced review claims (leased, row-locked) + append-only activity history per run |
+| Review collaboration | ✅ **Phase D** (2026-08-21) — database-enforced review claims (leased, row-locked) + append-only activity history per run. **Phase E** (2026-08-21) — the decision-recording path itself is now atomic too; see §Standing instruction/§3a |
 | API security | ✅ OAuth2 bearer tokens, scopes, rate limits, input validation |
 | Production safety | ✅ `APP_ENV=production` refuses demo creds / missing secret |
 | Daily AI budget | ✅ Per-provider circuit breaker, PostgreSQL-backed |
@@ -62,18 +62,19 @@ Windows 11. PowerShell is primary; a Bash tool is also available.
 | Deployed (hosted) | ❌ Runs locally only |
 | Demo video | ❌ Not recorded |
 
-**Git:** 51 commits on `main` (this session's Phase D commit included),
-**ahead of `origin/main` by 4 — not yet pushed** (verified via `git status`;
+**Git:** 52 commits on `main` (this session's Phase E commit included),
+**ahead of `origin/main` by 5 — not yet pushed** (verified via `git status`;
 each earlier phase's commit was already unpushed when the phase after it
 started, and that is still accurate, not a regression). Push only if the user
 asks. **Working tree still has uncommitted changes** — the frontend redesign
 + dark-mode toggle + `DocumentPreview.tsx` + `ReviewWorkspace.tsx`, exactly as
-they were at the start of Phase C's session; neither Phase C nor Phase D
-touched, committed, or discarded any of it — Phase D is backend-only, per
-§11's frontend-change restriction for this phase. Recent (before this
+they were at the start of Phase C's session; neither Phase C, Phase D nor
+Phase E touched, committed, or discarded any of it — Phase E is backend-and-
+tests-only, same restriction Phase D worked under (§11). Recent (before this
 session's commit):
 
 ```
+345033a Add multi-user review collaboration and activity history (Phase D)
 4d72899 Add persistent invoice PDF storage behind a swappable local/S3 backend
 147c0ce Migrate persistence from SQLite to PostgreSQL
 cba2f01 Bring README and CLAUDE.md up to date with the frontend redesign
@@ -88,7 +89,6 @@ dea9163 Record which PO each run charged, so one invoice can span several
 fbe479f Bring README and CLAUDE.md up to date with the current build
 824d45b Recognise documents that are not invoices, and reject them saying so
 8da60b7 Let an admin clear run history from the UI, and explain duplicate rejections
-634bdc7 Add a one-command reset so the samples keep telling their intended story
 ```
 
 **[README.md](README.md) is current and accurate** — every figure re-verified
@@ -135,7 +135,7 @@ this context never means Phase 2 above.
 | B | SQLite → PostgreSQL migration | ✅ **done and verified** — see §Stack. 447/447 tests pass against real Postgres; the live server was started against it, all 10 samples replayed through the real HTTP pipeline with correct verdicts, the PO ledger derivation checked against documented figures, a human review + cascade exercised end to end (multi-PO accept → both POs to $0.00), and auth boundaries (401/403/200) checked against the live server, not just TestClient. |
 | C | Persistent invoice PDF storage | ✅ **done and verified** (2026-08-21) — see § Document storage (Phase C). New `documents` table (metadata only) + `backend/documents.py` (`DocumentStore` abstraction: `LocalDocumentStore` default, `S3DocumentStore` lazy-imports boto3). 33 new tests plus the full 480-test suite pass; the live server was started against the real Postgres instance and a real upload/download/hash round-trip was verified over HTTP (not just TestClient) — see the verification note below the table. |
 | D | Collaborative multi-user activity/history, **including review claiming** | ✅ **done and verified** (2026-08-21) — see § Multi-user review collaboration and activity history (Phase D). The user's Phase D brief for this session explicitly folded claim/locking (originally scoped as its own Phase E) into Phase D, so it is built and covered here rather than deferred — see the note directly below this table. New `invoice_activity` table (append-only) + `review_claims` table (leased, row-locked). 43 new tests plus the full 523-test suite pass; concurrency (10 simultaneous claims on one run, real threads against real Postgres) is exercised directly, not mocked. |
-| E | ~~Review claim/locking system~~ **folded into Phase D** — see above; nothing separate remains here | — |
+| E | Review workflow hardening (re-used the retired letter — see below) | ✅ **done and verified** (2026-08-21) — see § Review decision atomicity (Phase E). Closed a genuine concurrency gap in `record_human_review()` that Phase D's own claim mechanism did not cover: the eligibility check and the write were three separate, unlocked transactions, so two concurrent decisions on one run (a double-clicked Accept, or an ACCEPT racing a REJECT) could both pass the check and both write. Fixed with the same `SELECT ... FOR UPDATE` pattern `claim_review()` already used. 5 new tests (2 real-thread concurrency races, plus HTTP/edge cases) plus the full 528-test suite pass. |
 | F | Analytics/KPIs backend | ⬜ not started |
 | G | Filtering/grouping/export | ⬜ not started |
 | H | Client-facing authorization/data APIs | ⬜ not started |
@@ -144,22 +144,34 @@ this context never means Phase 2 above.
 | K | Multilingual backend support | ⬜ not started |
 | L | Deployment/security review | ⬜ not started |
 
-**Stopped after Phase D on explicit instruction** (the session's brief said
-"Implement Phase D only... do NOT proceed to Phase E... until I explicitly
-tell you to continue"). Phases B and C were the same pattern, one phase
-earlier each time. Do not start Phase E (now empty, folded into D — see the
-table) or Phase F or later without being asked, for the same reason §3 above
-applies to the case-study phases: this is deliberately incremental, one
-verified phase at a time.
+**Stopped after Phase E on explicit instruction.** Phase D's own session
+brief said "Implement Phase D only... do NOT proceed to Phase E... until I
+explicitly tell you to continue"; Phases B and C were the same pattern, one
+phase earlier each time. A later session was then explicitly asked for "Phase
+E — Review workflow hardening," so E is now built too (see below and
+§ Review decision atomicity (Phase E)). Do not start Phase F or later
+without being asked, for the same reason §3 above applies to the case-study
+phases: this is deliberately incremental, one verified phase at a time.
 
 **Phase D scope note.** The phase table above originally split "activity
 history" (D) from "claim/locking" (E) as two separate phases. The session
 that built Phase D was given a single, detailed brief covering both —
 claiming, leasing, concurrency and activity history together, described
-throughout as one phase — so both are built and verified here, and E is
-folded into D rather than left as a stub to revisit. This is the same kind of
-explicit, in-session scope decision §10 already records for the FX reversal:
-noted here as *why*, not silently reinterpreted.
+throughout as one phase — so both are built and verified here, and the
+original E was folded into D rather than left as a stub to revisit. This is
+the same kind of explicit, in-session scope decision §10 already records for
+the FX reversal: noted here as *why*, not silently reinterpreted.
+
+**Phase E scope note — the letter is reused, not the plan.** The E that got
+folded into D above was "claim/locking as its own phase" — that plan is gone,
+not deferred. The E that exists now is a *different* piece of work, given to
+a later session under the same name ("Phase E — Review workflow hardening"):
+auditing Phase D's already-built claim/decision system for concurrency and
+integrity gaps, not building claiming from scratch. The retired letter was
+reused because it was free and the work is thematically Phase D's direct
+sequel; it does not mean the original claim/locking scope came back. If a
+future session needs to refer to "the old Phase E," say so explicitly —
+plain "Phase E" from here on means review workflow hardening.
 
 **Phase C verification note.** Beyond the automated suite: the live server
 was started against the real Postgres instance (`uvicorn` on a scratch port,
@@ -769,16 +781,19 @@ for existing.
 claimed by someone OTHER than the submitting reviewer is refused, with the
 same `{"error": "claimed", ...}` shape `claim_review()` uses.** This was
 placed carefully to avoid breaking the review path every test before this
-phase relied on: `get_active_claim()` returns `None` for a never-claimed run
-(true of every call site in `test_human_review.py` and everywhere the
-frontend calls `/review` today, since claiming is optional, not mandatory),
-so the check is a no-op for all of them and every one of those tests still
-passes unmodified. It only ever fires when a claim genuinely exists and
-belongs to someone else — the scenario the case study's brief called out by
-name ("Employee B attempts to start the same review... the backend must
-prevent Employee B from simultaneously owning the review"), extended from
-"claiming" to "submitting the actual decision" so the protection cannot be
-sidestepped by simply skipping the claim step.
+phase relied on: a never-claimed run has no active claim row (true of every
+call site in `test_human_review.py` and everywhere the frontend calls
+`/review` today, since claiming is optional, not mandatory), so the check is
+a no-op for all of them and every one of those tests still passes unmodified.
+It only ever fires when a claim genuinely exists and belongs to someone else
+— the scenario the case study's brief called out by name ("Employee B
+attempts to start the same review... the backend must prevent Employee B
+from simultaneously owning the review"), extended from "claiming" to
+"submitting the actual decision" so the protection cannot be sidestepped by
+simply skipping the claim step. (Phase E moved this check's *implementation*
+from a call to `get_active_claim()` to an inline query on the same locked
+transaction — see § Review decision atomicity (Phase E) — but this is the
+same rule, just made atomic with the write that follows it.)
 
 **Reviewer identity is always the authenticated principal, never a request
 field — the claim and release endpoints do not even accept a body.** Same
@@ -820,6 +835,87 @@ activity history is invoice data, not a separately-permissioned resource.
 default 15) — read at call time, same pattern as every other env-backed
 setting in `config.py`, so a value set in `.env` after import is still
 honoured.
+
+### Review decision atomicity (Phase E)
+
+**Built at explicit request**, auditing Phase D's already-built review claim
+and decision system for concurrency and integrity gaps rather than building
+anything new from scratch — see § Phase E scope note under §3a for why this
+reuses the retired "Phase E" letter for a different piece of work.
+
+**The gap.** `claim_review()` was already correctly atomic (`SELECT ... FOR
+UPDATE` on the run row, one transaction). `record_human_review()` was not:
+its eligibility check (not already reviewed, not claimed by someone else)
+and its write happened across **three separate, unlocked transactions** — a
+bare `SELECT` with no lock, then `set_run_status()`'s own transaction, then a
+further `UPDATE`. Two concurrent submissions on the same run — a
+double-clicked Accept, a retried request, or a genuine ACCEPT-vs-REJECT race
+between two reviewers — could both read `human_decision IS NULL` before
+either committed, and both would then go on to write. The result was not a
+crash; it was quieter and worse: **two conflicting rulings both landing in
+`invoice_activity`** (an `ACCEPTED` row and a `REJECTED` row on the same
+run), with the run's final `status` decided by whichever transaction happened
+to commit last rather than either caller being told no. This is exactly the
+"conflicting final decisions" and "double-submitted decision" failure mode a
+review workflow has to rule out, and Phase D's claim mechanism did not cover
+it — claiming protects against a *second reviewer starting a review*, not
+against the *decision-recording call itself* racing.
+
+**The fix.** `record_human_review()` now does its whole check-then-act
+sequence inside ONE `write_txn()`, under `SELECT ... FOR UPDATE` on the run
+row — the exact same lock, same row, `claim_review()` and `set_run_status()`
+already take. The claim-ownership check now reads `review_claims` inline, on
+the same cursor, inside the same transaction — not via a call to
+`get_active_claim()`, which would open a second connection and could observe
+a different, non-atomic snapshot of claim state than the write that follows.
+A concurrent second request necessarily blocks on the lock until the first
+commits, then re-reads `human_decision` (now set) and is correctly refused
+with `{"error": "this run has already been reviewed (...)"}` — same error
+shape and same HTTP mapping (409) as before, so nothing about the API
+contract changed, only what it now guarantees.
+
+**Shared logic, not two copies.** `set_run_status()` and
+`record_human_review()` both perform "move a run's status, update
+`final_decision`, release any claim being protected" — previously
+`record_human_review()` called the public `set_run_status()` as a black box
+(itself opening its own transaction, the root of the atomicity gap).
+Extracted into `_apply_status_transition(cur, ...)`, which assumes the caller
+already holds the row lock and does no locking of its own; both
+`set_run_status()` (which now takes the lock itself,
+`SELECT ... FOR UPDATE`, before calling it) and `record_human_review()` (which
+takes the lock once, up front, and calls it as part of the same transaction
+as the human-decision write) call the same function. One implementation of
+"what a status transition does," matching this project's existing preference
+for one write path over several (§Working conventions).
+
+**`release_review_claim()` hardened the same way, for consistency and a real
+bug fix.** It previously locked only the specific `review_claims` row, never
+the run itself, so it did not serialise against `claim_review()` /
+`record_human_review()` / `set_run_status()` the way they now serialise
+against each other. It now locks `runs` first (same order everywhere: runs,
+then review_claims — ruling out a lock-ordering deadlock), which as a side
+effect **fixed a real, if minor, existing bug**: releasing a claim on a
+`run_id` that does not exist at all used to read as `"no active claim on
+this run"` (there being no claim rows for a nonexistent run) — a 409 — rather
+than the `"unknown run"` / 404 every other endpoint gives a caller who names
+a run that isn't there.
+
+**Verified beyond the fix itself.** Two new real-thread concurrency tests in
+`tests/test_review_collaboration.py`, same pattern the Phase D 10-thread
+claim-race test already established (a `threading.Barrier`, not a sleep):
+ten reviewers racing ACCEPT/REJECT on one unclaimed run resolve to **exactly
+one** landed decision, nine refused with "already been reviewed", and
+`invoice_activity` carries exactly that one `ACCEPTED`/`REJECTED` row — never
+both; eight reviewers racing the identical decision ("double-click") resolve
+to exactly one landed decision and the PO ledger reflects the invoice charged
+**exactly once**, not twice. Plus an HTTP-level duplicate-submission test (a
+retried Accept gets a 409, not a second ruling) and a release-on-unknown-run
+test (now 404, was 409). The full 43-test Phase D suite plus these 5 new
+tests (48 total in the file) pass unmodified in what they assert; the
+523-test baseline suite passes at 524/528 with the only 4 failures being the
+pre-existing, documented `test_extraction_routing.py` live-quota flake (§9
+issue 5, confirmed by re-running that file alone: 23/23 pass) — unrelated to
+this change and untouched by it.
 
 ### API security
 
@@ -1017,7 +1113,7 @@ The backend is a single-process FastAPI app that:
 | `extraction.py` | PDF → structured fields. Routes by document type (text vs scanned). Groq (text) → Gemini (vision) → regex → empty (none). **The ONLY module calling a model.** Captures confidence + evidence per field. Both provider SDKs imported lazily. |
 | `rules.py` | Deterministic decision engine: `decide(extracted, po_match, ...) → (verdict, reasons, audit_trail)`. Emits audit as it evaluates, never a second pass. Handles vendor tri-state, is_not_an_invoice(), duplicates, confidence gate. No model, no approximation. `reevaluate_po_queue()` also logs `AUTO_APPROVED` activity (Phase D) for a cascade-released run. |
 | `matching.py` | PO lookup (exact + fuzzy). Tolerance (one-sided). Multi-PO binding + `split_across()` ledger math. Currency detection + `fx_convert()` at pinned rates. All deterministic. |
-| `storage.py` | PostgreSQL schema, seed data load, ledger queries, write transactions (`SELECT ... FOR UPDATE` on the specific PO row(s) for race safety), human review recording, run clearing, `run_allocations` migration, document metadata (`save_document`, `get_document_for_run`). Balances derived per run by summing APPROVED allocations. Pooled connections via `psycopg2.pool`. Since Phase D: append-only activity logging (`log_activity`/`list_activity`), review claims (`claim_review`/`release_review_claim`/`get_active_claim`, `SELECT ... FOR UPDATE` on `runs` for claim atomicity), standalone comments (`add_comment`). |
+| `storage.py` | PostgreSQL schema, seed data load, ledger queries, write transactions (`SELECT ... FOR UPDATE` on the specific PO row(s) for race safety), human review recording, run clearing, `run_allocations` migration, document metadata (`save_document`, `get_document_for_run`). Balances derived per run by summing APPROVED allocations. Pooled connections via `psycopg2.pool`. Since Phase D: append-only activity logging (`log_activity`/`list_activity`), review claims (`claim_review`/`release_review_claim`/`get_active_claim`, `SELECT ... FOR UPDATE` on `runs` for claim atomicity), standalone comments (`add_comment`). Since Phase E: `record_human_review()`'s eligibility check and write are one atomic `SELECT ... FOR UPDATE` transaction (was three unlocked ones); `_apply_status_transition()` is the one shared implementation `set_run_status()` and `record_human_review()` both call under that lock; `release_review_claim()` also locks `runs` first, same order as everywhere else. |
 | `documents.py` | Document **content** storage abstraction (Phase C): `DocumentStore` interface, `LocalDocumentStore` (default, local disk), `S3DocumentStore` (boto3 imported lazily). Never holds metadata — that's `storage.py`'s `documents` table. Storage keys are always server-generated (`new_storage_key()`), never the original filename. |
 | `auth.py` | OAuth2 resource-server: JWT validation (pyjwt), scopes, password grant, production mode enforcement (no demo creds, no missing secret). |
 | `config.py` | .env loader, `APP_ENV` switch, provider model IDs, business thresholds (PO_TOLERANCE_PERCENT, CONFIDENCE_THRESHOLD, DAILY_QUOTA_VISION, FX_RATES + version), document-storage settings (DOCUMENT_STORE_BACKEND, DOCUMENT_STORAGE_DIR, DOCUMENT_S3_*). |
@@ -1184,13 +1280,13 @@ column on `runs` itself, one JSON array per run.
 
 **`reset-demo.ps1`** — clears run history (and optionally replays samples), by calling `storage.clear_run_history()` directly — the same function `POST /api/admin/reset-demo` calls, so the script and the endpoint can never disagree about what "reset" means. Callable from terminal or from UI (admin). No longer needs to stop the server first (that was a SQLite file-lock workaround; Postgres has no equivalent). Since Phase C, also clears document rows and their backing files, in the same transaction as the runs they belong to.
 
-**`tests/`** — 20 files, 523 tests:
+**`tests/`** — 20 files, 528 tests:
 - Both Groq and Gemini mocked at HTTP transport boundary, so suite needs no key, no network, no quota
 - `conftest.py` provides `auth_headers(role)` as a plain function (not a pytest fixture — callers import and call it). Also defines an **autouse** fixture, `_isolate_document_storage` (Phase C) — every test in the suite gets `config.DOCUMENT_STORAGE_DIR` redirected to a per-test `tmp_path`, the same isolation guarantee `pg_schema.py` gives the database, applied automatically to every test file without each one needing to know document content exists. Found the hard way: before this fixture existed, a full suite run wrote 43 real PDF files under the actual `data/documents/` with no surviving database row to reference them, because every other test file's `db` fixture only knew to isolate the Postgres schema.
 - `pg_schema.py` — shared helper for per-test Postgres isolation: a fresh, uniquely-named schema per test (`fresh_schema()`), dropped on teardown (`drop_schema()`). Every `db(...)` fixture across the suite calls this instead of monkeypatching a SQLite file path.
 - Real, isolated database state per test. Exceptions: `test_samples.py` honours a live key and exercises real routes (module-scoped schema, since the ten samples build on each other); **`test_reset_demo.py` and `test_extraction_routing.py` have no `db`/schema fixture at all and run directly against whatever `storage.PG_SCHEMA` currently is** — i.e. the real application schema (`public`), exactly as they ran directly against the real `data/app.db` before the migration (`test_extraction_routing.py` never imports `storage` itself, but `extraction.extract_invoice()` calls `quota.try_consume()` internally, which does). Both discovered, not introduced, while migrating; documented here rather than silently fixed, per §3. Practical effect: `test_extraction_routing.py` can fail if the real vision quota is already spent, and running the full suite clears real run history as a side effect of `test_reset_demo.py` actually exercising the reset endpoint against a live schema. One further Phase C wrinkle in the same vein: because the autouse document-storage fixture applies to `test_reset_demo.py` too, a reset it triggers against the real `public` schema deletes real `documents` rows but looks for their backing files in that test's own redirected (and irrelevant) tmp_path — so any real files that predated the test run are not found and not deleted. Harmless (an orphan file under `data/documents/`, not a correctness or security issue) and not worth solving with more machinery for a corner this narrow; noted here rather than silently left unexplained.
 
-### Test suite — 523 tests, 20 files
+### Test suite — 528 tests, 20 files
 
 | File | n | Covers |
 |---|---|---|
@@ -1213,7 +1309,7 @@ column on `runs` itself, one JSON array per run.
 | `test_multi_po.py` | 28 | multi-PO binding, the split, the ledger, the hold |
 | `test_allocations.py` | 13 | the allocation ledger, its migration and idempotence |
 | `test_documents.py` | 33 | Phase C: persistence, metadata, download, authorization, storage-key path safety, reset-demo cleanup |
-| `test_review_collaboration.py` | 43 | Phase D: claiming (win/conflict/renew/release), a 10-thread real-Postgres claim race, stale-claim recovery, claim-aware human review, activity chronology/actor/immutability, HTTP auth + authorization, reset-demo cleanup |
+| `test_review_collaboration.py` | 48 | Phase D: claiming (win/conflict/renew/release), a 10-thread real-Postgres claim race, stale-claim recovery, claim-aware human review, activity chronology/actor/immutability, HTTP auth + authorization, reset-demo cleanup. Phase E: two more real-thread races (conflicting decisions, duplicate decisions) proving `record_human_review()` is now atomic, plus HTTP duplicate-submission and unknown-run-release edge cases |
 
 Notes for whoever changes them:
 
@@ -1455,8 +1551,8 @@ than fixed with more machinery, per §3.
    app and the test suite both require it now; there is no SQLite fallback.
    `docker-compose up -d` if using the provided compose file, or point it at
    whatever local/managed instance is already running.
-4. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **523 passed**.
-   No key or network needed. If it is not 523, find out what changed before
+4. `.\venv\Scripts\python.exe -m pytest tests/ -q` — expect **528 passed**.
+   No key or network needed. If it is not 528, find out what changed before
    building anything. Known non-regressions: `test_samples` 05 depends on
    Gemini being reachable (503 and 429 both happen), and
    `test_extraction_routing` can fail when the local vision quota is spent
