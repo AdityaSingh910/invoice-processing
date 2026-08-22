@@ -5117,6 +5117,28 @@ signature verified, an actual signature actually verified.
 (Counts verified via `pytest --collect-only -q` on the current tree — not
 copied from an old table.)
 
+**Verified state after the rapid-refresh fixes** (2026-08-23, §11.-0.5),
+against a **LOCAL** PostgreSQL:
+
+| Run | Result |
+|---|---|
+| Full suite, excluding the two live-provider files | 1,859 collected — **1,857 passed, 2 failed**, 19m17s |
+| `test_api_security.py` + `test_documents.py` in full, including everything added this session | 110 collected — **109 passed, 1 failed** |
+
+**The failures are the same known two, by name, and neither is new:**
+`test_the_frontend_bundle_contains_no_secret` (reads `frontend/app.js`, a
+directory deleted in `fcac22a` — the test outlived what it guards) and
+`test_an_english_date_is_never_rewritten` (the open `doclang.normalise_date`
+bug §7k.9 records). The four constant `test_extraction_routing.py` cases and
+the scanned sample are excluded above rather than fixed, for the reason this
+section has always given.
+
+Note the ordering trap this run walked into and is recorded rather than
+smoothed over: the 19-minute run was STARTED BEFORE §11.-0.5's three new tests
+were written, so it did not contain them — pytest collects at startup, and a
+file edited afterwards is not picked up. That is why the second row exists. A
+full-suite figure is only about the tree as it stood when the run began.
+
 **Verified state at the end of the deployment session** (2026-08-22, §7k),
 against a **LOCAL** PostgreSQL rather than the hosted one:
 
