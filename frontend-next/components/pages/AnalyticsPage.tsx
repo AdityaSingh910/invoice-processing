@@ -94,7 +94,33 @@ export default function AnalyticsPage() {
   const users = useAnalytics<AnalyticsUsers>("users", range, true, reloadKey);
   const email = useAnalytics<AnalyticsEmail>("email", range, true, reloadKey);
 
-  const refresh = () => setReloadKey((k) => k + 1);
+  /**
+   * ONE PRESS OF THIS BUTTON IS SEVEN REQUESTS, which is why it is the one
+   * refresh in the app that has to guard itself.
+   *
+   * `useResource` coalesces repeat presses per resource (see lib/useData.ts),
+   * but this screen does not call `resource.refresh()` -- it changes a
+   * reloadKey that seven hooks depend on, so each press restarts all seven
+   * regardless of what any one of them is doing. Five quick presses is
+   * thirty-five requests arriving together, against endpoints that are metered
+   * per user AND per IP (§7e.4) and that hold a database connection each. That
+   * is how a refresh became a 429 and, worse, how it exhausted the connection
+   * pool and turned neighbouring reads into 500s.
+   *
+   * So while any panel is still loading the button is disabled and this is a
+   * no-op. Disabled rather than silently ignored: a control that looks
+   * pressable and does nothing reads as a broken button, and the reason it is
+   * unavailable -- something is already loading -- is exactly what the reader
+   * needs to know.
+   */
+  const anyLoading =
+    overview.loading || trends.loading || processing.loading ||
+    reviews.loading || vendors.loading || users.loading || email.loading;
+
+  const refresh = () => {
+    if (anyLoading) return;
+    setReloadKey((k) => k + 1);
+  };
 
   // The overview is the one request the whole screen depends on: if it failed,
   // every panel below it would render its own identical error, which reads as
@@ -128,8 +154,13 @@ export default function AnalyticsPage() {
               onChange={(v) => setRange(v)}
               ariaLabel="Reporting period"
             />
-            <Button size="sm" onClick={refresh} icon={<IconRefresh size={13} />}>
-              Refresh
+            <Button
+              size="sm"
+              onClick={refresh}
+              disabled={anyLoading}
+              icon={<IconRefresh size={13} />}
+            >
+              {anyLoading ? "Refreshing…" : "Refresh"}
             </Button>
           </>
         }

@@ -173,8 +173,13 @@ export default function InvoicesPage({
             : "Every invoice this process has handled."
         }
         actions={
-          <Button size="sm" onClick={runs.refresh} icon={<IconRefresh size={13} />}>
-            Refresh
+          <Button
+            size="sm"
+            onClick={runs.refresh}
+            disabled={runs.loading}
+            icon={<IconRefresh size={13} />}
+          >
+            {runs.loading ? "Refreshing…" : "Refresh"}
           </Button>
         }
       />

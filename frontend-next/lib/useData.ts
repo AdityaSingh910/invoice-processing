@@ -14,7 +14,7 @@
  * come back 401, the failure is cached into `error`, and the 401 handler fires
  * a sign-out event at the user who just signed in.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson } from "./api";
 import type { Reference, RunRecord } from "./types";
 
@@ -64,23 +64,63 @@ function useResource<T>(path: string, enabled: boolean, reloadKey: number): Asyn
   });
   const [nonce, setNonce] = useState(0);
 
+  /**
+   * A REFRESH ASKED FOR MID-FLIGHT IS REMEMBERED, NOT FIRED, AND NOT DROPPED.
+   *
+   * Pressing Refresh five times quickly used to start five requests. Each one
+   * aborted the last, so four were wasted -- but they were still SENT, and the
+   * server still had to accept, authenticate and begin serving every one of
+   * them. On the Analytics screen, where one press fans out to seven endpoints,
+   * five presses is thirty-five requests arriving at once. That burst is what
+   * exhausted the API's database connection pool and turned ordinary reads into
+   * 500s, and a 500 on /api/auth/me is what used to sign the user out (see
+   * lib/auth.tsx).
+   *
+   * Two obvious fixes are both wrong. Ignoring a refresh while one is in flight
+   * DROPS it -- and a refresh is not always a button: `page.tsx` calls it when a
+   * run finishes and when a review lands, so discarding one leaves genuinely
+   * stale rows on screen with nothing to trigger another. Debouncing on a timer
+   * guesses at a delay and still fires while the last request is running.
+   *
+   * So a refresh requested while one is in flight sets a flag, and the settling
+   * request fires exactly one more. However many times the button is pressed,
+   * at most one request is queued behind the current one, and the last press
+   * always results in a fetch that started after it. Bursts collapse; nothing
+   * is lost.
+   */
+  const inFlight = useRef(false);
+  const queued = useRef(false);
+
   useEffect(() => {
     if (!enabled) return;
 
     const controller = new AbortController();
+    inFlight.current = true;
     // Keep previous rows on screen while refetching; blanking a populated table
     // to skeletons on every refresh is disorienting. `loading` still goes true,
     // so a caller that wants to show a quiet refreshing state can.
     setState((s) => ({ data: s.data, loading: true, error: null }));
 
+    const settle = (next: (s: { data: T | null; loading: boolean; error: string | null }) =>
+                    { data: T | null; loading: boolean; error: string | null }) => {
+      inFlight.current = false;
+      setState(next);
+      if (queued.current) {
+        queued.current = false;
+        setNonce((n) => n + 1);
+      }
+    };
+
     apiJson<T>(path, { signal: controller.signal })
-      .then((d) => setState({ data: d, loading: false, error: null }))
+      .then((d) => settle(() => ({ data: d, loading: false, error: null })))
       .catch((e) => {
         // An abort is this hook superseding itself, not a failure. Reporting it
         // would put an error on screen for a request nobody is waiting for, and
-        // the run that replaced it is already responsible for settling state.
+        // the run that replaced it is already responsible for settling state --
+        // including for anything queued behind it, which is why the flags are
+        // left exactly as they are here.
         if (controller.signal.aborted) return;
-        setState((s) => ({ data: s.data, loading: false, error: describe(e) }));
+        settle((s) => ({ data: s.data, loading: false, error: describe(e) }));
       });
 
     return () => controller.abort();
@@ -92,7 +132,13 @@ function useResource<T>(path: string, enabled: boolean, reloadKey: number): Asyn
     // reporting "loaded, empty" there would flash an empty state at sign-in.
     loading: !enabled || state.loading,
     error: state.error,
-    refresh: useCallback(() => setNonce((n) => n + 1), []),
+    refresh: useCallback(() => {
+      if (inFlight.current) {
+        queued.current = true;
+        return;
+      }
+      setNonce((n) => n + 1);
+    }, []),
   };
 }
 

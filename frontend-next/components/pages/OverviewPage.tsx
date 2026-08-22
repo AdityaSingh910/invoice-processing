@@ -143,8 +143,18 @@ export default function OverviewPage({
         actions={
           <>
             <ResetDemoButton onReset={runs.refresh} />
-            <Button size="sm" onClick={runs.refresh} icon={<IconRefresh size={13} />}>
-              Refresh
+            {/* Disabled while a fetch is in flight. `useResource` already
+                coalesces repeat presses into one queued refetch rather than a
+                burst, so this is feedback rather than the guard -- but a
+                button that looks pressable and visibly does nothing is what
+                makes somebody press it five more times. */}
+            <Button
+              size="sm"
+              onClick={runs.refresh}
+              disabled={runs.loading}
+              icon={<IconRefresh size={13} />}
+            >
+              {runs.loading ? "Refreshing…" : "Refresh"}
             </Button>
             <Button
               size="sm"
