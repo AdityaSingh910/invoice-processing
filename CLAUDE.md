@@ -84,6 +84,36 @@ history — do not conflate them:
 | L | Multilingual support | ✅ Complete | (see §13.3) |
 | M | Final security + deployment hardening | 🟨 Deployment configured (§7k); the rest not started | — |
 
+---
+
+### THE APPLICATION IS DEPLOYED AND LIVE. READ THIS BEFORE ANYTHING ELSE.
+
+```
+Browser -> https://invoice-processing-seven.vercel.app          (Vercel, static export)
+        -> https://invoice-processing-production-65c5.up.railway.app   (Railway, FastAPI)
+        -> Supabase PostgreSQL
+```
+
+Verified live at the end of the deployment session, by calling it rather than
+by assuming: `/api/health` returns 200; the Railway API sends
+`access-control-allow-origin: https://invoice-processing-seven.vercel.app` and
+`access-control-expose-headers: Content-Disposition, X-Export-Max-Rows`, and
+sends NO allow-origin at all for an arbitrary origin; `Strict-Transport-Security`
+is present, which means `APP_ENV=production` really is in force. Invoices
+process end to end through the browser against Supabase.
+
+**§7k is the engineering record of what the split required.** It was written
+BEFORE the deploy and its own status line has been corrected; read §7k.9 for
+what is still outstanding.
+
+**FOUR THINGS IN THIS FILE WENT STALE DURING THAT SESSION AND ARE CORRECTED IN
+PLACE:** §7k's status, §11.1's nav table (the Email integration row is gone),
+§7h.10's description of `SettingsPage.tsx` (the file is deleted), and the
+commit list in §13.3. If anything else here disagrees with the code, the code
+wins — that has always been this file's rule.
+
+---
+
 **PHASE K WAS TAKEN OUT OF ORDER, ON PURPOSE.** Security hardening was done
 BEFORE Phase J at the owner's request: J opens this application to people
 outside the company, and the right order is to fix what is already reachable
@@ -4404,9 +4434,11 @@ sweep. All 106 pre-existing tests in `test_email_ingestion.py`, 110 in
 
 ## 7k. Split deployment: Vercel + Railway + Supabase (Phase M, deployment half)
 
-**Status: configured, verified locally against a production-like environment.
-NOT yet deployed to the three platforms — that needs accounts this session did
-not have (§7k.9).**
+**Status: configured, verified locally, and then ACTUALLY DEPLOYED. The
+application is live on Vercel + Railway + Supabase — see the block near the top
+of §2 for the URLs and what was verified against them. This section's original
+"not yet deployed" status was true when it was written and is no longer; §7k.9
+records what remains.**
 
 This is the **deployment** half of Phase M. The security half — a real token
 issuer, a token denylist, an authentication audit log, dependency scanning —
@@ -4639,6 +4671,36 @@ API-only.
 `npx tsc --noEmit` is clean and `npm run build` succeeds in both modes.
 
 ### 7k.9 What is NOT done, and what it needs
+
+**UPDATED AFTER THE DEPLOYMENT ACTUALLY HAPPENED.** Items 1 and 2 below are
+DONE — the app is live and was walked in a browser. Item 3 is MOOT: rather than
+reconnect Gmail, the mailbox-connection UI was removed from the frontend
+entirely (commit `d8512d6`), because this deployment is not going to configure
+a Google OAuth client. The backend Gmail code is untouched and still works.
+Item 4 stands only if someone later wants Gmail back.
+
+**WHAT IS ACTUALLY OUTSTANDING NOW:**
+
+1. **`DOCUMENT_STORE_BACKEND` is believed to still be `local` on Railway, which
+   means UPLOADED PDFs DO NOT SURVIVE A REDEPLOY.** The `documents` row lives in
+   Supabase so the run still opens and the audit trail is intact, but the
+   download 404s and the audit report has no source document — and nothing warns
+   you, because from the application's side the write succeeded. §7k.6 and
+   `DEPLOYMENT.md` §1.3 have the fix (Supabase Storage speaks S3; `boto3` is
+   already in the image). **Verify it in Railway's Variables tab before trusting
+   any stored document.**
+2. **A real open bug in `doclang.normalise_date`** — see §10 and the checklist
+   at the end of this file. Nobody has looked at it.
+3. **`test_api_security.py::test_the_frontend_bundle_contains_no_secret` reads
+   `frontend/app.js`**, a directory deleted in `fcac22a`. The test outlived what
+   it guards and has been failing since.
+4. **The reset-demo confirmation dialog was reported as rendering oddly** in the
+   browser (title and footer buttons apparently not visible) and was never
+   diagnosed — the question went unanswered. It may simply have been where the
+   screenshot landed. `ResetDemoButton` opens an ordinary `Modal`; nothing in
+   the code explains a clipped panel.
+
+**THE ORIGINAL LIST, KEPT FOR THE REASONING:**
 
 1. **Nothing is deployed.** No Railway service was created, no Vercel project
    was created. Both need accounts and credentials this session did not have.
@@ -5454,22 +5516,39 @@ decides which PRODUCT the person is looking at. See §7g.9.
 
 ### 11.1 What the INTERNAL frontend is
 
-A Next.js 15 / React 19 / Tailwind v4 static export, served by FastAPI from
-`frontend-next/out/`, in **seven sections across nine nav rows**:
+A Next.js 15 / React 19 / Tailwind v4 static export. Served by FastAPI from
+`frontend-next/out/` when one process serves both halves (the local demo), and
+by Vercel in the live split deployment. **Six sections across eight nav rows:**
 
 ```
 OPERATIONS   Overview            performance, and what is blocked on a person
              Process invoice     upload and run                [invoice:process]
              Invoices            the full register
              Review queue        the same section, filtered     (badge = open holds)
-ADMIN        Email integration   connect a Gmail mailbox       [invoice:admin]
-             Email queue         held/released messages,       [invoice:read]
+ADMIN        Email queue         held/released messages,       [invoice:read]
                                  release/discard/process        (§7b.14)
 REPORTING    Analytics           Phase H KPIs and trends
              Assistant           Phase K2, ask about your invoices
 REFERENCE    Purchase orders     the same section, orders tab
              Approved vendors    the same section, vendors tab
 ```
+
+**THE "EMAIL INTEGRATION" ROW AND ITS SCREEN ARE GONE** (`d8512d6`).
+`components/pages/SettingsPage.tsx` was deleted, along with the `settings`
+section, its entry in the `Section`/`NavId` unions, the `?gmail=` landing
+redirect, `IconSettings`, the `nav.settings` labels in all seven catalogues and
+the five Gmail/ingestion interfaces in `lib/types.ts`. **No backend file was
+touched** — `/api/email/oauth/gmail/*` still exists and still requires
+`invoice:admin`. Restoring the feature means restoring one component and its
+four wiring points. §7h.10 describes that screen as it WAS; read it as history.
+
+**The sign-in screen's demo-account panel is hidden on any split deployment**
+(`0c468f4`), gated on `NEXT_PUBLIC_API_BASE_URL` read straight from
+`process.env` so the minifier folds the branch and the five demo passwords are
+dead-code-eliminated rather than merely hidden. Locally, where that variable is
+empty, the panel is exactly as it always was. **Signing out now confirms**
+through the same `Modal` that Reset demo data uses, translated into all seven
+languages.
 
 Two pairs of rows open one section each, so which ROW is lit
 (`AppShell.NavId`) is tracked separately from which SECTION is open
@@ -5764,6 +5843,11 @@ Neither commit contains `claudee.md`.
 ### 13.3 Commits
 
 ```
+d8512d6 Take the mailbox-connection screen out of the UI, and leave the API alone
+0c468f4 Stop the sign-in box advertising accounts that are not there
+2be3b0d fix(frontend): update Next.js to 15.1.12
+1896727 Let the UI and the API live on different hosts, without changing either
+fcac22a Remove the vanilla HTML frontend, Next.js is now the only UI
 PHASE_L_HASH Answer in the reader's language, and read the vendor's (Phase L)
 bcd51d4 Record the Phase G2 commit hash, and the counts that moved with it
 e1f907b Let an administrator connect Gmail, without ever holding its password (Phase G2)
@@ -5807,8 +5891,10 @@ the code, verify against the code directly rather than trusting either.
 
 1. Read this file, then `README.md`.
 2. `git status` — expect only `claudee.md` UNTRACKED, and no uncommitted changes.
-   `git log --oneline -10` — expect the deployment commit (§7k) at or near the tip.
-   `git branch -v` — expect `main` ahead of `origin/main` unless it has been pushed.
+   `git log --oneline -10` — expect `d8512d6` at the tip.
+   `git branch -vv` — expect `main` level with `origin/main`; everything through
+   `d8512d6` is committed AND pushed. **`claudee.md` is not part of the app;
+   leave it alone and keep it out of every commit** (§11.3).
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
 4. `.\venv\Scripts\python.exe -m pytest tests\ -q`
    **Run the FULL suite, not just the file you changed** — Phase J introduced
@@ -5841,15 +5927,35 @@ the code, verify against the code directly rather than trusting either.
 5. `cd frontend-next && npm run build` after any frontend change — FastAPI
    serves the static export in `out/`, so without a rebuild the browser keeps
    serving the old UI. There is no frontend test suite (§11.4).
-6. **Phase M is HALF done.** Its deployment half — the Vercel + Railway +
-   Supabase split — was asked for individually and is recorded in §7k, with
-   `DEPLOYMENT.md` as the operator runbook. **Nothing is actually deployed**
-   (§7k.9): no Railway service, no Vercel project, and no browser verification
-   against a live URL. Those need accounts and are human actions.
+6. **Phase M's deployment half is DONE AND LIVE** — Vercel + Railway +
+   Supabase, walked in a browser, URLs and verification in the block near the
+   top of §2. §7k is the engineering record; `DEPLOYMENT.md` is the operator
+   runbook. **§7k.9 lists what is still outstanding**, and the first item
+   matters: document storage is believed to still be `local` on Railway, which
+   means uploaded PDFs do not survive a redeploy.
 
    **Its SECURITY half is still unstarted** and still needs asking for: a real
    token issuer, a token denylist, an authentication audit log, secret
-   management and dependency scanning — the items §7e.11 lists, plus Google
-   requiring HTTPS for a non-localhost redirect URI (§7h.11) and a language
+   management and dependency scanning — the items §7e.11 lists, plus a language
    preference not being stored server-side (§7i.14 item 7). Do not start it, or
    anything later, without being asked (§2, §9).
+
+7. **THINGS THAT WILL BITE A NEW SESSION, ALL FOUND THE HARD WAY:**
+
+   * **The local `.env` `DATABASE_URL` no longer authenticates** — the Supabase
+     database password was rotated during deployment setup. Local runs and the
+     test suite fail against it until it is updated. A local PostgreSQL
+     (`postgresql-x64-16`, credentials in the commented-out line in `.env`) was
+     used instead and is much faster anyway.
+   * **Run the test suite against a LOCAL Postgres, never the hosted one.**
+     Against Supabase it did not finish in over an hour, because every test
+     creates and drops its own schema over the network — and `test_reset_demo.py`
+     and `test_extraction_routing.py` have no schema fixture at all, so they run
+     against whatever `public` the URL names. On a hosted URL that is real data.
+   * **Gmail is deliberately absent from the UI** and its backend is
+     deliberately intact. Do not "fix" one to match the other without being
+     asked. See §11.1 and §7k.9.
+   * **The frontend has two build modes and they differ in what they SHIP**, not
+     just what they render: with `NEXT_PUBLIC_API_BASE_URL` set, the demo
+     credentials are dead-code-eliminated. Check with a grep of `out/`, not by
+     reading the source.
