@@ -46,7 +46,7 @@ vendor binding no token can assert (§7g).
 - **`data/`** — seed POs, vendors, demo users (JSON, tracked in git,
   reloaded into Postgres on every startup) plus gitignored runtime state
   (`documents/`).
-- **`tests/`** — 1,546 tests, 28 files, real (schema-isolated) PostgreSQL, both
+- **`tests/`** — 1,895 tests, 29 files, real (schema-isolated) PostgreSQL, both
   LLM providers mocked, and Google mocked at the two functions that open a
   socket. See §10.
 
@@ -105,6 +105,39 @@ process end to end through the browser against Supabase.
 **§7k is the engineering record of what the split required.** It was written
 BEFORE the deploy and its own status line has been corrected; read §7k.9 for
 what is still outstanding.
+
+### THE TWO HALVES DEPLOY SEPARATELY, AND ONE OF THEM LAGS
+
+**Vercel auto-deploys on a push to `main`. Railway, as of the last check, did
+NOT.** That is not a guess — it was measured against the live URLs after
+pushing `8440871`:
+
+* the Vercel bundle already contained that push's strings (`Refreshing…`,
+  `zampisthebest`, the `review-queue` hash route) and no longer contained the
+  ones removed;
+* the Railway API still produced **5 × HTTP 500 out of 30 concurrent reads**,
+  which is precisely the pool bug `191392c` fixes, twice in a row a minute
+  apart.
+
+**So after any backend change, REDEPLOY RAILWAY BY HAND and verify it, rather
+than assuming the push was enough.** The verification is a burst of ordinary
+reads (`/api/auth/me`, `/api/runs`, `/api/reference`) at ~30-way concurrency:
+all 200 means the fix is live, any 500 means it is not.
+
+**A live account is provisioned and the sign-in box opens on it:**
+`demo` / `zampisthebest`, prefilled by `LoginGate.tsx`'s `OPENING_CREDENTIAL`,
+so a visitor presses one button. See §12 for the two-provisionings rule.
+
+**THE DEPLOYED `demo` ACCOUNT HOLDS `admin`, NOT THE `reviewer` THIS REPO
+ASSUMES.** Its production token comes back with
+`invoice:read invoice:process invoice:review invoice:admin`. `data/users.json`
+ships it as `reviewer` deliberately (§12: whatever that account holds, every
+visitor holds, and its password is compiled into the browser bundle), so the
+deployed `AUTH_USERS_JSON` entry and this repository disagree. The practical
+consequence is that **any visitor to the public site can override a run's
+status and clear the whole run history** from the Overview screen. Narrow it in
+Railway's `AUTH_USERS_JSON` if that is not intended; it is recorded here rather
+than silently changed because only the owner can edit that variable.
 
 **FOUR THINGS IN THIS FILE WENT STALE DURING THAT SESSION AND ARE CORRECTED IN
 PLACE:** §7k's status, §11.1's nav table (the Email integration row is gone),
@@ -4723,12 +4756,20 @@ Item 4 stands only if someone later wants Gmail back.
    losing documents today. **Check the variable before trusting any stored
    document** — a document's own `storage_backend` column records which store
    actually wrote it.
-2. **A real open bug in `doclang.normalise_date`** — see §10 and the checklist
+2. **RAILWAY DOES NOT AUTO-DEPLOY ON A PUSH; VERCEL DOES.** Measured, not
+   assumed — see the block near the top of §2. Every backend change needs a
+   manual Railway redeploy, and the pool fix in `191392c` was still not live on
+   Railway when this was written. Verify with a ~30-way concurrent burst of
+   ordinary reads: all 200 means it landed.
+3. **The deployed `demo` account holds `admin`, not the `reviewer` this repo
+   ships** (§2, §12), so every visitor to the public site can override a run's
+   status and clear the run history. Fix in `AUTH_USERS_JSON` if unintended.
+4. **A real open bug in `doclang.normalise_date`** — see §10 and the checklist
    at the end of this file. Nobody has looked at it.
-3. **`test_api_security.py::test_the_frontend_bundle_contains_no_secret` reads
+5. **`test_api_security.py::test_the_frontend_bundle_contains_no_secret` reads
    `frontend/app.js`**, a directory deleted in `fcac22a`. The test outlived what
    it guards and has been failing since.
-4. **The reset-demo confirmation dialog was reported as rendering oddly** in the
+6. **The reset-demo confirmation dialog was reported as rendering oddly** in the
    browser (title and footer buttons apparently not visible) and was never
    diagnosed — the question went unanswered. It may simply have been where the
    screenshot landed. `ResetDemoButton` opens an ordinary `Modal`; nothing in
@@ -5027,7 +5068,7 @@ matter more than they did when every caller was an employee (§7g.12).
 
 ## 10. Testing
 
-**1,841 tests, 29 files.** Both Groq and Gemini mocked at the HTTP transport
+**1,895 tests, 29 files.** Both Groq and Gemini mocked at the HTTP transport
 boundary — the suite needs no API key, no network, no quota, only a reachable
 PostgreSQL (`DATABASE_URL`). `test_samples.py` is the deliberate exception:
 it honours a live key and exercises the real routes end-to-end.
@@ -5052,7 +5093,7 @@ signature verified, an actual signature actually verified.
 | `test_analytics.py` | 119 | Phase H: every KPI against known rows, the null-not-zero rule, task-success vs automation-rate divergence, per-stage timing and bottleneck ordering, both review latencies, date windows and UTC boundaries, trends with gaps, malformed/wrong-shaped JSON, the ledger-agreement anti-drift test, the email funnel, per-person authorization from both sides, read-only-ness, and no-leak greps |
 | `test_email_ingestion.py` | 106 | Phase G: sender/relevance triage, the no-LLM-for-junk guarantee (an extraction spy), provider failure, idempotency under 8 threads, attachment validation & path traversal, multi-invoice emails, the Phase F gate, quarantine→release→process, authorization, backwards compatibility; plus (§7b.13) 11 tests for consumer-webmail sender context — Gmail/Outlook/Yahoo missing-evidence annotation, the authenticated-trusted-domain path proven untouched, an unknown-company sender proven undecorated, a structural spoof and a broken signature both still FAILED, a trusted consumer address still refused admission without evidence, a pure non-UNVERIFIED gate test, and the full Gmail release-to-run chain |
 | `test_email_security.py` | 110 | Phase F: real DKIM verification (all four canonicalisations, tampered signature/body, revoked key), DMARC alignment, discarded/forged Authentication-Results, spoofed From, conflicting signals, unavailable-vs-failed, S/MIME + PGP detection, malformed/hostile headers, quarantine gate, 10-thread ruling race, authorization, backwards compatibility |
-| `test_api_security.py` | 59 | authn, authz, rate limits, secrets, input, errors |
+| `test_api_security.py` | 62 | authn, authz, rate limits, secrets, input, errors, plus (§11.-0.5) a real-thread burst of ordinary reads asserting no 500 and no 401, that `get_conn()` BLOCKS for a connection rather than refusing, and the `DB_POOL_MAX` fallback |
 | `test_review_collaboration.py` | 48 | Phase D (claiming, 10-thread claim race, stale-claim recovery, activity, HTTP auth) + Phase E (decision-atomicity races, unknown-run-release, HTTP duplicate submission) |
 | `test_vendor_matching.py` | 40 | normalisation, substrings, ambiguity |
 | `test_production_safety.py` | 39 | APP_ENV gates, demo creds, daily quota |
@@ -5773,7 +5814,7 @@ is already configured.
 
 ```powershell
 .\start.ps1                 # installs deps, generates samples, starts server, opens browser
-.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,546 tests, no key/network needed
+.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,895 tests, no key/network needed
 .\reset-demo.ps1             # clear run history (samples are order-dependent)
 .\reset-demo.ps1 -Replay     # clear, then drive all 10 samples through the API
 ```
@@ -5890,7 +5931,7 @@ Widening it is a decision about what strangers may do, not a convenience.
 | J | `79b5b54` | ✅ Committed (supplier portal) |
 | G2 | `e1f907b` | ✅ Committed (Gmail OAuth connection) |
 | L | (see §13.3) | ✅ Committed (multilingual support) |
-| M | — | 🟨 Deployment configured (§7k), not yet deployed; security half not started |
+| M | — | 🟨 DEPLOYED AND LIVE (§7k, §2). Railway needs a MANUAL redeploy per backend change; security half not started |
 
 **PHASE L CHANGED NO SCHEMA AT ALL** — no table, no column, no index (§7i.12).
 A message catalogue is static configuration read at first use, not reference
@@ -6024,6 +6065,19 @@ Neither commit contains `claudee.md`.
 ### 13.3 Commits
 
 ```
+8440871 Record why rapid refresh signed the user out
+216ae8c Stop a busy server from being read as an expired session
+191392c Let a burst of reads queue for a connection instead of failing
+d2d6d42 Change the prefilled demo password to zampisthebest
+0e37938 Record the document store, the interface fixes and the demo account
+c3179e3 Open the sign-in box on an account that exists, and clear the footer
+96ad3ac Fix three things found by using the deployed app rather than reading it
+fec921d Store the uploaded PDF where a redeploy cannot reach it
+e5af3c1 Open the sign-in box on a credential, and drop the three-word trust row
+0f2e5fc Abort superseded requests, stop remounting the brand, restyle the assistant
+c6628d8 Give the drifting cards one focal point each, instead of five
+7bc3a56 Rebuild the sign-in screen as a dark hero over drifting sample records
+b08c9af Make the two invoice nav rows switch, surface analytics failures, raise the type scale
 d8512d6 Take the mailbox-connection screen out of the UI, and leave the API alone
 0c468f4 Stop the sign-in box advertising accounts that are not there
 2be3b0d fix(frontend): update Next.js to 15.1.12
@@ -6072,9 +6126,9 @@ the code, verify against the code directly rather than trusting either.
 
 1. Read this file, then `README.md`.
 2. `git status` — expect only `claudee.md` UNTRACKED, and no uncommitted changes.
-   `git log --oneline -10` — expect `d8512d6` at the tip.
+   `git log --oneline -10` — expect `8440871` at the tip.
    `git branch -vv` — expect `main` level with `origin/main`; everything through
-   `d8512d6` is committed AND pushed. **`claudee.md` is not part of the app;
+   `8440871` is committed AND pushed. **`claudee.md` is not part of the app;
    leave it alone and keep it out of every commit** (§11.3).
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
 4. `.\venv\Scripts\python.exe -m pytest tests\ -q`
