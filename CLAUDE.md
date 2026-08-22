@@ -82,7 +82,7 @@ history — do not conflate them:
 | K | Security hardening | ✅ Complete | `2b0f97e` |
 | K2 | Chatbot (read-only invoice/AP assistant) | ✅ Complete | `86f4421` |
 | L | Multilingual support | ✅ Complete | (see §13.3) |
-| M | Final security + deployment hardening | ⬜ Not started | — |
+| M | Final security + deployment hardening | 🟨 Deployment configured (§7k); the rest not started | — |
 
 **PHASE K WAS TAKEN OUT OF ORDER, ON PURPOSE.** Security hardening was done
 BEFORE Phase J at the owner's request: J opens this application to people
@@ -267,6 +267,19 @@ an admin action through `POST /api/runs/{id}/status`, which requires
 dev included.** `DATABASE_URL` (env, read at call time via
 `config.database_url()`) is required in every environment. `data/app.db` /
 `app.db.bak` are vestigial pre-migration files; no code reads or writes them.
+
+**The recommended host is now Supabase** (hosted Postgres) — `database_url()`
+has never cared where the instance lives, so this is a connection-string
+change, not a code or schema change. Use Supabase's **Session pooler** or
+direct connection string, **never the Transaction pooler**: this app runs its
+own `ThreadedConnectionPool` and issues `SET search_path` once per borrowed
+connection, then runs several statements against it before returning it
+(`get_conn()`/`write_txn()`) — PgBouncer's transaction mode (the Transaction
+pooler) recycles the underlying server connection between statements, which
+can silently drop that session-scoped `SET`. `docker-compose.yml` still
+starts a throwaway local Postgres for fully offline dev/CI; it is no longer
+the primary recommendation. See `.env.example`'s Database section for the
+exact connection-string variants.
 
 ### Access pattern (`backend/storage.py`)
 
@@ -4389,6 +4402,280 @@ sweep. All 106 pre-existing tests in `test_email_ingestion.py`, 110 in
 
 ---
 
+## 7k. Split deployment: Vercel + Railway + Supabase (Phase M, deployment half)
+
+**Status: configured, verified locally against a production-like environment.
+NOT yet deployed to the three platforms — that needs accounts this session did
+not have (§7k.9).**
+
+This is the **deployment** half of Phase M. The security half — a real token
+issuer, a token denylist, an authentication audit log, dependency scanning —
+is untouched and still unstarted (§7e.11, §9's note on M).
+
+`DEPLOYMENT.md` is the operator-facing document: the step-by-step, every
+environment variable, and the Google Cloud setup. This section is the
+*engineering* record — what had to change and why each thing did.
+
+### 7k.1 The shape of the problem
+
+Every deployment before this one was **one process serving both halves**:
+uvicorn serves `frontend-next/out/` at `/`, so the browser's relative
+`/api/...` calls are same-origin and there is no base URL, no CORS and no
+second host to get wrong. `next.config.mjs` says so in its own docstring, and
+`lib/api.ts` says so in its.
+
+That is a genuinely good architecture and **it is still the default**. What
+this phase adds is the other topology beside it:
+
+```
+Browser -> Vercel (static export)  -> Railway (FastAPI) -> Supabase (Postgres)
+```
+
+**Exactly four things were only ever correct because the two halves shared an
+origin.** They are listed below. Every one of them is unchanged in the
+single-origin case — the local demo, `start.ps1`, and the whole test suite
+behave identically, which is the property that made this safe to do at all.
+
+### 7k.2 The static mount had to become conditional
+
+`app.mount("/", _AppShell(directory=FRONTEND_DIR, html=True))` — and
+`StaticFiles(directory=...)` **raises at import** for a directory that does not
+exist. `frontend-next/out/` is a build artifact and is gitignored, so a
+backend-only container image does not have it.
+
+**The API would therefore have failed to start, for want of a UI it was never
+meant to serve.** Not degraded — refused to boot.
+
+`main.SERVE_FRONTEND` is `os.path.isdir(FRONTEND_DIR)`, decided once at import.
+Present → mounted exactly as before. Absent → `GET /` answers with a small
+liveness document naming the API, which is better than a 404 for someone who
+has just opened the backend's own domain in a browser to see whether it is up.
+
+The mount is still last, because a `"/"` mount is a catch-all and must come
+after every `/api` route — that has always been true and did not change.
+
+### 7k.3 The frontend had to learn where the API is
+
+**This cost one helper and two call sites, and that is entirely down to a
+decision made long before this phase.** Every call in the UI already went
+through `apiFetch`/`apiJson` with a relative path — a grep for `fetch(` across
+`app/`, `lib/` and `components/` returns exactly **two** call sites, both in
+`lib/api.ts`. There was no base URL scattered through forty components to
+find, because there had never been a base URL at all.
+
+```ts
+export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/+$/, "");
+export function apiUrl(path: string): string {
+  return API_BASE ? `${API_BASE}${path}` : path;
+}
+```
+
+Empty is same-origin, which is the default and the previous behaviour byte for
+byte. `NEXT_PUBLIC_*` is substituted at **build** time, so this is a literal in
+the emitted bundle and changing it means rebuilding, not restarting.
+
+**Nothing secret can arrive through this door.** `NEXT_PUBLIC_*` is compiled
+into the browser bundle by design, so the rule is that it holds a public origin
+and nothing else. Verified rather than asserted: a build with the variable set
+was grepped for `gsk_`, `AIza`, `AUTH_SECRET`, `GROQ_API_KEY`,
+`GEMINI_API_KEY`, `GOCSPX`, `DATABASE_URL`, `SUPABASE_KEY`, `password_hash` and
+`pbkdf2_sha256` — **zero files for every one of them**. Next reads `.env` from
+its own project root (`frontend-next/`), and this repository's `.env` is a
+level above it, so the provider keys are not even in a file Next would look at.
+
+The two sign-in error messages naming `127.0.0.1:8000` now say the right thing
+in either topology — in a split deployment they name the configured API origin
+and mention CORS, because a CORS refusal and an outage are indistinguishable
+from inside `fetch`, and a wrong diagnosis in the sign-in box is expensive (the
+docstring above them already made exactly that argument about a previous bug).
+
+### 7k.4 CORS needed `expose_headers` — and this is the subtle one
+
+`ConfiguredCORS` (Phase K) already read `config.CORS_ORIGINS` per request, so
+naming the Vercel origin needed no code change at all. One thing did:
+
+**A cross-origin browser hands JavaScript only the seven CORS-safelisted
+response headers, and `Content-Disposition` is not one of them.** So
+`downloadFile()` in `lib/api.ts` — which reads the server-chosen filename out
+of that header, with a generic `fallbackName` behind it — would have silently
+fallen back for **every audit report and every document download**. Nothing
+errors; the file just arrives called the wrong thing. Same for
+`X-Export-Max-Rows`, which is how a scripted client tells a truncated log
+export from a complete one (§7d.8) without parsing the CSV.
+
+`CORS_EXPOSE_HEADERS` names both. Exposing a header only lets the page **read**
+what this server already sent it, and neither of these says anything the
+response body does not.
+
+`allow_origin_regex` is the optional second half, for the one thing a list
+cannot express: a preview deployment mints a fresh origin per build, so those
+origins do not exist when the setting is written. It is empty by default, it is
+checked in **addition** to `CORS_ORIGINS` rather than instead of it, and
+`auth._cors_regex_problems()` refuses a production start with a loose one —
+because a regex is a far quieter way to arrive at `allow_origins=["*"]` than
+typing the asterisk, and the existing wildcard check would never have seen it.
+It requires `^` and `$` anchors and then actually **runs** the pattern against
+origins it must not match (`https://evil.example`,
+`https://phish.vercel.app.evil.example`, …). An unanchored
+`https://myapp[.]vercel[.]app` matches that third one, which is precisely the
+mistake worth catching before it ships rather than after.
+
+### 7k.5 The Gmail callback had to be able to leave this origin
+
+`_gmail_redirect()` returned `RedirectResponse(url=f"/?gmail={result}")`, and
+its docstring was proud of the relative target — correctly, because that is
+what made an open redirect impossible.
+
+**Google redirects the administrator's BROWSER to the API host.** In a split
+deployment a relative `/` lands them on the API, which serves the liveness
+document from §7k.2 — including for `denied`, `insufficient_scope` and
+`no_refresh_token`, the results that most need to be read.
+
+`config.frontend_origin()` supplies the destination, and **every property the
+old docstring claimed still holds**:
+
+- the destination comes from **server configuration only** — no query
+  parameter, no header, no state field, nothing from the request reaches it;
+- it is validated to scheme, host and optional port, and nothing else. A path,
+  a query, a credential, a newline or a `javascript:` scheme all fail and are
+  **ignored**, falling back to the relative redirect rather than raising, so a
+  typo cannot take the API down;
+- `result` still comes from the closed `_GMAIL_CALLBACK_RESULTS` set, so
+  nothing Google said reaches the address bar.
+
+Unset — the default, and the whole single-origin world — the redirect is
+byte-identical to what it always was. Verified both ways (§7k.8).
+
+### 7k.6 Two things the platforms force, which the application already had answers for
+
+**A container filesystem does not survive a deploy.** With the default
+`DOCUMENT_STORE_BACKEND=local`, every uploaded PDF is gone at the next restart:
+the `documents` row survives (it is in Postgres) so the run still opens and the
+audit trail is intact, but the download 404s and the audit report has no source
+document — and **nothing warns you**, because from the application's side the
+write succeeded. Phase C already built `S3DocumentStore` for exactly this, and
+`boto3` is now installed in the container image rather than left commented out
+in `requirements.txt` (where it stays commented, so a local install still does
+not pay for it). Supabase Storage speaks S3, so the whole deployment can sit on
+one vendor. **This is a configuration switch, not new storage** — the "do not
+silently introduce an incompatible storage system" rule is honoured by using
+the mechanism that was already there.
+
+**`APP_ENV=production` refuses to start while the shipped demo accounts are
+present**, and that refusal is correct — their passwords are published in this
+repository and on the sign-in screen. But a container has nowhere durable to
+keep a user store, committing one puts password hashes in git, and baking one
+into an image puts them in a layer anyone who pulls it can read. So the store
+travels as an environment variable like every other secret, and
+`scripts/make_user_store.py` is the two halves of that: `generate` prompts for
+each password locally, hashes with the **same `auth.hash_password`** the
+application verifies against, and prints one line of JSON; `render` writes
+`$AUTH_USERS_JSON` to `$AUTH_USERS_FILE` at container start.
+
+**`auth.py` is untouched by this.** It still reads a path, and it still reads
+exactly what it always read. The script writes a file and exits.
+
+### 7k.7 What the deployment plumbing is, and what it deliberately is not
+
+| File | |
+|---|---|
+| `Dockerfile` | Python 3.12 slim, `requirements.txt` + `boto3`, backend/data/samples/scripts only. **No `frontend-next/`** — which is what makes §7k.2 fire, and also keeps Node out of the image. |
+| `.dockerignore` | `.env` first. A `.env` baked into an image is a secret in a layer. |
+| `scripts/start-backend.sh` | renders the user store, then **`exec`**s uvicorn so it becomes PID 1 and receives SIGTERM directly — without `exec`, the shell swallows it and the platform kills the container instead, skipping the shutdown handler that stops the email poller. |
+| `railway.json` | Dockerfile builder, `/api/health` healthcheck, **one replica**. |
+| `frontend-next/vercel.json` | build command, and the security headers FastAPI used to add when it served the HTML itself. |
+| `.gitattributes` | `*.sh` and `Dockerfile` pinned to `eol=lf`. On Windows, CRLF makes the shebang an interpreter name with a trailing carriage return, and the container fails to start naming neither the file nor the reason. |
+
+**One replica is a decision, not a default.** Two things here are per-process —
+the sliding-window rate limiters (§7e.8) and the email-ingestion poller — so
+every extra worker multiplies every effective rate limit and starts another
+poller. The poller stays correct either way (idempotency is
+`UNIQUE (provider, provider_message_id)`, not coordination between pollers);
+the limits do not. That is stated in the Dockerfile beside the `--workers 1`
+that enforces it.
+
+**`vercel.json` sets no CSP, on purpose.** A correct one must name the API
+origin in `connect-src` or every request is blocked, and that origin is not
+knowable at commit time. `DEPLOYMENT.md` §3.3 carries the exact string to paste
+once the Railway domain exists. Setting the backend's own default there —
+`connect-src 'self'` — would have broken the entire application, quietly, in
+the browser only.
+
+### 7k.8 What was actually verified, and how
+
+Locally, against a production-like environment: `APP_ENV=production`, a real
+`AUTH_SECRET`, a generated non-demo user store, `CORS_ORIGINS` and
+`FRONTEND_ORIGIN` naming a Vercel-shaped origin, `TRUST_PROXY_HEADERS=1`, and
+`frontend-next/out/` **moved out of the way** so the process was genuinely
+API-only.
+
+- production configuration checks passed; the app came up;
+- `GET /` returned the API-only document, `GET /api/health` returned `ok`;
+- security headers present, **including the production-only HSTS**;
+- CORS answered the named origin with `access-control-expose-headers:
+  Content-Disposition, X-Export-Max-Rows`, and gave `https://evil.example`
+  **no** `Access-Control-Allow-Origin` at all;
+- the demo `admin`/`demo-admin` credential got **401**; the generated accounts
+  signed in and `/api/auth/me` returned the right scopes;
+- **a real invoice went through all nine stages** — `groq (text)` route, real
+  provider, correct `NEEDS_REVIEW` for a multi-PO invoice with a calculated
+  split — and the review workflow then ran end to end: claim → document
+  view/download → accept → automatic claim release, with all seven activity
+  events recorded;
+- both audit exports returned `200` with the server-chosen
+  `Content-Disposition` filename, and logged `AUDIT_REPORT_EXPORTED`;
+- the rejection-email **draft** built correctly from the portal's own
+  vendor-safe reason sentences; **sending was refused** — see §7k.9;
+- a supplier token got **403** on `/api/runs`, `/api/analytics/overview`,
+  `/api/logs`, `/api/chat/suggestions`, `/api/email/messages` **and both new
+  audit-report routes**, while `/api/portal/me` returned its own binding;
+- the Gmail callback with a bogus state redirected to
+  `https://invoice-ui.vercel.app/?gmail=invalid_state` — and with
+  `FRONTEND_ORIGIN` unset, to `/?gmail=invalid_state`, unchanged;
+- with `out/` restored: `GET /` served the app shell with its
+  `no-store, must-revalidate`, and CORS with nothing configured added no header
+  at all. **Both topologies, same build.**
+
+`npx tsc --noEmit` is clean and `npm run build` succeeds in both modes.
+
+### 7k.9 What is NOT done, and what it needs
+
+1. **Nothing is deployed.** No Railway service was created, no Vercel project
+   was created. Both need accounts and credentials this session did not have.
+   `DEPLOYMENT.md` is the runbook; every step in it is a human action.
+2. **No browser verification of a deployed app**, for the same reason. The
+   twenty-step walkthrough in the brief is in `DEPLOYMENT.md` §6 as a checklist
+   against the real URLs.
+3. **THE CONNECTED GMAIL MAILBOX WILL NEED RECONNECTING, TWICE OVER**, and this
+   was confirmed empirically rather than reasoned about — starting the app with
+   a different `AUTH_SECRET` produced, in the log:
+   *"the stored credential could not be decrypted; AUTH_SECRET has most likely
+   changed since the mailbox was connected. Reconnect Gmail."*
+   That is §7h.4's documented fail-closed behaviour, and production will have a
+   different secret. Separately, the stored connection holds
+   `gmail.readonly` **only**, so `oauth_google.can_send()` refuses rejection
+   emails — proved by calling the send endpoint and getting a clear refusal
+   with the run left `REJECTED` and untouched. Sending needs `gmail.send` added
+   to `GMAIL_OAUTH_SCOPES` **and** a re-consent, because Google fixes a token's
+   scopes at the moment of consent (§7j.2 already said so; this is that
+   sentence coming true).
+4. **The production redirect URI must be registered in Google Cloud** before
+   Gmail can be connected from Railway, and Google requires HTTPS for any
+   redirect URI that is not `localhost` (§7h.11). Railway's generated domain
+   satisfies that.
+
+### 7k.10 What this phase did NOT touch
+
+No business logic. No schema — **no table, no column, no index**, which makes
+this the eighth time the answer to "should this be stored" was no (the user
+store is an environment variable, not a `users` table). No pipeline stage, no
+rule, no tolerance, no decision hierarchy, no scope, no role. No frontend
+redesign — `lib/api.ts` gained a helper and two call sites, and no component
+changed at all. The Phase L multilingual layer, the rejection-notification
+feature and the audit exports are untouched.
+
+---
+
 ## 8. Authentication, authorization
 
 - **OAuth 2.0 resource-server pattern.** `Authorization: Bearer <JWT>`,
@@ -4620,7 +4907,16 @@ left implicit:
 
 ### M
 
-A final deployment hardening pass — unstarted, deferred until asked for.
+A final deployment hardening pass. **The DEPLOYMENT half is now done and is
+recorded in [§7k](#7k-split-deployment-vercel--railway--supabase-phase-m-deployment-half)**
+— the Vercel + Railway + Supabase split, asked for individually exactly as
+every other phase here was. §7k is the authority on what it changed;
+`DEPLOYMENT.md` is the operator runbook.
+
+**The SECURITY half is still unstarted**: a real token issuer, TLS termination
+policy, secret management, a token denylist, an authentication audit log and
+dependency scanning. §7k.9 also lists what deployment itself still needs from
+a human — nothing is actually deployed yet.
 
 **Note on M.** Its brief was "final security + deployment hardening". Phase K
 has now done the security audit and remediation part; what remains for M is the
@@ -4683,6 +4979,38 @@ signature verified, an actual signature actually verified.
 
 (Counts verified via `pytest --collect-only -q` on the current tree — not
 copied from an old table.)
+
+**Verified state at the end of the deployment session** (2026-08-22, §7k),
+against a **LOCAL** PostgreSQL rather than the hosted one:
+
+| Run | Result |
+|---|---|
+| Full suite, deployment changes applied | 1,877 collected — **1,871 passed, 6 failed**, 14m36s |
+| The same six tests, session changes stashed, untouched tree | **the identical six fail** |
+
+So the deployment work introduced **no** failure. The six are listed with their
+causes in the handoff checklist at the end of this file; two of them are worth
+naming here because they are NOT the usual live-provider flake:
+
+* `test_api_security.py::test_the_frontend_bundle_contains_no_secret` opens
+  `frontend/app.js`, and `frontend/` was **deleted** in `fcac22a` — the test
+  outlived the directory it guards, and has been failing since that commit.
+* `test_multilingual.py::test_an_english_date_is_never_rewritten` is a **real
+  open bug**: `doclang.normalise_date("03/04/2026", "en")` now returns
+  `("2026-04-03", True)` where §7i.9 requires an English numeric date to be
+  left exactly as printed. Phase L recorded this file at 284/284, so it
+  regressed after that. Nobody has investigated it; it is recorded rather than
+  quietly fixed, because fixing it belongs to whoever owns §7i, not to a
+  deployment pass.
+
+**A METHOD NOTE THAT COST AN HOUR AND IS WORTH KEEPING.** The suite was first
+run against the hosted (Supabase) `DATABASE_URL` and **did not finish in over
+an hour** — every test creates and drops its own schema, and that is hundreds
+of network round trips per test file. Worse, `test_reset_demo.py` and
+`test_extraction_routing.py` have no schema fixture at all and run against
+whatever `public` the URL names, so a hosted URL means the suite mutates real
+data. Run the suite against a local instance and keep the hosted one for the
+application.
 
 **Verified state at the end of Phase L** (2026-08-22).
 `tests/test_multilingual.py` alone: **284 passed.**
@@ -5212,8 +5540,10 @@ see §7c.13 for how the Analytics screen was checked.
 
 ## 12. Running it
 
-**Requires PostgreSQL** — `DATABASE_URL` in `.env`. `docker-compose up -d`
-for a local instance matching `.env.example`, or point at whatever instance
+**Requires PostgreSQL** — `DATABASE_URL` in `.env`. Recommended: a Supabase
+project's Session-pooler or direct connection string (§4 explains why not the
+Transaction pooler). `docker-compose up -d` starts a local instance matching
+`.env.example`'s fallback for offline dev/CI, or point at whatever instance
 is already configured.
 
 ```powershell
@@ -5300,7 +5630,7 @@ any of them present.
 | J | `79b5b54` | ✅ Committed (supplier portal) |
 | G2 | `e1f907b` | ✅ Committed (Gmail OAuth connection) |
 | L | (see §13.3) | ✅ Committed (multilingual support) |
-| M | — | ⬜ Not started |
+| M | — | 🟨 Deployment configured (§7k), not yet deployed; security half not started |
 
 **PHASE L CHANGED NO SCHEMA AT ALL** — no table, no column, no index (§7i.12).
 A message catalogue is static configuration read at first use, not reference
@@ -5477,32 +5807,49 @@ the code, verify against the code directly rather than trusting either.
 
 1. Read this file, then `README.md`.
 2. `git status` — expect only `claudee.md` UNTRACKED, and no uncommitted changes.
-   `git log --oneline -10` — expect the Phase L commit at (or one below) the tip.
+   `git log --oneline -10` — expect the deployment commit (§7k) at or near the tip.
    `git branch -v` — expect `main` ahead of `origin/main` unless it has been pushed.
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
-4. `.\venv\Scripts\python.exe -m pytest tests\ -q` — expect **1,818 passed, 12 failed**
-   (total of 1,830 tests, including 284 from L, 144 from G2, 174 from J, 87 from
-   K2, 81 from K security hardening, 204 from Phase I logs, 119 from Phase H
-   analytics, plus all A–G tests). **Run the FULL suite, not just the file you
-   changed** — Phase J introduced two real problems invisible when either file
-   ran alone, and Phase G2 introduced three more, in three files it had not
-   touched (§7h.12).
-   The 12 failures are ALL in `test_extraction_routing.py` (10), `test_confidence.py`'s
-   end-to-end case (1), and `test_samples.py`'s scanned sample (1). Those are
-   live-provider cases and the count moves with provider health and daily quota,
-   not with the code. `test_extraction_routing.py` passes **23/23 when run alone**
-   — check that before concluding anything broke, and if you need to attribute a
-   failure, stash and run the untouched tree rather than trusting a number written
-   down here (§10). **Never point a throwaway script at the database without
-   asserting `storage.PG_SCHEMA != "public"` first** — see the warning in §10.
+4. `.\venv\Scripts\python.exe -m pytest tests\ -q`
+   **Run the FULL suite, not just the file you changed** — Phase J introduced
+   two real problems invisible when either file ran alone, and Phase G2
+   introduced three more, in three files it had not touched (§7h.12).
+
+   **Most recent measured state (deployment session, §7k): 1,871 passed, 6
+   failed, of 1,877 collected, in 14m36s** against a LOCAL PostgreSQL. All six
+   were proved pre-existing by stashing that session's changes and re-running
+   exactly those six against the untouched tree — identical six, identical
+   failures:
+
+   | Failing test | Cause |
+   |---|---|
+   | `test_api_security.py::test_the_frontend_bundle_contains_no_secret` | reads `frontend/app.js`, and `frontend/` was **deleted** in `fcac22a`. The test outlived the directory it guards. |
+   | `test_extraction_routing.py` × 4 | the four constant cases §10 already records |
+   | `test_multilingual.py::test_an_english_date_is_never_rewritten` | `doclang.normalise_date("03/04/2026", "en")` returns `("2026-04-03", True)` where the test requires `("03/04/2026", False)`. Phase L recorded this file as 284/284 passing, so something after it regressed the English-date rule (§7i.9: an English numeric date must never be rewritten, because 03/04 is April 3rd in London and March 4th in Chicago). **Nobody has looked at this yet — it is a real open bug, not a live-provider flake.** |
+
+   Do not trust a count written down here over a run you did yourself: to
+   attribute a failure, stash and run the untouched tree (§10). **Never point a
+   throwaway script at the database without asserting
+   `storage.PG_SCHEMA != "public"` first** — see the warning in §10.
+
+   **PREFER A LOCAL POSTGRES FOR THE SUITE.** Pointed at a hosted database the
+   same run takes over an hour and did not finish at all in the deployment
+   session, because every test creates and drops its own schema over the
+   network — and `test_reset_demo.py` and `test_extraction_routing.py` have no
+   schema fixture at all (§10), so they run against whatever `public` your
+   `DATABASE_URL` names. Against a hosted database, that is your real data.
 5. `cd frontend-next && npm run build` after any frontend change — FastAPI
    serves the static export in `out/`, so without a rebuild the browser keeps
    serving the old UI. There is no frontend test suite (§11.4).
-6. **Next phase is M** (deployment hardening), and it is the last one.
-   A–K2, J, G2 and L are all committed and complete (§2). Do not start M, or
-   any later phase, without being asked (§2, §9). **Neither G2 nor L is a
-   licence to start it** — G2 finished Phase G for production and stopped
-   there, and L touched no deployment concern at all. The items §7e.11 lists
-   are still M's, plus the two later phases added: Google requires HTTPS for a
-   non-localhost redirect URI (§7h.11), and a language preference is not
-   stored server-side (§7i.14 item 7).
+6. **Phase M is HALF done.** Its deployment half — the Vercel + Railway +
+   Supabase split — was asked for individually and is recorded in §7k, with
+   `DEPLOYMENT.md` as the operator runbook. **Nothing is actually deployed**
+   (§7k.9): no Railway service, no Vercel project, and no browser verification
+   against a live URL. Those need accounts and are human actions.
+
+   **Its SECURITY half is still unstarted** and still needs asking for: a real
+   token issuer, a token denylist, an authentication audit log, secret
+   management and dependency scanning — the items §7e.11 lists, plus Google
+   requiring HTTPS for a non-localhost redirect URI (§7h.11) and a language
+   preference not being stored server-side (§7i.14 item 7). Do not start it, or
+   anything later, without being asked (§2, §9).

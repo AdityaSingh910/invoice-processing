@@ -1,0 +1,29 @@
+# Secrets. Configuration reaches the container as real environment variables;
+# a .env baked into an image is a secret in a layer anyone who pulls it can read.
+.env
+.env.*
+
+# Local Python state
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# The UI is built and served by the static host, not from this image. Its
+# presence here would also make main.py mount it and serve a second copy.
+frontend-next/
+
+# Runtime state, never image content
+data/documents/
+data/app.db
+data/app.db.bak
+
+# Not needed to serve
+tests/
+_shots/
+.git/
+.claude/
+*.md
+docker-compose.yml
+reset-demo.ps1
+start.ps1

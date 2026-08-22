@@ -143,31 +143,59 @@ app.add_middleware(SecurityHeaders)
 # a live provider is available, which changed the behaviour of test modules
 # that had never asked for one. Configuration and secrets should not have to
 # share a load order, so the middleware learns to re-read instead.
+
+# Response headers a cross-origin browser is allowed to READ.
+#
+# Only relevant once the UI is on a different origin from the API. A browser
+# hands JavaScript just seven safelisted response headers by default, and
+# `Content-Disposition` is not one of them -- so `downloadFile()` in lib/api.ts,
+# which reads the server-chosen filename out of it, would silently fall back to
+# its generic name for every audit report and every document download. Same for
+# `X-Export-Max-Rows`, which is how a scripted client tells a truncated log
+# export from a complete one (§7d.8) without parsing the CSV.
+#
+# Exposing a header only lets the page READ what this server already sent it.
+# Neither of these says anything the response body does not.
+CORS_EXPOSE_HEADERS = ["Content-Disposition", "X-Export-Max-Rows"]
+
+
 class ConfiguredCORS:
     """CORSMiddleware over the CURRENT `config.CORS_ORIGINS`.
 
     Delegates to a real CORSMiddleware, rebuilt only when the configured
     origins actually change -- so this costs one tuple comparison per request
-    and none of Starlette's behaviour is reimplemented here. With no origins
+    and none of Starlette's behaviour is reimplemented here. With nothing
     configured it steps out of the way entirely, which is exactly what the
     previous `if config.CORS_ORIGINS:` did.
+
+    `config.CORS_ORIGIN_REGEX` is the second, optional half, and it exists for
+    exactly one real problem: a hosted frontend mints a NEW origin per preview
+    deployment, so those origins cannot be enumerated ahead of time. It is
+    empty by default, it is never a substitute for naming the production
+    origin, and `auth.validate_production_config()` refuses a production start
+    with a pattern that would match any origin at all -- because a regex is a
+    far quieter way to arrive at `allow_origins=["*"]` than typing it.
     """
 
     def __init__(self, app):
         self.app = app
-        self._origins = None
+        self._key = None
         self._impl = None
 
     def _delegate(self):
         origins = tuple(config.CORS_ORIGINS or ())
-        if origins != self._origins:
-            self._origins = origins
+        pattern = config.CORS_ORIGIN_REGEX or ""
+        key = (origins, pattern)
+        if key != self._key:
+            self._key = key
             self._impl = CORSMiddleware(
                 self.app,
                 allow_origins=list(origins),
+                allow_origin_regex=pattern or None,
                 allow_methods=["GET", "POST"],
                 allow_headers=["Authorization", "Content-Type"],
-            ) if origins else None
+                expose_headers=CORS_EXPOSE_HEADERS,
+            ) if (origins or pattern) else None
         return self._impl or self.app
 
     async def __call__(self, scope, receive, send):
@@ -184,10 +212,22 @@ app.add_middleware(ConfiguredCORS)
 # resolve without CORS, a base URL, or a second port to get wrong.
 #
 # The original vanilla frontend has been removed -- frontend-next/ is the only
-# UI now. Run `npm run build` inside frontend-next/ before starting the server;
-# without a built out/, this directory will not exist and the mount below fails
-# at startup rather than silently serving nothing.
+# UI now. Run `npm run build` inside frontend-next/ before starting the server.
+#
+# THE MOUNT IS CONDITIONAL, AND THAT IS A DEPLOYMENT FACT RATHER THAN A
+# PREFERENCE. `out/` is a build artifact and is gitignored, so a checkout that
+# has not been built -- which is exactly what a backend-only container image is
+# -- does not have it, and `StaticFiles(directory=...)` raises at import time
+# for a missing directory. That would take the API down for want of a UI it was
+# never meant to serve.
+#
+# So: when out/ is present this process serves the UI exactly as it always did
+# (one origin, one port, relative /api/... calls, no CORS) -- the local demo and
+# the whole test suite are unchanged. When it is absent this is an API-only
+# deployment, the UI is served by someone else (a CDN, a static host), and the
+# browser reaches this origin cross-origin with CORS_ORIGINS naming it.
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend-next", "out")
+SERVE_FRONTEND = os.path.isdir(FRONTEND_DIR)
 
 
 # --------------------------------------------------------------------------
@@ -1493,16 +1533,29 @@ _GMAIL_CALLBACK_RESULTS = (
 def _gmail_redirect(result: str) -> RedirectResponse:
     """Send the browser back to the app with a one-word outcome.
 
-    The target is RELATIVE, so it always resolves to this application's own
-    origin. That is what makes an open redirect impossible here: there is no
-    caller-supplied destination anywhere in this flow, not even a validated
-    one.
+    The target is RELATIVE whenever this process also serves the UI, so it
+    resolves to this application's own origin -- which is what it has always
+    done and what the local demo still does.
+
+    A SPLIT DEPLOYMENT IS THE ONE CASE THAT CANNOT BE RELATIVE. Google redirects
+    the administrator's browser to this API host, and a relative "/" would land
+    them on the API rather than back on the screen they left from -- including
+    for the failure results, which are the ones that most need to be read.
+    `FRONTEND_ORIGIN` names where to send them instead.
+
+    STILL NO OPEN REDIRECT, AND THAT PROPERTY IS UNCHANGED. The destination is
+    read from server configuration, never from the request: no query parameter,
+    no header, no state field feeds it. `config.frontend_origin()` additionally
+    admits only scheme://host[:port] and drops anything else, and `result` is
+    still checked against the closed `_GMAIL_CALLBACK_RESULTS` set, so nothing
+    Google said can reach the address bar either.
     """
     if result not in _GMAIL_CALLBACK_RESULTS:
         result = "exchange_failed"
+    base = config.frontend_origin()
     # 303: the callback arrives as a GET, and the browser must follow with a
     # GET to a page rather than re-issuing anything.
-    return RedirectResponse(url=f"/?gmail={result}", status_code=303)
+    return RedirectResponse(url=f"{base}/?gmail={result}", status_code=303)
 
 
 @app.get("/api/email/oauth/gmail/status")
@@ -2556,4 +2609,20 @@ class _AppShell(StaticFiles):
         return resp
 
 
-app.mount("/", _AppShell(directory=FRONTEND_DIR, html=True), name="frontend")
+# Mounted last, and only when there is something to mount (see SERVE_FRONTEND
+# above). A "/" mount is a catch-all, so it must come after every /api route --
+# it always has. When the export is absent, "/" answers with a small liveness
+# document naming the API instead, so hitting the backend's own domain in a
+# browser says what this host is rather than 404ing without explanation.
+if SERVE_FRONTEND:
+    app.mount("/", _AppShell(directory=FRONTEND_DIR, html=True), name="frontend")
+else:
+    @app.get("/", include_in_schema=False)
+    def _api_only_root():
+        """API-only deployment: the UI is served elsewhere.
+
+        Says nothing about configuration, versions or which providers are
+        reachable -- the same restraint /api/health already observes.
+        """
+        return {"service": "Invoice Processing API", "ui": "served separately",
+                "health": "/api/health"}

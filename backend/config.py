@@ -5,6 +5,7 @@ never accepted over HTTP and never returned to the browser -- the UI is only tol
 whether a key is present, not what it is.
 """
 import os
+import re
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 ENV_PATH = os.path.join(ROOT, ".env")
@@ -243,6 +244,34 @@ def database_url() -> str:
 # decides which origins a browser is permitted to make credentialed calls from.
 # Default is same-origin only, which is how the app is actually served.
 CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+
+# An optional PATTERN of allowed origins, for the one case a list cannot cover:
+# a hosting platform that mints a fresh origin for every preview deployment, so
+# the origins do not exist yet when this is configured. Empty by default.
+#
+# It never replaces naming the production origin explicitly -- it is checked in
+# ADDITION to CORS_ORIGINS -- and a production start refuses a pattern loose
+# enough to match anything (see auth.validate_production_config). A regex is a
+# much quieter way to end up at `allow_origins=["*"]` than typing the asterisk,
+# which is the whole reason it is guarded rather than merely documented.
+#
+#   CORS_ORIGIN_REGEX=^https://myapp-[a-z0-9-]+\.vercel\.app$
+CORS_ORIGIN_REGEX = os.environ.get("CORS_ORIGIN_REGEX", "").strip()
+
+# The browser origin the UI is served from, when it is NOT this process.
+#
+# Everything in this application uses relative URLs, which is correct whenever
+# the API and the UI share an origin -- the local demo, and any deployment that
+# serves frontend-next/out/ from here. A split deployment breaks exactly one of
+# those: the Gmail OAuth callback, which Google redirects a BROWSER to, and
+# which must therefore land the administrator back on the UI rather than on the
+# API host (see main._gmail_redirect). Empty means "the UI is this process",
+# which is the existing behaviour and stays the default.
+FRONTEND_ORIGIN_ENV = "FRONTEND_ORIGIN"
+
+# scheme://host[:port] and NOTHING else -- no path, no query, no fragment, no
+# credentials, no whitespace or control character. See frontend_origin().
+_ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d{1,5})?$")
 
 # --------------------------------------------------------------------------
 # Rate limiting
@@ -839,6 +868,26 @@ def google_oauth_client_id() -> str:
     return os.environ.get(GOOGLE_OAUTH_CLIENT_ID_ENV, "").strip()
 
 
+def frontend_origin() -> str:
+    """Where the UI lives, or "" when this process serves it (the default).
+
+    Read at call time like every other env-backed setting here. Validated to
+    the shape of an ORIGIN -- scheme://host[:port], nothing more -- because the
+    one place it is used builds a redirect the browser will follow, and a value
+    carrying a path, a query or a newline could turn a fixed redirect into
+    something a header-injection or an open-redirect finding is written about.
+    A malformed value is ignored (falling back to the relative redirect that
+    has always been correct for a single-origin deployment) rather than
+    raising, so a typo cannot take the API down.
+    """
+    raw = os.environ.get(FRONTEND_ORIGIN_ENV, "").strip().rstrip("/")
+    if not raw:
+        return ""
+    if not _ORIGIN_RE.match(raw):
+        return ""
+    return raw
+
+
 def google_oauth_client_secret() -> str:
     """Read at call time, and never returned by any endpoint.
 
@@ -964,7 +1013,7 @@ def refresh_env_settings():
     live provider is available. Keeping the two separate means configuration
     becomes correct without changing when a key comes into existence.
     """
-    global CORS_ORIGINS, RATE_LIMIT_ENABLED, RATE_LIMIT_PROCESS_PER_MINUTE
+    global CORS_ORIGINS, CORS_ORIGIN_REGEX, RATE_LIMIT_ENABLED, RATE_LIMIT_PROCESS_PER_MINUTE
     global RATE_LIMIT_IP_PER_MINUTE, RATE_LIMIT_LOGIN_PER_MINUTE
     global RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE, RATE_LIMIT_REPORTING_PER_MINUTE
     global RATE_LIMIT_CHAT_PER_MINUTE
@@ -985,6 +1034,7 @@ def refresh_env_settings():
 
     CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",")
                     if o.strip()]
+    CORS_ORIGIN_REGEX = os.environ.get("CORS_ORIGIN_REGEX", "").strip()
     RATE_LIMIT_ENABLED = _flag("RATE_LIMIT_ENABLED")
     RATE_LIMIT_PROCESS_PER_MINUTE = _int("RATE_LIMIT_PROCESS_PER_MINUTE", 20)
     RATE_LIMIT_IP_PER_MINUTE = _int("RATE_LIMIT_IP_PER_MINUTE", 60)

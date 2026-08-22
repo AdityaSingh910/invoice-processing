@@ -1,0 +1,29 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "installCommand": "npm install",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+        }
+      ]
+    },
+    {
+      "source": "/",
+      "headers": [{ "key": "Cache-Control", "value": "no-store, must-revalidate" }]
+    },
+    {
+      "source": "/index.html",
+      "headers": [{ "key": "Cache-Control", "value": "no-store, must-revalidate" }]
+    }
+  ]
+}

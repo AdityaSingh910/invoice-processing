@@ -12,3 +12,10 @@
 *.json text
 *.md   text
 *.ps1  text eol=crlf
+
+# Shell scripts and Dockerfiles run inside a Linux container. CRLF there is not
+# cosmetic: `#!/bin/sh\r` is read as an interpreter named "sh\r", which does not
+# exist, and the container fails to start with a message that names neither the
+# file nor the reason. Pin them to LF regardless of the checkout platform.
+*.sh        text eol=lf
+Dockerfile  text eol=lf

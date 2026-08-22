@@ -10,14 +10,47 @@
  * their own credentials and lives in sessionStorage, so it dies with the tab
  * rather than persisting on a shared machine.
  *
- * All paths are RELATIVE. In production the static export is served by FastAPI
- * itself, so they are same-origin; in dev, next.config.mjs proxies /api to the
- * backend. Either way there is no base URL to get wrong.
+ * WHERE THE API IS.
+ *
+ * Every call site in this app writes a RELATIVE path (`/api/...`), and that is
+ * deliberate -- there is exactly one place, `apiUrl` below, that decides which
+ * origin those resolve against, so a deployment change is one environment
+ * variable rather than an edit to forty components.
+ *
+ *   same-origin (default)   FastAPI serves the static export itself, so
+ *                           `/api/...` already points at the API. This is the
+ *                           local demo and any single-process deployment.
+ *   `next dev`              next.config.mjs proxies /api to the backend on
+ *                           :8000, so relative paths still work unchanged.
+ *   split deployment        the UI is on a static host and the API is
+ *                           elsewhere. NEXT_PUBLIC_API_BASE_URL names that
+ *                           origin and every path is prefixed with it.
+ *
+ * NEXT_PUBLIC_* is compiled into the browser bundle by design, so this value
+ * must be a public origin and NOTHING ELSE. No key, no token, no secret is
+ * read here or anywhere else on this side of the boundary.
  */
 import { storedLocale } from "./i18n";
 import type { Identity, PortalSubmission, RunEvent } from "./types";
 
 export const TOKEN_KEY = "ip.token";
+
+/**
+ * The API origin, or "" for same-origin.
+ *
+ * Read once, at module load. `process.env.NEXT_PUBLIC_*` is substituted at
+ * BUILD time by Next, so this is a literal in the emitted bundle rather than a
+ * lookup -- which is also why changing it means rebuilding, not restarting.
+ *
+ * A trailing slash is stripped so `${API_BASE}${path}` never produces `//api`,
+ * which some proxies and some routers treat as a different path entirely.
+ */
+export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/+$/, "");
+
+/** A relative API path resolved against wherever the API actually is. */
+export function apiUrl(path: string): string {
+  return API_BASE ? `${API_BASE}${path}` : path;
+}
 
 /**
  * Attach the reader's chosen language to a request (Phase L).
@@ -72,7 +105,7 @@ export async function apiFetch(path: string, opts: RequestInit = {}): Promise<Re
   const token = readToken();
   const headers = new Headers(opts.headers || {});
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(withLocale(path), { ...opts, headers });
+  const res = await fetch(apiUrl(withLocale(path)), { ...opts, headers });
   if (res.status === 401) {
     writeToken(null);
     window.dispatchEvent(new Event("ip:unauthenticated"));
@@ -102,15 +135,22 @@ export async function signIn(username: string, password: string): Promise<string
 
   let res: Response;
   try {
-    res = await fetch("/api/auth/token", {
+    res = await fetch(apiUrl("/api/auth/token"), {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
     });
   } catch {
-    // fetch only rejects on a transport failure -- the API is unreachable.
+    // fetch only rejects on a transport failure -- the API is unreachable, or a
+    // cross-origin request was refused before a response existed. Name the
+    // origin actually being called, because "the backend" is ambiguous the
+    // moment the UI and the API are not the same host, and a CORS refusal looks
+    // identical to an outage from here.
     throw new Error(
-      "Could not reach the server. Check that the backend is running on port 8000."
+      API_BASE
+        ? `Could not reach the API at ${API_BASE}. It may be unreachable, or it ` +
+          `may not list this site in CORS_ORIGINS.`
+        : "Could not reach the server. Check that the backend is running on port 8000."
     );
   }
 
@@ -124,8 +164,11 @@ export async function signIn(username: string, password: string): Promise<string
   if (res.status === 429) throw new Error("Too many attempts. Wait a moment and try again.");
   if (res.status === 404 || res.status === 405) {
     throw new Error(
-      "Reached a server, but not the API. This page is being served from the " +
-        "wrong origin — open the app at http://127.0.0.1:8000 instead."
+      API_BASE
+        ? `Reached ${API_BASE}, but not the API. Check NEXT_PUBLIC_API_BASE_URL ` +
+          `points at the API host itself, with no path.`
+        : "Reached a server, but not the API. This page is being served from the " +
+          "wrong origin — open the app at http://127.0.0.1:8000 instead."
     );
   }
   throw new Error(`Sign-in failed (HTTP ${res.status}).`);

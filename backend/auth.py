@@ -26,6 +26,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -239,6 +240,61 @@ def validate_production_config() -> List[str]:
 
     if "*" in config.CORS_ORIGINS:
         problems.append("CORS_ORIGINS contains '*'. Name the origins explicitly.")
+
+    problems.extend(_cors_regex_problems())
+
+    return problems
+
+
+# Origins used to check whether a configured CORS pattern is, in effect, a
+# wildcard. Not an exhaustive adversarial set -- it cannot be -- but every one
+# of these is an origin a preview-deployment pattern has no business matching,
+# and a pattern that matches any of them was written wrong.
+_CORS_REGEX_PROBES = (
+    "https://evil.example",
+    "http://attacker.test",
+    "https://not-your-app.com",
+    "https://phish.vercel.app.evil.example",
+)
+
+
+def _cors_regex_problems() -> List[str]:
+    """Refuse a CORS_ORIGIN_REGEX loose enough to be a wildcard (Phase M).
+
+    The pattern exists for preview deployments, whose origins cannot be
+    enumerated ahead of time. That makes it useful and makes it dangerous in
+    the same breath: an unanchored pattern matches any origin that CONTAINS the
+    text, so an unanchored `https://myapp[.]vercel[.]app` happily matches
+    `https://myapp.vercel.app.evil.example`, and CORS is then open to whoever
+    registered that domain. The wildcard check above would never see it.
+
+    So the pattern is required to be anchored at both ends -- Starlette matches
+    with `re.fullmatch`, so `$` is not strictly load-bearing, but requiring the
+    author to write both is what makes the intent explicit -- and is then
+    actually RUN against origins it must not match.
+    """
+    pattern = (config.CORS_ORIGIN_REGEX or "").strip()
+    if not pattern:
+        return []
+
+    problems = []
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        return [f"CORS_ORIGIN_REGEX is not a valid regular expression ({exc})."]
+
+    if not (pattern.startswith("^") and pattern.endswith("$")):
+        problems.append(
+            "CORS_ORIGIN_REGEX must be anchored with ^ and $. Without both, it "
+            "matches any origin that merely contains the pattern -- so a domain "
+            "an attacker registers can satisfy it.")
+
+    matched = [probe for probe in _CORS_REGEX_PROBES if compiled.fullmatch(probe)]
+    if matched:
+        problems.append(
+            f"CORS_ORIGIN_REGEX matches origins it must not ({', '.join(matched)}). "
+            f"Narrow it to your own preview hostnames, or drop it and name the "
+            f"origins in CORS_ORIGINS.")
 
     return problems
 

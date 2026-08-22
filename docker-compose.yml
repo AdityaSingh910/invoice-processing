@@ -1,12 +1,14 @@
 # Local development database. `docker-compose up -d` gives a fresh
-# PostgreSQL instance matching .env.example's DATABASE_URL, with no manual
-# password reset or service configuration needed -- the one-time dance this
-# project's own history needed on a machine with no Docker available.
+# PostgreSQL instance matching .env.example's fallback DATABASE_URL, with no
+# manual password reset or service configuration needed -- for fully offline
+# work or CI, where a hosted database is not wanted.
 #
-# NOT used in production. A production deployment points DATABASE_URL at a
-# managed Postgres instance (RDS, Cloud SQL, a managed host's own Postgres
-# add-on, etc.); this file exists purely to make `git clone && docker-compose
-# up -d` a working local setup.
+# NOT used in production, and not required at all if you point DATABASE_URL
+# at a hosted Postgres instead -- Supabase (see .env.example's Database
+# section for the connection-string variant to use), RDS, Cloud SQL, or any
+# other managed Postgres add-on. This file exists purely to make
+# `git clone && docker-compose up -d` a working local setup for anyone who
+# would rather not depend on a hosted database during development.
 services:
   db:
     image: postgres:16

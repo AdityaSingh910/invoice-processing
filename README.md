@@ -154,15 +154,19 @@ clean, extension-free headless browser.
 
 **Requires PostgreSQL first.** The app has no SQLite fallback — set
 `DATABASE_URL` in `.env` (copy `.env.example`) and point it at a reachable
-instance:
+instance. Three ways to get one:
 
-```powershell
-docker-compose up -d          # local Postgres matching .env.example, if you have Docker
-```
-
-or install PostgreSQL directly (`winget install PostgreSQL.PostgreSQL.16` on
-Windows) and create a dedicated database/role rather than using the
-`postgres` superuser for the app.
+- **Supabase (recommended)** — create a project at supabase.com, then copy
+  the **Session pooler** (or direct) connection string from
+  *Project Settings → Database → Connection string* into `DATABASE_URL`. Do
+  not use the *Transaction pooler* variant — see `.env.example`'s Database
+  section for why. Nothing else about the app changes: Supabase is plain
+  PostgreSQL, reached the same way as any other instance.
+- **`docker-compose up -d`** — a throwaway local Postgres matching
+  `.env.example`'s default `DATABASE_URL`, for fully offline work or CI.
+- **Install PostgreSQL directly** (`winget install PostgreSQL.PostgreSQL.16`
+  on Windows) and create a dedicated database/role rather than using the
+  `postgres` superuser for the app.
 
 ```powershell
 .\start.ps1
@@ -1584,6 +1588,59 @@ tests for this uncovered.
 
 ---
 
+## Deploying: Vercel + Railway + Supabase
+
+**[DEPLOYMENT.md](DEPLOYMENT.md) is the runbook** — every step, every
+environment variable, and the Google Cloud setup for Gmail. This is the summary.
+
+The local demo is **one process serving both halves**: uvicorn serves the
+Next.js static export at `/`, so the browser's relative `/api/...` calls are
+same-origin and there is no base URL, no CORS and no second host. That is still
+the default and nothing about it changed. A hosted deployment splits it:
+
+```
+Browser  ->  Vercel (static export)  ->  Railway (FastAPI)  ->  Supabase (Postgres)
+```
+
+Three settings turn one topology into the other:
+
+| Where | Setting | |
+|---|---|---|
+| Vercel | `NEXT_PUBLIC_API_BASE_URL` | the Railway origin. Build-time; empty means same-origin. |
+| Railway | `CORS_ORIGINS` | the Vercel origin. Empty means same-origin only. |
+| Railway | `FRONTEND_ORIGIN` | where the Gmail OAuth callback sends the browser afterwards. |
+
+Two things are easy to get wrong and cost real data, so they are called out
+here as well as in the runbook:
+
+- **Use Supabase's Session pooler, never the Transaction pooler.** This app
+  runs its own connection pool and issues `SET search_path` once per borrowed
+  connection, then runs several statements against it — PgBouncer's transaction
+  mode can drop that, and `SELECT ... FOR UPDATE` (which is how every
+  concurrency guarantee here is enforced) needs a transaction spanning
+  statements.
+- **A container filesystem does not survive a deploy.** With the default
+  `DOCUMENT_STORE_BACKEND=local`, every uploaded PDF is gone at the next
+  restart — the `documents` row survives, so the run still opens and the audit
+  trail is intact, but the download 404s. Set `DOCUMENT_STORE_BACKEND=s3`
+  (Supabase Storage speaks S3) for any host with ephemeral disk.
+
+`APP_ENV=production` refuses to start while the shipped demo accounts are
+present. Build a real user store with
+`python scripts/make_user_store.py generate --user alice:admin` — it prompts
+for each password, hashes it with the same function the app verifies against,
+and prints one line to paste into `AUTH_USERS_JSON`.
+
+**A connected Gmail mailbox must be reconnected after deploying**, for two
+independent reasons: the refresh token is encrypted with a key derived from
+`AUTH_SECRET`, which differs in production; and `gmail.send` (needed for
+rejection emails) is a scope Google fixes at consent time, so an existing
+`gmail.readonly` connection does not gain it silently.
+
+`Dockerfile`, `railway.json` and `frontend-next/vercel.json` are in the
+repository. `CLAUDE.md` §7k is the engineering record of what the split
+required and why.
+
 ## Running in production
 
 Set `APP_ENV=production` and the app refuses to start on any of the following,
@@ -1603,8 +1660,11 @@ the kind of mistake that leaves the app working perfectly and quietly insecure.
 
 `DATABASE_URL` is required in **every** environment, not just production —
 there is no SQLite fallback to fall back to. Point it at a managed Postgres
-instance in production (RDS, Cloud SQL, a host's managed Postgres add-on,
-etc.), never at a container that dies with the deploy.
+instance in production (Supabase, RDS, Cloud SQL, a host's managed Postgres
+add-on, etc.), never at a container that dies with the deploy. On Supabase,
+use the **Session pooler** or direct connection string, not the Transaction
+pooler — see `.env.example`'s Database section for why (this app manages its
+own connection pool and relies on a stable per-connection session).
 
 Environment variables worth knowing:
 
@@ -1781,7 +1841,18 @@ data/             Seed POs + vendors + demo users incl. two demo SUPPLIER
                   documents/ holds uploaded PDFs (local backend, gitignored)
 sample_invoices/  10 PDFs, the generator, and manifest.json of scenarios
 scripts/          replay_samples.py, migrate_sqlite_to_postgres.py
-docker-compose.yml  Local PostgreSQL matching .env.example's DATABASE_URL
+docker-compose.yml  Optional local PostgreSQL for offline dev/CI; Supabase or
+                  any other hosted Postgres is the recommended DATABASE_URL
+Dockerfile        API-only container image for Railway -- no frontend inside,
+                  which is what makes main.py serve the API alone
+.dockerignore     .env first: a .env in an image is a secret in a layer
+railway.json      Railway builder + /api/health healthcheck + one replica
+frontend-next/vercel.json  Vercel build config and the security headers
+                  FastAPI used to add when it served the HTML itself
+DEPLOYMENT.md     the Vercel + Railway + Supabase runbook
+scripts/make_user_store.py  builds a production user store (prompts for
+                  passwords, prints AUTH_USERS_JSON); renders it in-container
+scripts/start-backend.sh    container entrypoint: render the store, exec uvicorn
 scripts/          replay_samples.py — drives the samples in manifest order
 tests/            28 files, 1,546 tests, both providers mocked
 reset-demo.ps1    Clears run history so the samples can be replayed
