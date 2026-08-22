@@ -5577,6 +5577,72 @@ on `internal` so a supplier's URL is never stamped with a row their shell does
 not have. Verified: `#review-queue` and `#analytics` both survive a reload, with
 the right heading and the right nav row lit.
 
+### 11.-0.5 Rapid refresh signed the user out (post-deployment, not a phase)
+
+Reported from the live app: pressing Refresh, or the browser's reload button,
+several times quickly ended the session. Reproduced locally and traced to
+**three separate defects that only produced a logout in combination.** All
+three are fixed; each was wrong on its own.
+
+**1. THE CONNECTION POOL REFUSED A BURST INSTEAD OF QUEUEING IT.**
+`psycopg2`'s `ThreadedConnectionPool.getconn()` raises `PoolError` the instant
+every connection is checked out — it does not wait. The ceiling was hard-coded
+at **10**, while Starlette runs every sync endpoint on a threadpool of **40**,
+so eleven simultaneous requests were enough: the surplus raised, fell through
+to the generic handler and came back **500**. Measured before the fix: 36
+reload-shaped concurrent requests produced **13 × 500**.
+
+`storage._getconn_waiting()` now polls for a connection with a 5-second
+deadline, so a burst forms a queue instead of failing — these queries take
+single-digit milliseconds, so a burst is a queue that was never allowed to
+form, not more load than the database can serve. The ceiling is also raised to
+16 and made settable (`DB_POOL_MAX`), because the right number is a property of
+the *database* — a hosted Postgres shares one limit across every client — and
+only the operator knows how many instances are drawing on it. After: 150
+requests at 40-way concurrency, **all 200**, no `PoolError`.
+
+**2. THE FRONTEND TREATED ANY FAILURE AS A DEAD SESSION.** This is what turned
+a 500 into a sign-out. `AuthProvider`'s resume path did `writeToken(null)` in a
+bare `catch`, commented "expired or revoked" — so a 500, a 429, a dropped
+connection and a request torn down by the reload that superseded it all
+destroyed a perfectly good token.
+
+**"The token is invalid" and "I could not check right now" are different
+facts** — the same three-state discipline §7a.4 insists on for an
+authentication result, applied to our own session. Only a **401** ends a
+session, and `apiFetch` already recognises exactly that: it clears the token
+and fires `ip:unauthenticated`. So everything reaching that catch is, by
+construction, the other kind. It now retries three times over about a second
+and, if it still will not settle, **leaves the token alone** — the user sees
+the gate either way, because there is no identity to render a shell with, but
+a reload picks the session straight back up instead of demanding a password
+the server never rejected.
+
+**3. THE REFRESH BUTTONS FIRED A STORM.** `useResource` aborted the previous
+request on each press, but the requests were still SENT — the server still had
+to accept, authenticate and begin serving every one. On Analytics, where one
+press fans out to seven endpoints, five presses is thirty-five requests
+arriving together. That burst is what exhausted the pool.
+
+A refresh requested while one is in flight is now **remembered, not fired, and
+not dropped**: the settling request fires exactly one more. Both obvious
+alternatives are wrong — ignoring it drops a refresh that is not always a
+button (`page.tsx` calls it when a run finishes and when a review lands), and
+debouncing on a timer guesses at a delay and still fires mid-flight. Measured:
+**15 clicks dispatched in one tick now produce 1 request**; ten rapid Analytics
+refreshes produce 14 instead of up to 70. The Analytics button additionally
+disables itself while any panel loads, because it changes a shared `reloadKey`
+rather than calling `resource.refresh()`, so the per-resource coalescing cannot
+see it.
+
+**Tests:** `test_api_security.py` section 7a — a real-thread burst over HTTP
+asserting no 500 and no 401, a direct test that `get_conn()` blocks and then
+succeeds rather than raising, and the `DB_POOL_MAX` fallback. **The burst test
+squeezes the pool to two connections first, and that is load-bearing:** without
+it a dozen short reads rarely hold ten connections at once, and the test passed
+just as happily against the broken pool. Verified by mutation — restore the
+refuse-instantly `getconn` and both tests go red.
+
 ### 11.0 There are TWO frontends in one bundle (Phase J)
 
 `app/page.tsx` branches on the signed-in identity: a principal carrying
