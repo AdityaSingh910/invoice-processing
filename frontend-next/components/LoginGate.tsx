@@ -28,7 +28,7 @@
 import { useRef, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { useT } from "@/lib/i18n";
-import { IconAlert, IconCheck, IconShield, IconUser } from "@/components/ui/icons";
+import { IconAlert, IconCheck, IconUser } from "@/components/ui/icons";
 import LanguagePicker from "@/components/ui/LanguagePicker";
 
 /**
@@ -63,22 +63,38 @@ const SHOW_DEMO_ACCOUNTS = !process.env.NEXT_PUBLIC_API_BASE_URL;
  * bundle in clear text, which is not a leak -- it is the point. Anyone who
  * reaches this page has it.
  *
- * IT ONLY WORKS IF THE SERVER'S USER STORE ACTUALLY HAS THIS ACCOUNT. Prefilled
- * fields that fail are worse than empty ones: the visitor presses Sign in, gets
- * "incorrect username or password", and concludes the product is broken rather
- * than that they were handed a credential nobody provisioned. `AUTH_USERS_JSON`
- * on the API host is what decides, and the account must NOT carry the `demo`
- * flag -- `APP_ENV=production` refuses to start while any flagged account is in
- * the store (§8), which is exactly the guard that keeps the SHIPPED demo
- * accounts out of a real deployment.
+ * IT ONLY WORKS IF THE SERVER'S USER STORE ACTUALLY HAS THIS ACCOUNT, and that
+ * is two separate provisionings, not one. `data/users.json` carries it for the
+ * local demo (flagged `demo`, like every other account shipped in this
+ * repository); a real deployment reads `AUTH_USERS_JSON` instead, and the entry
+ * there must NOT carry the flag -- `APP_ENV=production` refuses to start while
+ * any flagged account is in the store (§8), which is the guard that keeps the
+ * SHIPPED accounts out of a real deployment and must stay working.
  *
- * Give it the narrowest role that still shows the product. Whatever scopes it
- * holds, every visitor holds -- including, if it were an administrator, the
- * authority to override a decision and to clear the run history.
+ * Prefilled fields that fail are worse than empty ones: the visitor presses
+ * Sign in, gets "incorrect username or password", and concludes the product is
+ * broken rather than that they were handed a credential nobody provisioned. So
+ * if this constant and the deployment's user store ever disagree, this constant
+ * is the one that is wrong.
+ *
+ * THE ROLE IS `reviewer`, AND IT IS A CEILING RATHER THAN A DEFAULT. Whatever
+ * scopes this account holds, every visitor holds. `reviewer` reaches the whole
+ * product -- upload an invoice, watch the nine stages, work the review queue,
+ * accept or reject -- while stopping short of `invoice:admin`, which would hand
+ * every passer-by the authority to override a decision and to clear the run
+ * history from the Overview screen. Widening it is a decision about what
+ * strangers may do, not a convenience.
  */
-const OPENING_CREDENTIAL = { username: "demo", password: "demo" };
+const OPENING_CREDENTIAL = { username: "demo", password: "demodemodemo" };
 
 const DEMO = [
+  // The one the box already opens on. Listed anyway rather than left implicit:
+  // somebody who types over the prefilled fields to try another account has no
+  // other way back to it, and a panel that omitted the account actually in the
+  // inputs would be describing a different set of credentials than the form is
+  // holding.
+  { user: OPENING_CREDENTIAL.username, pass: OPENING_CREDENTIAL.password,
+    role: "Process, accept, reject" },
   { user: "analyst", pass: "demo-analyst", role: "Process invoices" },
   { user: "reviewer", pass: "demo-reviewer", role: "Process, accept, reject" },
   { user: "admin", pass: "demo-admin", role: "Full administrative access" },
@@ -448,13 +464,6 @@ export default function LoginGate() {
             </div>
           </div>
         </main>
-
-        <footer className="px-5 py-5 sm:px-8">
-          <p className="flex items-center justify-center gap-2 text-[11.5px] text-white/30">
-            <IconShield size={12} />
-            OAuth 2.0 bearer tokens · scopes re-checked on every request · every decision audited
-          </p>
-        </footer>
       </div>
     </div>
   );

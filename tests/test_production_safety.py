@@ -117,9 +117,16 @@ def test_the_shipped_user_store_is_marked_as_demo():
     client logins rather than employee ones, and they carry the same flag for
     exactly the same reason: their passwords are in this repository and on the
     sign-in screen.
+
+    `demo` is the account the sign-in box PREFILLS, so its password is not
+    merely in this repository -- it is compiled into the browser bundle in
+    clear text on every deployment, which makes the flag matter more here than
+    anywhere else in this list, not less. A production store provisions its own
+    unflagged `demo` entry through AUTH_USERS_JSON; this one must never reach
+    such a deployment, and the flag is what stops it.
     """
-    assert auth.demo_usernames() == ["acme", "admin", "analyst", "globex",
-                                     "reviewer", "viewer"]
+    assert auth.demo_usernames() == ["acme", "admin", "analyst", "demo",
+                                     "globex", "reviewer", "viewer"]
 
 
 def test_production_refuses_to_start_with_demo_credentials(monkeypatch, prod):
