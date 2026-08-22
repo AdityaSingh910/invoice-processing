@@ -183,13 +183,11 @@ app.add_middleware(ConfiguredCORS)
 # keeps the UI same-origin with the API, so the browser's relative /api/... calls
 # resolve without CORS, a base URL, or a second port to get wrong.
 #
-# The original vanilla frontend stays as the fallback, so a clone that has never
-# run npm still boots a working UI and the test suite is unaffected.
-_NEXT_EXPORT = os.path.join(os.path.dirname(__file__), "..", "frontend-next", "out")
-_VANILLA = os.path.join(os.path.dirname(__file__), "..", "frontend")
-
-FRONTEND_DIR = _NEXT_EXPORT if os.path.isfile(
-    os.path.join(_NEXT_EXPORT, "index.html")) else _VANILLA
+# The original vanilla frontend has been removed -- frontend-next/ is the only
+# UI now. Run `npm run build` inside frontend-next/ before starting the server;
+# without a built out/, this directory will not exist and the mount below fails
+# at startup rather than silently serving nothing.
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend-next", "out")
 
 
 # --------------------------------------------------------------------------

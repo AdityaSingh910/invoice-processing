@@ -19,8 +19,8 @@ if (-not (Test-Path ".\sample_invoices\01_happy_path_acme.pdf")) {
 
 # Build the Next.js UI if it has never been built. The output is a STATIC
 # export -- no Node process runs at serve time, uvicorn hands out plain files.
-# If Node is unavailable the app still starts: backend/main.py falls back to the
-# original vanilla frontend, so a machine without npm is not locked out.
+# This is the only UI now (the vanilla frontend/ fallback was removed), so npm
+# is required on first run.
 if (-not (Test-Path ".\frontend-next\out\index.html")) {
     if (Get-Command npm -ErrorAction SilentlyContinue) {
         Write-Host "Building the UI (first run only, takes about a minute)..."
@@ -29,7 +29,8 @@ if (-not (Test-Path ".\frontend-next\out\index.html")) {
         npm run build
         Pop-Location
     } else {
-        Write-Host "npm not found - serving the fallback UI." -ForegroundColor Yellow
+        Write-Host "npm not found. Install Node.js, then run 'npm run build' inside frontend-next\ before starting the server." -ForegroundColor Red
+        exit 1
     }
 }
 

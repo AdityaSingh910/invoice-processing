@@ -171,8 +171,9 @@ Windows) and create a dedicated database/role rather than using the
 Creates a venv, installs dependencies, generates the sample invoices if missing,
 builds the UI on first run, and opens <http://127.0.0.1:8000>.
 
-The UI build needs Node (18+). If npm is not installed the app still starts and
-serves the original vanilla frontend instead — nothing is blocked.
+The UI build needs Node (18+). `frontend-next/` is the only UI in this
+project now (the old vanilla fallback was removed) — without npm, `start.ps1`
+stops with a clear message rather than starting a server with nothing to serve.
 
 ### Manual start
 
@@ -1346,9 +1347,8 @@ the light theme.
   CORS and no base URL to get wrong), and the whole app is still one command on
   one port. `next dev` on :3000 proxies `/api` to :8000 for development.
 
-  The original vanilla frontend is still in `frontend/` and is served
-  automatically if the export has never been built, so a clone without npm
-  still boots a working UI.
+  The original vanilla frontend has been removed — `frontend-next/` is the
+  only UI now, and `npm run build` must be run before the server can serve it.
 
 ### API endpoints
 
@@ -1775,7 +1775,6 @@ frontend-next/    The UI. Next.js 15 + React 19 + Tailwind v4, TypeScript
     ui/           Primitives — button, badge, panel, modal, toast, icons
   lib/            API client, auth context, theme (dark-mode toggle), metrics,
                   formatting, types
-frontend/         The original vanilla UI, kept as a no-build fallback
 data/             Seed POs + vendors + demo users incl. two demo SUPPLIER
                   accounts (tracked); app.db is vestigial
                   (pre-Postgres SQLite file, unused by any code now);

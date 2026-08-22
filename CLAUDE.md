@@ -40,9 +40,9 @@ vendor binding no token can assert (§7g).
   (§7g), and the locale layer that lets all of it answer in seven languages
   without any of it deciding anything differently (§7i).
 - **Frontend** (`frontend-next/`) — Next.js 15 / React 19 / Tailwind v4,
-  served as a static export by FastAPI. All phases fully committed.
-- **Frontend fallback** (`frontend/`) — the original vanilla HTML/JS UI,
-  kept as a no-build fallback if `frontend-next/out/` was never built.
+  served as a static export by FastAPI. All phases fully committed. **This is
+  now the only UI** — the original vanilla HTML/JS fallback (`frontend/`) was
+  removed; `npm run build` must be run before the server has anything to serve.
 - **`data/`** — seed POs, vendors, demo users (JSON, tracked in git,
   reloaded into Postgres on every startup) plus gitignored runtime state
   (`documents/`).
