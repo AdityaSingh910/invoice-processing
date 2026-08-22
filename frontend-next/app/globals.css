@@ -614,3 +614,78 @@
 .pulse-ring {
   animation: pulse-ring 1.8s ease-out infinite;
 }
+
+/* ============================================================== sign-in
+   THE ONE SCREEN THAT COMMITS TO A DARK PALETTE.
+
+   Everywhere else in this product the theme is the reader's choice --
+   :root[data-theme] with an explicit toggle, never prefers-color-scheme. The
+   sign-in screen is the exception on purpose: nobody has signed in yet, so
+   there is no reader whose choice it could honour, and it is the one surface
+   that has to introduce the product rather than get out of its way.
+
+   These colours are therefore literal rather than token-driven. A token here
+   would follow the app theme and leave white-on-white the moment somebody
+   signed out of light mode.
+
+   The marquee is decoration and is treated as such: pointer-events are off,
+   it is masked to nothing at both edges, and prefers-reduced-motion stops it
+   dead rather than merely slowing it.
+   ========================================================================= */
+@layer utilities {
+  .signin-field {
+    width: 100%;
+    height: 42px;
+    padding: 0 12px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #f4f4f5;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  }
+  .signin-field::placeholder {
+    color: rgba(255, 255, 255, 0.32);
+  }
+  .signin-field:focus {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(96, 145, 255, 0.65);
+    box-shadow: 0 0 0 3px rgba(96, 145, 255, 0.16);
+  }
+
+  /* The track holds its content TWICE, and each card carries its own right
+     margin rather than the track carrying a `gap`. That matters: with a gap,
+     the two halves are separated by one more gap than they contain, so -50%
+     lands mid-gap and the loop visibly jumps. With the spacing inside each
+     card, one half is exactly half the track. */
+  .marquee-track {
+    display: flex;
+    width: max-content;
+    will-change: transform;
+  }
+  .marquee-rtl {
+    animation: marquee-shift var(--marquee-duration, 64s) linear infinite;
+  }
+  .marquee-ltr {
+    animation: marquee-shift var(--marquee-duration, 64s) linear infinite reverse;
+  }
+  .marquee-mask {
+    -webkit-mask-image: linear-gradient(
+      to right, transparent, #000 14%, #000 86%, transparent);
+    mask-image: linear-gradient(
+      to right, transparent, #000 14%, #000 86%, transparent);
+  }
+}
+
+@keyframes marquee-shift {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(-50%, 0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee-rtl,
+  .marquee-ltr {
+    animation: none;
+  }
+}
