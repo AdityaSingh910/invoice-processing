@@ -19,7 +19,6 @@ import {
   IconAnalytics,
   IconInvoice,
   IconLedger,
-  IconMail,
   IconMenu,
   IconMoon,
   IconOverview,
@@ -37,8 +36,7 @@ export type Section =
   | "assistant"
   | "process"
   | "invoices"
-  | "reference"
-  | "email-queue";
+  | "reference";
 
 /**
  * Which sidebar ROW is lit.
@@ -61,8 +59,7 @@ export type NavId =
   | "invoices"
   | "review-queue"
   | "purchase-orders"
-  | "approved-vendors"
-  | "email-queue";
+  | "approved-vendors";
 
 /** `exceptionsOnly` lets a caller (Overview's exception card, or the "Review
  *  queue" nav item) send the reviewer straight to the pre-filtered queue
@@ -131,23 +128,6 @@ const GROUPS: {
         icon: IconShield,
         exceptionsOnly: true,
         badge: true,
-      },
-    ],
-  },
-  {
-    labelKey: "nav.group.admin",
-    items: [
-      {
-        // Reading the queue is `invoice:read`, same as everything else here,
-        // but nobody without `invoice:review` can act on a row -- gated on
-        // `invoice:read` so a viewer can at least see what is held, matching
-        // how the endpoints themselves are scoped (§7a.9/§7b.10).
-        id: "email-queue",
-        key: "email-queue",
-        labelKey: "nav.emailQueue",
-        hintKey: "nav.emailQueue.hint",
-        icon: IconMail,
-        scope: "invoice:read",
       },
     ],
   },
