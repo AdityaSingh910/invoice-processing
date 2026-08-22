@@ -10,8 +10,10 @@
  */
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
+import { useI18n, type MessageKey } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
 import { Button, Tooltip } from "@/components/ui";
+import LanguagePicker from "@/components/ui/LanguagePicker";
 import {
   IconAnalytics,
   IconInvoice,
@@ -85,15 +87,24 @@ export function navIdFor(
   return section;
 }
 
+/**
+ * The navigation, as MESSAGE KEYS rather than as words (Phase L).
+ *
+ * The table is otherwise unchanged: same rows, same order, same scopes, same
+ * destinations. `labelKey`/`hintKey` are looked up at render in the reader's
+ * own language, so adding a language never means touching this structure --
+ * and a row cannot go missing in one language and not another, because the
+ * rows are not per-language at all.
+ */
 const GROUPS: {
-  label: string;
+  labelKey: MessageKey;
   items: {
     id: NavId;
     key: Section;
-    label: string;
+    labelKey: MessageKey;
     /** One line under the label on the wide rail — what the section is for,
      *  in the words an AP clerk would use. */
-    hint: string;
+    hintKey: MessageKey;
     icon: (p: { size?: number }) => React.ReactElement;
     scope?: string;
     exceptionsOnly?: boolean;
@@ -102,23 +113,23 @@ const GROUPS: {
   }[];
 }[] = [
   {
-    label: "Operations",
+    labelKey: "nav.group.operations",
     items: [
-      { id: "overview", key: "overview", label: "Overview", hint: "Performance", icon: IconOverview },
+      { id: "overview", key: "overview", labelKey: "nav.overview", hintKey: "nav.overview.hint", icon: IconOverview },
       {
         id: "process",
         key: "process",
-        label: "Process invoice",
-        hint: "Upload and run",
+        labelKey: "nav.process",
+        hintKey: "nav.process.hint",
         icon: IconUpload,
         scope: "invoice:process",
       },
-      { id: "invoices", key: "invoices", label: "Invoices", hint: "Full register", icon: IconInvoice },
+      { id: "invoices", key: "invoices", labelKey: "nav.invoices", hintKey: "nav.invoices.hint", icon: IconInvoice },
       {
         id: "review-queue",
         key: "invoices",
-        label: "Review queue",
-        hint: "Waiting on you",
+        labelKey: "nav.review",
+        hintKey: "nav.review.hint",
         icon: IconShield,
         exceptionsOnly: true,
         badge: true,
@@ -126,7 +137,7 @@ const GROUPS: {
     ],
   },
   {
-    label: "Administration",
+    labelKey: "nav.group.admin",
     items: [
       {
         // Scoped to invoice:admin, so it does not render for anyone who would
@@ -134,8 +145,8 @@ const GROUPS: {
         // endpoint behind it re-checks the scope server-side.
         id: "settings",
         key: "settings",
-        label: "Email integration",
-        hint: "Connect a mailbox",
+        labelKey: "nav.settings",
+        hintKey: "nav.settings.hint",
         icon: IconSettings,
         scope: "invoice:admin",
       },
@@ -146,48 +157,48 @@ const GROUPS: {
         // how the endpoints themselves are scoped (§7a.9/§7b.10).
         id: "email-queue",
         key: "email-queue",
-        label: "Email queue",
-        hint: "Review held messages",
+        labelKey: "nav.emailQueue",
+        hintKey: "nav.emailQueue.hint",
         icon: IconMail,
         scope: "invoice:read",
       },
     ],
   },
   {
-    label: "Reporting",
+    labelKey: "nav.group.reporting",
     items: [
       {
         id: "analytics",
         key: "analytics",
-        label: "Analytics",
-        hint: "KPIs and trends",
+        labelKey: "nav.analytics",
+        hintKey: "nav.analytics.hint",
         icon: IconAnalytics,
       },
       {
         id: "assistant",
         key: "assistant",
-        label: "Assistant",
-        hint: "Ask about your invoices",
+        labelKey: "nav.assistant",
+        hintKey: "nav.assistant.hint",
         icon: IconChat,
       },
     ],
   },
   {
-    label: "Reference",
+    labelKey: "nav.group.reference",
     items: [
       {
         id: "purchase-orders",
         key: "reference",
-        label: "Purchase orders",
-        hint: "Budgets and balances",
+        labelKey: "nav.orders",
+        hintKey: "nav.orders.hint",
         icon: IconLedger,
         referenceTab: "orders",
       },
       {
         id: "approved-vendors",
         key: "reference",
-        label: "Approved vendors",
-        hint: "Who may be paid",
+        labelKey: "nav.vendors",
+        hintKey: "nav.vendors.hint",
         icon: IconShield,
         referenceTab: "vendors",
       },
@@ -212,6 +223,7 @@ export default function AppShell({
 }) {
   const { user, signOut, can } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const { t } = useI18n();
   const [drawer, setDrawer] = useState(false);
 
   useEffect(() => setDrawer(false), [section]);
@@ -229,9 +241,9 @@ export default function AppShell({
         if (!items.length) return null;
 
         return (
-          <div key={group.label}>
+          <div key={group.labelKey}>
             <p className="px-2.5 pb-2 text-[10px] font-semibold tracking-[0.08em] text-rail-faint uppercase">
-              {group.label}
+              {t(group.labelKey)}
             </p>
             <div className="flex flex-col gap-0.5">
               {items.map((item) => {
@@ -276,16 +288,16 @@ export default function AppShell({
                       <span
                         className={`block truncate text-[12.5px] ${active ? "font-semibold" : "font-medium"}`}
                       >
-                        {item.label}
+                        {t(item.labelKey)}
                       </span>
                       <span className="block truncate text-[10.5px] text-rail-faint">
-                        {item.hint}
+                        {t(item.hintKey)}
                       </span>
                     </span>
 
                     {item.badge && !!badge && (
                       <span
-                        title={`${badge} awaiting review`}
+                        title={`${badge} ${t("app.awaitingReview")}`}
                         className="tnum inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center
                           rounded-full bg-warn-vivid px-1 text-[10.5px] font-semibold text-white"
                       >
@@ -352,7 +364,10 @@ export default function AppShell({
         <div className="truncate text-[12px] font-semibold text-rail-fg">{user.username}</div>
         <div className="truncate text-[10.5px] text-rail-faint">{roleOf()}</div>
       </div>
-      <Tooltip label={theme === "dark" ? "Switch to light" : "Switch to dark"}>
+      {/* Offered the list the SERVER said it can answer in, so nobody is shown
+          a language the backend would then answer in English. */}
+      <LanguagePicker options={user?.languages} compact />
+      <Tooltip label={theme === "dark" ? t("app.theme.toLight") : t("app.theme.toDark")}>
         <button
           onClick={toggleTheme}
           aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}

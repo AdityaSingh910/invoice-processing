@@ -71,6 +71,7 @@ import json
 import re
 
 import auth
+import i18n
 import storage
 
 # --------------------------------------------------------------------------
@@ -86,17 +87,21 @@ STATE_IN_REVIEW = "IN_REVIEW"
 STATE_APPROVED = "APPROVED"
 STATE_DECLINED = "DECLINED"
 
+# The STATE is an identifier and stays English: a client filters on it, the
+# frontend colours on it, and translating it would break both. Only the
+# sentence beside it is localised, and it is stored as a MESSAGE KEY rather
+# than as a sentence -- so there is exactly one place a translator finds it
+# and exactly one place a reader of this file finds it (Phase L).
 _STATE_FOR_STATUS = {
-    "APPROVED": (STATE_APPROVED, "Approved for payment."),
-    "NEEDS_REVIEW": (STATE_IN_REVIEW,
-                     "Received and being checked by our accounts payable team."),
-    "REJECTED": (STATE_DECLINED, "Not accepted for payment."),
+    "APPROVED": (STATE_APPROVED, "portal.state.approved"),
+    "NEEDS_REVIEW": (STATE_IN_REVIEW, "portal.state.in_review"),
+    "REJECTED": (STATE_DECLINED, "portal.state.declined"),
 }
 
 # A status this module has never heard of. Reported as RECEIVED rather than
 # guessed at or reported as an error: the invoice IS on file, which is the one
 # thing that can honestly be said about it.
-_STATE_UNKNOWN = (STATE_RECEIVED, "Received and on file.")
+_STATE_UNKNOWN = (STATE_RECEIVED, "portal.state.unknown")
 
 # --------------------------------------------------------------------------
 # The explanations a client is allowed to read
@@ -112,56 +117,44 @@ _STATE_UNKNOWN = (STATE_RECEIVED, "Received and on file.")
 # read this file, produces a vague-but-true sentence rather than leaking an
 # internal one, because nothing here forwards a string it was not given.
 # --------------------------------------------------------------------------
-RULE_EXPLANATIONS = {
-    "Duplicate check":
-        "This invoice appears to duplicate one already submitted. No action is "
-        "needed unless you believe it was sent in error.",
-    "Vendor approved":
-        "We could not match this invoice to your supplier record. Our team is "
-        "confirming it.",
-    "Document is an invoice":
-        "The document submitted did not read as an invoice. Please check that "
-        "the correct file was sent.",
-    "Required fields present":
-        "Some details could not be read from the document -- typically the "
-        "invoice number, date or total. Our team is checking it.",
-    "Document readable":
-        "The document could not be read automatically, so it is being checked "
-        "by hand. A text-based PDF processes faster than a scan or photograph.",
-    "Extraction confidence":
-        "Some details could not be read with confidence, so the invoice is "
-        "being checked by hand.",
-    "Invoice amount valid":
-        "The invoice total could not be accepted as stated. Our team is "
-        "checking it.",
-    "Invoice arithmetic":
-        "The stated subtotal, tax and total do not add up. Please check the "
-        "figures on the document.",
-    "PO matched":
-        "This invoice could not be matched to a purchase order. Quoting the "
-        "purchase order number on the document helps it clear automatically.",
-    "Invoice-to-PO split stated":
-        "This invoice covers more than one purchase order and does not state "
-        "how the total is divided between them, so it is being confirmed by "
-        "hand.",
-    "PO remaining check":
-        "The amount billed is more than the purchase order has remaining. Our "
-        "team is confirming it.",
-    "Currency match":
-        "The invoice currency differs from the purchase order currency, so it "
-        "is being confirmed by hand.",
-    "Currency/amount not reused across currencies":
-        "The invoice currency does not appear to match the amount as stated. "
-        "Please check the currency on the document.",
-    "Security screen":
-        "This document is being checked by hand before any action is taken.",
-    storage.PORTAL_VENDOR_IDENTITY_RULE:
-        "The supplier named on this document is not one your account "
-        "represents. Our team is confirming who it is from.",
+# WHAT CHANGED IN PHASE L, AND WHAT DID NOT.
+#
+# This is still a FROZEN table keyed by rule name, and it is still the only
+# thing that decides what a supplier reads about a hold. What each entry now
+# holds is a MESSAGE KEY rather than an English sentence, so the same seven
+# translations serve it as serve everything else -- and, more importantly, so
+# that translating a supplier-facing sentence never means editing this file
+# and risking the "forward the internal reason instead" mistake it exists to
+# prevent. A translator sees a key and a sentence; they never see the run.
+RULE_MESSAGE_KEYS = {
+    "Duplicate check": "portal.rule.duplicate_check",
+    "Vendor approved": "portal.rule.vendor_approved",
+    "Document is an invoice": "portal.rule.document_is_an_invoice",
+    "Required fields present": "portal.rule.required_fields_present",
+    "Document readable": "portal.rule.document_readable",
+    "Extraction confidence": "portal.rule.extraction_confidence",
+    "Invoice amount valid": "portal.rule.invoice_amount_valid",
+    "Invoice arithmetic": "portal.rule.invoice_arithmetic",
+    "PO matched": "portal.rule.po_matched",
+    "Invoice-to-PO split stated": "portal.rule.invoice_to_po_split_stated",
+    "PO remaining check": "portal.rule.po_remaining_check",
+    "Currency match": "portal.rule.currency_match",
+    "Currency/amount not reused across currencies": "portal.rule.currency_reuse",
+    "Security screen": "portal.rule.security_screen",
+    storage.PORTAL_VENDOR_IDENTITY_RULE: "portal.rule.vendor_identity",
 }
 
-_GENERIC_HOLD = "Being checked by our accounts payable team."
-_GENERIC_DECLINED = "Not accepted for payment. Please contact your accounts payable contact."
+# The English rendering of the table above, resolved once at import.
+#
+# Kept under its original name because that is what this table has always been
+# called, what the handoff notes point at, and what a reader looking for "what
+# does a supplier actually see" goes to find. It is a VIEW, not a second
+# source: every string in it comes from i18n.MESSAGES, so the two cannot
+# disagree, and a test asserts every key in RULE_MESSAGE_KEYS exists there.
+RULE_EXPLANATIONS = {rule: i18n.t(key) for rule, key in RULE_MESSAGE_KEYS.items()}
+
+_GENERIC_HOLD_KEY = "portal.hold.generic"
+_GENERIC_DECLINED_KEY = "portal.declined.generic"
 
 # --------------------------------------------------------------------------
 # The timeline a client is allowed to see
@@ -176,13 +169,18 @@ _GENERIC_DECLINED = "Not accepted for payment. Please contact your accounts paya
 # it back" is internal. The actor is stripped from every event that IS shown,
 # for the same reason.
 # --------------------------------------------------------------------------
+# Still an allowlist, still keyed by the event type invoice_activity writes;
+# the label is now a message key (Phase L). An event type a later phase adds
+# is still absent until somebody decides what a supplier should be told about
+# it -- and now also until somebody writes that sentence in seven languages,
+# which is the same decision made once rather than seven times.
 CLIENT_VISIBLE_EVENTS = {
-    "PROCESSING_COMPLETED": "Received and processed",
-    "REVIEW_REQUIRED": "Referred for checking",
-    "ACCEPTED": "Approved by our team",
-    "REJECTED": "Declined by our team",
-    "AUTO_APPROVED": "Approved",
-    "STATUS_OVERRIDDEN": "Decision updated",
+    "PROCESSING_COMPLETED": "portal.event.processing_completed",
+    "REVIEW_REQUIRED": "portal.event.review_required",
+    "ACCEPTED": "portal.event.accepted",
+    "REJECTED": "portal.event.rejected",
+    "AUTO_APPROVED": "portal.event.auto_approved",
+    "STATUS_OVERRIDDEN": "portal.event.status_overridden",
 }
 
 # The most invoices one portal response will return. A ceiling rather than a
@@ -211,9 +209,16 @@ class ClientContext:
     it, takes effect on the very next call.
     """
 
-    def __init__(self, client_id, client_name, vendor_ids, username=None):
+    def __init__(self, client_id, client_name, vendor_ids, username=None,
+                 locale=None):
         self.client_id = client_id
         self.client_name = client_name
+        # The language THIS REQUEST is answered in (Phase L). Resolved by
+        # the endpoint from the caller's own preference and carried here
+        # beside the identity, because both are per-request facts with the
+        # same lifetime. It selects words and nothing else: no query in
+        # this module reads it, and no row is included or excluded by it.
+        self.locale = locale or i18n.DEFAULT_LOCALE
         # The authenticated login behind this request. Carried so an activity
         # row a portal action writes can name a real principal: §6.1's rule is
         # that `actor` is the authenticated username or NULL for a
@@ -260,7 +265,7 @@ class ClientContext:
         return {storage.normalize_vendor_name(v["vendor_name"]) for v in self.vendors}
 
 
-def resolve_client(binding: dict, username: str = None) -> ClientContext:
+def resolve_client(binding: dict, username: str = None, locale: str = None) -> ClientContext:
     """Turn a user-store binding into the vendors it may actually act for.
 
     THE AMBIGUITY RULE, WHICH IS THE ONE PART OF THIS WORTH READING TWICE.
@@ -285,7 +290,7 @@ def resolve_client(binding: dict, username: str = None) -> ClientContext:
     fail in.
     """
     ctx = ClientContext(binding["client_id"], binding["client_name"],
-                        binding["vendor_ids"], username=username)
+                        binding["vendor_ids"], username=username, locale=locale)
 
     rows = storage.list_vendors()
     by_id = {}
@@ -325,12 +330,11 @@ def resolve_client(binding: dict, username: str = None) -> ClientContext:
         # The binding named vendors, none resolved, and none was recorded as a
         # problem -- which should be unreachable. Refused rather than served
         # as an unrestricted context.
-        raise PortalError("This account is not linked to a supplier record. "
-                          "Please contact your accounts payable contact.")
+        raise PortalError(i18n.t("portal.error.not_linked", locale))
     return ctx
 
 
-def context_for(principal) -> ClientContext:
+def context_for(principal, locale: str = None) -> ClientContext:
     """The ClientContext for an authenticated principal, or raise PortalError.
 
     The single place a portal request turns an identity into a set of records.
@@ -341,9 +345,8 @@ def context_for(principal) -> ClientContext:
     username = getattr(principal, "username", None)
     binding = auth.client_binding(username)
     if not binding:
-        raise PortalError("This account is not set up for the supplier portal. "
-                          "Please contact your accounts payable contact.")
-    return resolve_client(binding, username=username)
+        raise PortalError(i18n.t("portal.error.not_set_up", locale))
+    return resolve_client(binding, username=username, locale=locale)
 
 
 # --------------------------------------------------------------------------
@@ -454,7 +457,7 @@ def _failed_rules(audit):
     return []
 
 
-def client_state(status, audit):
+def client_state(status, audit, locale: str = None):
     """(state, headline, detail_lines) -- everything a client reads about a decision.
 
     `detail_lines` comes only from RULE_EXPLANATIONS, keyed by rule name. No
@@ -462,20 +465,29 @@ def client_state(status, audit):
     the internal `reason` and `reasons` fields are never consulted, because
     they embed other runs' ids, reviewer names and purchase order balances.
     """
-    state, headline = _STATE_FOR_STATUS.get(status, _STATE_UNKNOWN)
+    state, headline_key = _STATE_FOR_STATUS.get(status, _STATE_UNKNOWN)
+    headline = i18n.t(headline_key, locale)
 
     if state == STATE_APPROVED:
         return state, headline, []
 
     lines, seen = [], set()
     for rule in _failed_rules(audit):
-        text = RULE_EXPLANATIONS.get(rule)
+        # A rule with no entry contributes NOTHING here and falls through to
+        # the generic sentence below -- the unmapped-rule property Phase J
+        # built, unchanged. Note what is not done: the rule NAME is never
+        # printed as a fallback, in any language.
+        key = RULE_MESSAGE_KEYS.get(rule)
+        if not key:
+            continue
+        text = i18n.t(key, locale)
         if text and text not in seen:
             seen.add(text)
             lines.append(text)
 
     if not lines:
-        lines = [_GENERIC_DECLINED if state == STATE_DECLINED else _GENERIC_HOLD]
+        lines = [i18n.t(_GENERIC_DECLINED_KEY if state == STATE_DECLINED
+                        else _GENERIC_HOLD_KEY, locale)]
     return state, headline, lines
 
 
@@ -504,14 +516,15 @@ def _client_po_numbers(ctx: ClientContext, run, po_match):
     return [n for n in numbers if str(n).upper() in own]
 
 
-def invoice_summary(ctx: ClientContext, run: dict) -> dict:
+def invoice_summary(ctx: ClientContext, run: dict, locale: str = None) -> dict:
     """One row of the client's invoice list.
 
     Every key is written out below. Nothing is spread in from the run row, so
     a column added to `runs` by a later phase cannot appear here by accident.
     """
     audit = _loads(run.get("audit_json"))
-    state, headline, detail = client_state(run.get("status"), audit)
+    state, headline, detail = client_state(run.get("status"), audit,
+                                           locale or ctx.locale)
     return {
         # The run id. Named `invoice_id` because that is what it identifies
         # from the supplier's side; it is the same integer the internal API
@@ -534,7 +547,7 @@ def invoice_summary(ctx: ClientContext, run: dict) -> dict:
     }
 
 
-def invoice_timeline(run_id: int):
+def invoice_timeline(run_id: int, locale: str = None):
     """The client-visible history of one invoice.
 
     Rows come from `invoice_activity` -- the same append-only table Phase D
@@ -544,10 +557,10 @@ def invoice_timeline(run_id: int):
     """
     out = []
     for event in storage.list_activity(run_id):
-        label = CLIENT_VISIBLE_EVENTS.get(event.get("event_type"))
-        if not label:
+        key = CLIENT_VISIBLE_EVENTS.get(event.get("event_type"))
+        if not key:
             continue
-        out.append({"at": event.get("created_at"), "event": label})
+        out.append({"at": event.get("created_at"), "event": i18n.t(key, locale)})
     return out
 
 
@@ -608,7 +621,12 @@ def list_invoices(ctx: ClientContext, limit: int = DEFAULT_PAGE, offset: int = 0
     if state:
         internal = [k for k, v in _STATE_FOR_STATUS.items() if v[0] == state]
         if not internal:
-            raise PortalError(f"Unknown status filter: {state}")
+            # The offending value is echoed back as a PARAMETER into the
+            # translation, never used to build one: i18n substitutes into
+            # the sentence, so a filter value of "{client_id}" is a filter
+            # value and not a template.
+            raise PortalError(i18n.t("portal.error.unknown_state_filter",
+                                     ctx.locale, state=state))
         extra_sql, extra_params = "runs.status = ANY(%s)", [internal]
 
     rows = _select_runs(ctx, extra_sql, extra_params, limit=limit, offset=offset)
@@ -631,6 +649,7 @@ def list_invoices(ctx: ClientContext, limit: int = DEFAULT_PAGE, offset: int = 0
         "total": total,
         "limit": limit,
         "offset": offset,
+        **i18n.describe(ctx.locale),
     }
 
 
@@ -647,7 +666,8 @@ def get_invoice(ctx: ClientContext, run_id: int):
         return None
     run = rows[0]
     detail = invoice_summary(ctx, run)
-    detail["timeline"] = invoice_timeline(run["id"])
+    detail["timeline"] = invoice_timeline(run["id"], ctx.locale)
+    detail.update(i18n.describe(ctx.locale))
     return detail
 
 
@@ -713,7 +733,8 @@ def purchase_orders(ctx: ClientContext) -> dict:
         # `source_file` and `source_row` are on the row and stay there: they
         # name a file on our side of the boundary.
     out.sort(key=lambda p: str(p["po_number"]))
-    return {"client": client_identity(ctx), "purchase_orders": out}
+    return {"client": client_identity(ctx), "purchase_orders": out,
+            **i18n.describe(ctx.locale)}
 
 
 def client_identity(ctx: ClientContext) -> dict:
@@ -731,18 +752,21 @@ def client_identity(ctx: ClientContext) -> dict:
     """
     notices = []
     if ctx.unknown_vendor_ids:
-        notices.append("Part of this account's supplier link is not recognised. "
-                       "Some invoices may not be listed. Please contact your "
-                       "accounts payable contact.")
+        notices.append(i18n.t("portal.notice.unknown_vendor_link", ctx.locale))
     if ctx.ambiguous_vendor_ids:
-        notices.append("Part of this account's supplier link matches more than one "
-                       "supplier record, so it has been left out rather than "
-                       "guessed at. Please contact your accounts payable contact.")
+        notices.append(i18n.t("portal.notice.ambiguous_vendor_link", ctx.locale))
     return {
         "client_id": ctx.client_id,
         "client_name": ctx.client_name,
         "vendors": ctx.vendor_names,
         "notices": notices,
+        # Which language this was rendered in, and what else is on offer.
+        # Served by the server rather than assumed by the client, so a
+        # supplier whose preference could not be honoured can see that it
+        # was not -- and so a picker cannot offer a language this
+        # deployment has no catalogue for.
+        "languages": i18n.language_options(),
+        **i18n.describe(ctx.locale),
     }
 
 

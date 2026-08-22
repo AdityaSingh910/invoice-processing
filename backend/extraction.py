@@ -29,6 +29,7 @@ from typing import List, Optional, Tuple
 import pdfplumber
 
 import config
+import doclang
 from schemas import ExtractedInvoice, LineItem
 
 # A currency marker before the digits is either a SIGN ($€£₹) or a 3-letter
@@ -36,6 +37,24 @@ from schemas import ExtractedInvoice, LineItem
 # ends up captured, so allowing the code here does not need a matching change
 # there.
 MONEY = r"([\-\(]?\s*(?:[\$€£₹]|[A-Z]{3}\s)?\s*[\d][\d,\s]*(?:\.\d{1,2})?\)?)"
+
+# The same idea again, for a document written in a language that groups with
+# dots and marks decimals with a comma -- "1.234,56" (Phase L). MONEY above
+# cannot read that at all: its integer part is `[\d,\s]*`, so it captures the
+# leading "1" and stops, silently turning twelve hundred euros into one.
+#
+# Written as one alternation with the GROUPED form first and `+` rather than
+# `*` on the repetition, which is what stops it half-matching. Against
+# "2000,00" the grouped branch cannot find a three-digit run after a
+# separator, fails outright, and the plain branch takes the whole number --
+# whereas a `*` there would have matched "200" and quietly dropped a digit.
+#
+# Only the foreign-label patterns use it. The English patterns keep MONEY
+# exactly as they had it, so an English invoice extracts byte for byte as it
+# did before this existed.
+_NUM_INTL = r"\d{1,3}(?:[., ' ]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?"
+MONEY_INTL = (r"([\-\(]?\s*(?:[\$€£₹]|[A-Z]{3}\s)?\s*(?:"
+              + _NUM_INTL + r")\)?)")
 
 CURRENCY_SIGNS = {"$": "USD", "€": "EUR", "£": "GBP", "₹": "INR"}
 CURRENCY_CODES = ["USD", "EUR", "GBP", "INR", "AUD", "CAD", "SGD", "JPY", "CHF", "SEK", "AED"]
@@ -162,6 +181,22 @@ Rules:
 - Numbers must be plain JSON numbers: no currency symbols, no thousands separators.
 - Use null for anything genuinely not present. NEVER invent or infer a missing value.
 
+LANGUAGE -- the document may be written in ANY language:
+- Read it in whatever language it is in. Do not ask for it in another one.
+- Transcribe every value EXACTLY as printed, in the document's own script and
+  spelling. Do NOT translate a vendor name, an invoice number, a line-item
+  description, or an evidence quote into English. A translated vendor name will
+  not match our records, and a translated quote is not a quote.
+- Numbers are still plain JSON numbers, whatever convention the document uses to
+  print them. A document writing 1.234,56 means one thousand two hundred and
+  thirty-four point five six: emit 1234.56, not 1.234.
+- invoice_date is still ISO YYYY-MM-DD when the date is unambiguous. A numeric
+  date on a document written in a language that writes the day first is day
+  first: 03/04/2026 there is the third of April. When you cannot tell, copy it
+  verbatim rather than choosing.
+- currency is still the 3-letter ISO code, whatever language the document names
+  the currency in.
+
 CONFIDENCE AND EVIDENCE -- for each field named in "confidence"/"evidence" above:
 - confidence: your own honest estimate, 0.0 to 1.0, of how sure you are that the
   value you transcribed is correct and appears on the document as stated. 1.0
@@ -236,7 +271,21 @@ def _build_provenance(data: dict, raw_text: str, page_label: str) -> dict:
     return out
 
 
-def _invoice_from_payload(data: dict, raw_text: str, method: str, page_label: str = None) -> ExtractedInvoice:
+def _invoice_from_payload(data: dict, raw_text: str, method: str, page_label: str = None,
+                          language: str = None) -> ExtractedInvoice:
+    """Assemble the fixed dataclass from whatever JSON a provider returned.
+
+    `language` (Phase L) is used for ONE thing: rewriting a numeric date
+    the model copied verbatim into ISO, when the document's language says
+    which half is the day. The prompt already asks for ISO, but a model
+    correctly following the "copy it verbatim when ambiguous" instruction
+    hands back "15.03.2026", and this is where that becomes a date.
+
+    It cannot lose a value: `doclang.normalise_date` returns the original
+    string whenever it cannot resolve one, and `rules.looks_like_an_invoice`
+    tests that field for PRESENCE -- so a normaliser able to empty it would
+    be a normaliser able to change a verdict.
+    """
     def num(v):
         if isinstance(v, (int, float)):
             return float(v)
@@ -261,7 +310,8 @@ def _invoice_from_payload(data: dict, raw_text: str, method: str, page_label: st
     return ExtractedInvoice(
         vendor_name=(data.get("vendor_name") or None),
         invoice_number=(str(data["invoice_number"]).strip() if data.get("invoice_number") else None),
-        invoice_date=(str(data["invoice_date"]).strip() if data.get("invoice_date") else None),
+        invoice_date=(doclang.normalise_date(str(data["invoice_date"]).strip(), language)[0]
+                      if data.get("invoice_date") else None),
         po_references=refs,
         line_items=items,
         subtotal=num(data.get("subtotal")),
@@ -391,7 +441,8 @@ def _page_label(page_count: int) -> str:
     return f"page not tracked ({page_count}-page document)"
 
 
-def llm_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 1) -> ExtractedInvoice:
+def llm_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 1,
+                     language: str = None) -> ExtractedInvoice:
     """Route 1: read the fields out of an embedded text layer."""
     # Hold the client in a local. `_client().models.generate_content(...)` leaves
     # the Client itself unreferenced, and google-genai closes its HTTP transport
@@ -404,7 +455,7 @@ def llm_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 1
         config=_json_config(),
     )
     return _invoice_from_payload(_parse_llm_json(resp.text), text, "gemini (text)",
-                                 page_label=_page_label(page_count))
+                                 page_label=_page_label(page_count), language=language)
 
 
 def llm_extract_vision(png_bytes, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice:
@@ -461,7 +512,8 @@ def _groq_client():
     return Groq(api_key=config.groq_api_key())
 
 
-def groq_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 1) -> ExtractedInvoice:
+def groq_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 1,
+                      language: str = None) -> ExtractedInvoice:
     """Route 1: read the fields out of an embedded text layer, using Groq.
 
     Note the difference from the Gemini path, because it matters for the
@@ -485,14 +537,22 @@ def groq_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 
         temperature=0,
     )
     payload = _parse_llm_json(resp.choices[0].message.content or "")
-    return _invoice_from_payload(payload, text, "groq (text)", page_label=_page_label(page_count))
+    return _invoice_from_payload(payload, text, "groq (text)",
+                                 page_label=_page_label(page_count), language=language)
 
 
 # --------------------------------------------------------------------------
 # regex fallback
 # --------------------------------------------------------------------------
 
-def _to_float(s) -> Optional[float]:
+def _to_float(s, decimal_comma: bool = False) -> Optional[float]:
+    """A printed amount as a number.
+
+    `decimal_comma` (Phase L) says the document was written in a language that
+    marks decimals with a comma. It is passed ONLY by the regex route, which
+    knows what language it detected; every other caller gets the default and
+    therefore the exact behaviour this function had before.
+    """
     if s is None:
         return None
     s = str(s).strip()
@@ -506,6 +566,23 @@ def _to_float(s) -> Optional[float]:
     elif "," in s:
         frag = s.split(",")[-1]
         s = s.replace(",", ".") if len(frag) == 2 and s.count(",") == 1 else s.replace(",", "")
+    elif "." in s and decimal_comma:
+        # Dots only, in a comma-decimal language: these are THOUSANDS
+        # separators. "1.234" is one thousand two hundred and thirty-four, and
+        # reading it as 1.234 is a factor of a thousand on an amount -- the
+        # single most expensive misreading available in this function.
+        #
+        # Two shapes qualify, and the second needs its guard. Several dots is
+        # unambiguous grouping. A SINGLE dot is grouping only when exactly
+        # three digits follow it: "10.50" in German is still ten euros fifty,
+        # because a thousands separator does not leave a two-digit tail.
+        #
+        # Gated on `decimal_comma` rather than applied always, so that an
+        # English document -- where a lone dot IS the decimal point -- is
+        # untouched.
+        groups = s.split(".")
+        if len(groups) > 2 or len(groups[-1]) == 3:
+            s = s.replace(".", "")
     try:
         v = float(s)
     except ValueError:
@@ -521,6 +598,24 @@ def _first(text: str, patterns, group=1) -> Optional[str]:
             if val:
                 return val
     return None
+
+
+def detect_language(text: str) -> dict:
+    """What language the DOCUMENT appears to be in (Phase L).
+
+    A one-line wrapper over `doclang.detect` so this module has exactly one
+    place that asks the question, and so a reader of extraction.py can see
+    that the answer is used for two things and no others: which extra regex
+    patterns to offer, and a line in the run's stage log. It reaches no
+    decision, and `rules.decide()` is never told about it.
+    """
+    try:
+        return doclang.detect(text or "")
+    except Exception:
+        # A detector that can take the pipeline down is worse than no
+        # detector at all. Same posture as `validate_extracted_security`.
+        return {"language": doclang.UNDETERMINED, "supported": False,
+                "script": "Latin", "confidence": 0.0, "scores": {}}
 
 
 def _detect_currency(text: str) -> Tuple[str, Optional[str]]:
@@ -567,13 +662,28 @@ def _regex_prov(text: str, value, confidence: float, kind: str) -> Optional[dict
     }
 
 
-def _guess_vendor(text: str) -> Optional[str]:
+def _guess_vendor(text: str, language: str = None) -> Optional[str]:
     """The issuing company is usually in the letterhead. Walk the first lines and
-    take the first that looks like a company name rather than a label/address."""
-    skip = re.compile(
-        r"^(invoice|tax invoice|bill|statement|receipt|page\b|date\b|due\b|to\b|from\b|"
-        r"bill to|ship to|sold to|customer|account|purchase order|po\b|vat|gst|tel|phone|"
-        r"email|www\.|http)", re.I)
+    take the first that looks like a company name rather than a label/address.
+
+    The skip list gains the detected language's own page furniture (Phase L).
+    Without it, the first line of a German invoice is "Rechnung" and this
+    happily reports the vendor as a company called Rechnung -- a confident
+    wrong answer, which is worse here than no answer, because a vendor name is
+    what `rules.vendor_check` matches on.
+
+    English terms are always in the list, whatever the language: a foreign
+    invoice frequently carries English page furniture as well, and removing
+    them would make an English document behave differently depending on what
+    the detector said.
+    """
+    terms = [r"invoice", r"tax invoice", r"bill", r"statement", r"receipt",
+             r"page", r"date", r"due", r"to", r"from", r"bill to",
+             r"ship to", r"sold to", r"customer", r"account", r"purchase order",
+             r"po", r"vat", r"gst", r"tel", r"phone", r"email", r"www\.",
+             r"http"]
+    terms += doclang.labels(language, "skip")
+    skip = re.compile(r"^(?:" + "|".join(terms) + r")", re.I)
     for line in text.splitlines()[:14]:
         line = line.strip()
         if len(line) < 3 or len(line) > 70:
@@ -590,7 +700,55 @@ def _guess_vendor(text: str) -> Optional[str]:
     return None
 
 
-def regex_extract(text: str) -> ExtractedInvoice:
+# An optional bracketed aside between a label and its value. Invoices put
+# the rate there ("Mehrwertsteuer (19%)"), the currency ("Totale (EUR)"),
+# or a note -- and the English tax patterns already allowed for it. Doing
+# it here rather than writing it into every fragment means seven
+# languages cannot each remember it in a different set of places, and it
+# was a real bug before that: "Mehrwertsteuer (19%): 234,46" read the
+# rate as the tax amount.
+_PARENTHETICAL = r"(?:[ \t]*\([^)]*\))?"
+
+
+def _labelled(fragments, tail):
+    """Whole patterns for a list of label fragments (Phase L).
+
+    `doclang` says what a label is CALLED in each language; the shape of an
+    extraction pattern -- the line anchor, the separators, what follows -- is
+    decided here, once, so seven languages cannot drift into seven different
+    ideas of what a labelled field looks like.
+    """
+    return [r"^[ \t]*" + frag + _PARENTHETICAL + r"[ \t]*[:\-#]?[ \t]*" + tail
+            for frag in fragments]
+
+
+def regex_extract(text: str, language: str = None) -> ExtractedInvoice:
+    """The no-provider route: read what can be read with patterns alone.
+
+    MULTILINGUAL, AND STRICTLY ADDITIVELY SO (Phase L).
+
+    Every English pattern below is exactly the one that was here before, in
+    exactly the order it was in, and `_first` returns the FIRST pattern that
+    matches. The detected language's patterns are appended after them. So:
+
+      * an English document, or one whose language could not be determined,
+        produces byte-for-byte the result it always did -- nothing extra is
+        even offered to it;
+      * a German document gains patterns where it previously had none, and can
+        now produce a vendor, a number and a total instead of an empty result
+        the rules would have had to hold for a human;
+      * a WRONG detection costs a pattern that fails to match. It cannot cost
+        a field that matched, because the English pattern was tried first.
+
+    That containment is what makes it safe to drive extraction from a
+    heuristic at all.
+    """
+    if language is None:
+        language = detect_language(text)["language"]
+    comma = doclang.uses_decimal_comma(language)
+    # See the note above MONEY_INTL: for English and for an undetermined
+    # language this IS MONEY, so nothing about an English document changes.
+    money = MONEY_INTL if comma else MONEY
     inv = ExtractedInvoice(raw_text=text, extraction_method="regex")
     prov = {}
 
@@ -599,12 +757,13 @@ def regex_extract(text: str) -> ExtractedInvoice:
         r"^[ \t]*(?:#|no\.?)[ \t]*[:\-]?[ \t]*(INV[\w\-\/]+)",
         r"\b(INV[-–—_/]?\d[\w\-\/]*)\b",
         r"^[ \t]*invoice[ \t]*[:\-][ \t]*([A-Za-z0-9][\w\-\/]*)",
-    ])
+    ] + _labelled(doclang.labels(language, "invoice_number"),
+                  r"([A-Za-z0-9][\w\-\/]*)"))
     p = _regex_prov(text, inv.invoice_number, 0.9, "explicit match")
     if p:
         prov["invoice_number"] = p
 
-    inv.invoice_date = _first(text, [
+    date_raw = _first(text, [
         r"^[ \t]*(?:invoice|bill|document)?[ \t]*date(?:[ \t]*of[ \t]*issue)?[ \t]*[:\-]?[ \t]*"
         r"(\d{1,4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,4})",
         r"^[ \t]*(?:invoice|bill|document)?[ \t]*date(?:[ \t]*of[ \t]*issue)?[ \t]*[:\-]?[ \t]*"
@@ -612,13 +771,30 @@ def regex_extract(text: str) -> ExtractedInvoice:
         r"^[ \t]*(?:invoice|bill|document)?[ \t]*date(?:[ \t]*of[ \t]*issue)?[ \t]*[:\-]?[ \t]*"
         r"([A-Za-z]{3,9}[ \t]+\d{1,2},?[ \t]+\d{2,4})",
         r"^[ \t]*date[ \t]*[:\-][ \t]*(.+?)[ \t]*$",
-    ])
-    p = _regex_prov(text, inv.invoice_date, 0.85, "explicit match")
+    ] + _labelled(doclang.labels(language, "date"),
+                  r"(\d{1,4}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})")
+      + _labelled(doclang.labels(language, "date"),
+                  r"(\d{1,2}\.?[ \t]*(?:de[ \t]+|d[eu][ \t]+)?"
+                  r"[^\W\d_]{3,12}\.?[ \t]*(?:de[ \t]+|del[ \t]+)?\d{2,4})"))
+    # Provenance is built from the RAW string, before normalisation, because
+    # the raw string is what is actually printed on the page -- quoting the
+    # ISO form as "evidence" would be quoting something the document does not
+    # say, and `evidence_verified` would correctly report it as absent.
+    p = _regex_prov(text, date_raw, 0.85, "explicit match")
+    inv.invoice_date, date_normalised = doclang.normalise_date(date_raw, language)
     if p:
+        if date_normalised:
+            p["source"] = p["source"] + " (rewritten to ISO from %s)" % date_raw
         prov["invoice_date"] = p
 
-    refs = re.findall(
-        r"(?:P\.?O\.?|purchase[ \t]*order)[ \t#:\-]*((?:PO[-–—_]?)?\d[\w\-\/]*)", text, re.I)
+    po_patterns = [
+        r"(?:P\.?O\.?|purchase[ \t]*order)[ \t#:\-]*((?:PO[-–—_]?)?\d[\w\-\/]*)",
+    ]
+    for frag in doclang.labels(language, "po"):
+        po_patterns.append(frag + r"[ \t#:\-\.]*((?:PO[-–—_]?)?\d[\w\-\/]*)")
+    refs = []
+    for pat in po_patterns:
+        refs += re.findall(pat, text, re.I)
     refs += re.findall(r"\b(PO[-–—_]?\d{3,}[\w\-\/]*)\b", text, re.I)
     seen, cleaned = set(), []
     for r in refs:
@@ -634,7 +810,7 @@ def regex_extract(text: str) -> ExtractedInvoice:
         if not any(other != r and r.lower() in other.lower() for other in cleaned)
     ]
 
-    inv.vendor_name = _guess_vendor(text)
+    inv.vendor_name = _guess_vendor(text, language)
     if inv.vendor_name:
         # Lower than an explicit label match, on purpose: this is a positional
         # guess ("first plausible letterhead line"), not a reading anchored to
@@ -645,29 +821,29 @@ def regex_extract(text: str) -> ExtractedInvoice:
         prov["vendor_name"] = _regex_prov(text, inv.vendor_name, 0.72, "heuristic (letterhead position)")
 
     subtotal_raw = _first(text, [
-        r"^[ \t]*sub[ \t]*-?[ \t]*total[ \t]*[:\-]?[ \t]*" + MONEY,
-        r"^[ \t]*net[ \t]*(?:amount|total)[ \t]*[:\-]?[ \t]*" + MONEY,
-    ])
-    inv.subtotal = _to_float(subtotal_raw)
+        r"^[ \t]*sub[ \t]*-?[ \t]*total[ \t]*[:\-]?[ \t]*" + money,
+        r"^[ \t]*net[ \t]*(?:amount|total)[ \t]*[:\-]?[ \t]*" + money,
+    ] + _labelled(doclang.labels(language, "subtotal"), money))
+    inv.subtotal = _to_float(subtotal_raw, comma)
     p = _regex_prov(text, subtotal_raw, 0.9, "explicit match")
     if p:
         prov["subtotal"] = p
 
     tax_raw = _first(text, [
-        r"^[ \t]*(?:sales[ \t]*)?tax(?:[ \t]*\([^)]*\))?[ \t]*[:\-]?[ \t]*" + MONEY,
-        r"^[ \t]*(?:VAT|GST|IGST|CGST)(?:[ \t]*\([^)]*\))?[ \t]*[:\-]?[ \t]*" + MONEY,
-    ])
-    inv.tax = _to_float(tax_raw)
+        r"^[ \t]*(?:sales[ \t]*)?tax(?:[ \t]*\([^)]*\))?[ \t]*[:\-]?[ \t]*" + money,
+        r"^[ \t]*(?:VAT|GST|IGST|CGST)(?:[ \t]*\([^)]*\))?[ \t]*[:\-]?[ \t]*" + money,
+    ] + _labelled(doclang.labels(language, "tax"), money))
+    inv.tax = _to_float(tax_raw, comma)
     p = _regex_prov(text, tax_raw, 0.9, "explicit match")
     if p:
         prov["tax"] = p
 
     total_raw = _first(text, [
         r"^[ \t]*(?:total[ \t]*(?:amount[ \t]*)?due|amount[ \t]*due|balance[ \t]*due|"
-        r"grand[ \t]*total|total[ \t]*payable|invoice[ \t]*total)[ \t]*[:\-]?[ \t]*" + MONEY,
-        r"^[ \t]*total[ \t]*[:\-]?[ \t]*" + MONEY,
-    ])
-    inv.total = _to_float(total_raw)
+        r"grand[ \t]*total|total[ \t]*payable|invoice[ \t]*total)[ \t]*[:\-]?[ \t]*" + money,
+        r"^[ \t]*total[ \t]*[:\-]?[ \t]*" + money,
+    ] + _labelled(doclang.labels(language, "total"), money))
+    inv.total = _to_float(total_raw, comma)
     if inv.total is not None:
         prov["total"] = _regex_prov(text, total_raw, 0.9, "explicit match")
     # A "total" that merely repeated the subtotal is not a usable total.
@@ -688,16 +864,20 @@ def regex_extract(text: str) -> ExtractedInvoice:
               "evidence": None, "evidence_verified": None}
     )
 
+    # Line items, read with the same money expression as everything else --
+    # so a row reading "Kopierpapier A4   10   12,50   125,00" is read
+    # rather than skipped, and an English row is read exactly as before.
+    item_pattern = (r"^(.{3,70}?)\s{1,}(\d+(?:[.,]\d+)?)\s+"
+                    + money + r"\s+" + money + r"\s*$")
     items = []
     for line in text.splitlines():
-        m = re.match(r"^(.{3,70}?)\s{1,}(\d+(?:[.,]\d+)?)\s+" + MONEY + r"\s+" + MONEY + r"\s*$",
-                     line.strip())
+        m = re.match(item_pattern, line.strip())
         if m:
             items.append(LineItem(
                 description=m.group(1).strip(),
-                quantity=_to_float(m.group(2)),
-                unit_price=_to_float(m.group(3)),
-                amount=_to_float(m.group(4)),
+                quantity=_to_float(m.group(2), comma),
+                unit_price=_to_float(m.group(3), comma),
+                amount=_to_float(m.group(4), comma),
             ).__dict__)
     inv.line_items = items
     inv.provenance = prov
@@ -734,6 +914,57 @@ _INJECTION_PATTERNS = [
     (r"\b(skip|disable|turn\s+off)\s+.{0,20}\b(check|validation|verification|review)", "control bypass"),
     (r"\badmin(istrator)?\s+(access|mode|override|privileges)", "privilege claim"),
     (r"<\s*/?\s*(system|instruction|untrusted_document_content)\b", "tag injection"),
+
+    # ---- the same attacks, in the other languages this pipeline reads -----
+    #
+    # ALWAYS ON, NEVER GATED ON THE DETECTED LANGUAGE, and that is the whole
+    # reason these live here rather than in doclang.py. Detection is a
+    # heuristic; a security control that only ran when a heuristic agreed
+    # would be evaded by writing the invoice in two languages, or by adding
+    # enough English page furniture to tip the score. Screening costs a regex
+    # pass over text that is already in memory, so there is nothing to save by
+    # being clever about it.
+    #
+    # Every phrase is one a person would have to mean. None of them can be
+    # said by accident in English, so the false-positive floor test_security.py
+    # holds is unaffected -- and accented letters are written as optional
+    # classes because a scanned document loses accents routinely.
+    (r"ignor[ae](?:r|z)?\s+(?:todas?\s+)?l[ae]s?\s+(?:instrucci|istruzi|instru)",
+     "instruction override"),
+    (r"ignor(?:iere|ieren)\s+(?:sie\s+)?(?:alle|die)\b", "instruction override"),
+    (r"negeer\s+(?:alle|de|bovenstaande)\b", "instruction override"),
+    (r"(?:olvida|esque[cç]a|dimentica|vergiss|vergeet)\s+(?:todo|tudo|tutto|alles)\b",
+     "instruction override"),
+    (r"(?:oubliez|oublie)\s+(?:tout\b|les\s+instructions)", "instruction override"),
+    (r"(?:mensaje|mensagem|messaggio)\s+d[eo]l?\s+sistema", "system impersonation"),
+    (r"message\s+syst[eè]me|syst(?:emanweisung|eembericht)", "system impersonation"),
+    (r"(?:eres|ser[aá]s)\s+ahora\b|(?:voc[eê]|tu)\s+[eé]\s+agora\b",
+     "role reassignment"),
+    (r"vous\s+[eê]tes\s+maintenant\b|du\s+bist\s+jetzt\b|je\s+bent\s+nu\b",
+     "role reassignment"),
+    (r"sei\s+ora\s+un\b|act[uú]a\s+como\b|agissez?\s+comme\b|handle\s+als\b",
+     "role reassignment"),
+    (r"aprob(?:ar|e)\s+autom[aá]ticamente|approuvez?\s+automatiquement",
+     "decision tampering"),
+    (r"automatisch\s+(?:genehmigen|goedkeuren)|approva(?:re)?\s+automaticamente",
+     "decision tampering"),
+    (r"aprova(?:r|[çc][aã]o)\s+autom[aá]tica", "decision tampering"),
+    (r"(?:marca|marque|markiere|markeer|contrassegna)\b.{0,25}\b"
+     r"(?:como|comme|als|come)\b.{0,15}\b"
+     r"(?:pagad[ao]|pag[ao]|pay[eé]e?|bezahlt|betaald|pagata|aprobad[ao]|"
+     r"approuv[eé]e?|genehmigt|goedgekeurd|approvata)", "decision tampering"),
+    (r"(?:acceso|acesso)\s+(?:de\s+)?administrador|acc[eè]s\s+administrateur",
+     "privilege claim"),
+    (r"administrator(?:zugriff|rechte)|beheerderstoegang|accesso\s+amministratore",
+     "privilege claim"),
+    (r"(?:omitir|ignorar|saltar)\s+.{0,20}\b(?:verificaci[oó]n|comprobaci[oó]n|revisi[oó]n)",
+     "control bypass"),
+    (r"(?:pr[uü]fung|kontrolle|freigabe)\s+(?:[uü]berspringen|umgehen|deaktivieren)",
+     "control bypass"),
+    (r"(?:contr[oô]le|v[eé]rification)\s+.{0,15}\b(?:ignor|contourn|d[eé]sactiv)",
+     "control bypass"),
+    (r"(?:controle|goedkeuring)\s+(?:overslaan|omzeilen|uitschakelen)",
+     "control bypass"),
 ]
 
 _COMPILED_INJECTION = [(re.compile(p, re.I | re.S), label) for p, label in _INJECTION_PATTERNS]
@@ -821,11 +1052,27 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
     info = {"page_count": 0, "has_text_layer": False, "route": None,
             "provider": None, "vision_used": False, "notes": [], "error": None,
             # Set to a provider name when the daily budget stopped the call.
-            "quota_exhausted": None}
+            "quota_exhausted": None,
+            # What language the DOCUMENT is in (Phase L). Reported, never
+            # acted on beyond choosing extra regex patterns -- rules.decide()
+            # is not passed this and has no branch on it.
+            "language": None}
 
     text, page_count, has_text = pre if pre is not None else extract_text(pdf_bytes)
     info["page_count"] = page_count
     info["has_text_layer"] = has_text
+
+    # Detected ONCE, from the text layer, before any route is chosen -- so
+    # every text route sees the same answer and none of them can reach a
+    # different one. A scan has no text layer, so it is honestly reported as
+    # undetermined rather than guessed at from a filename.
+    lang_info = detect_language(text) if has_text else detect_language("")
+    info["language"] = lang_info
+    language = lang_info["language"]
+    if lang_info["script"] != "Latin":
+        info["notes"].append("Document appears to use the %s script, which the "
+                             "local pattern extractor has no field vocabulary "
+                             "for." % lang_info["script"])
 
     # The routing question is what the DOCUMENT is, not what the file is called:
     # `has_text` comes from actually trying to read a text layer (extract_text),
@@ -845,7 +1092,7 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
             use_groq = False
         if use_groq:
             try:
-                inv = groq_extract_text(text, page_count=page_count)
+                inv = groq_extract_text(text, page_count=page_count, language=language)
                 info["route"] = "groq-text"
                 info["provider"] = "groq"
                 return inv, info
@@ -861,14 +1108,14 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
             # No Groq configured, but Gemini is: keep the pre-Groq behaviour
             # rather than silently downgrading an existing install to regex.
             try:
-                inv = llm_extract_text(text, page_count=page_count)
+                inv = llm_extract_text(text, page_count=page_count, language=language)
                 info["route"] = "gemini-text"
                 info["provider"] = "gemini"
                 return inv, info
             except Exception as exc:
                 info["notes"].append("Gemini text extraction failed - %s. Used regex instead."
                                      % describe_api_error(exc, "gemini"))
-        inv = regex_extract(text)
+        inv = regex_extract(text, language=language)
         info["route"] = "regex"
         info["provider"] = "none (local regex)"
         return inv, info

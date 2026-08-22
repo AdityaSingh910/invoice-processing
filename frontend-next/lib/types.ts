@@ -247,9 +247,30 @@ export interface SampleInvoice {
   expect?: Verdict;
 }
 
-export interface Identity {
+/** What language a response was rendered in, and what else is on offer.
+ *  Carried by every localised endpoint (Phase L) so a client never has to
+ *  assume it got the language it asked for. */
+export interface LanguageOption {
+  tag: string;
+  name: string;
+  rtl: boolean;
+  default: boolean;
+}
+
+export interface LocaleInfo {
+  locale: string;
+  name: string;
+  rtl: boolean;
+  /** The language this deployment falls back to. */
+  default: string;
+}
+
+export interface Identity extends LocaleInfo {
   username: string;
   scopes: string[];
+  /** The languages this deployment can actually answer in. Served rather than
+   *  assumed, so a picker cannot offer one the backend has no catalogue for. */
+  languages: LanguageOption[];
 }
 
 /** Server-sent events emitted by the pipeline. */
@@ -572,8 +593,21 @@ export type ChatTurn = {
   error?: string;
 };
 
+/**
+ * A starter question, in two halves (Phase L).
+ *
+ * `label` is what the reader sees, in their own language. `ask` is what the
+ * client sends when they click it, and it is always English -- intent routing
+ * is pattern-based against English patterns, so sending the label instead
+ * would offer a question the assistant then could not recognise.
+ */
+export type ChatSuggestion = {
+  label: string;
+  ask: string;
+};
+
 export type ChatSuggestions = {
-  suggestions: string[];
+  suggestions: ChatSuggestion[];
   available: boolean;
   note: string;
 };
@@ -588,9 +622,13 @@ export type ChatSuggestions = {
  */
 export type ClientState = "RECEIVED" | "IN_REVIEW" | "APPROVED" | "DECLINED";
 
-export interface PortalIdentity {
+export interface PortalIdentity extends LocaleInfo {
   client_id: string;
   client_name: string;
+  /** The languages this deployment can answer in (Phase L). Served here as
+   *  well as on `/api/auth/me` so the portal shell, which never calls the
+   *  internal identity endpoint, can render a picker from the same list. */
+  languages: LanguageOption[];
   /** The supplier names this account covers. Vendor IDs are our procurement
    *  reference and are deliberately not sent. */
   vendors: string[];

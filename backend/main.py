@@ -23,7 +23,9 @@ import audit_export
 import auth
 import chat
 import config
+import doclang
 import documents
+import i18n
 import email_ingest
 import email_outbound
 import email_security
@@ -414,10 +416,24 @@ async def run_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str = None,
         ef_status = "ok"
     else:
         ef_status = "ok" if found else "warn"
+    # What language the DOCUMENT was written in (Phase L). Reported here rather
+    # than in EXTRACT_TEXT because this is the stage that acted on it, and
+    # reported at all because "we read this as German" is exactly the kind of
+    # thing a reviewer needs to be able to disagree with. It selected extra
+    # patterns for the local extractor and nothing else -- no rule is passed it.
+    lang_info = extract_info.get("language") or {}
+    if lang_info.get("script") not in (None, "Latin"):
+        lang_note = f" Script: {lang_info['script']} (no field vocabulary)."
+    elif lang_info.get("supported"):
+        lang_note = (f" Language: {doclang.name_of(lang_info['language'])} "
+                     f"({lang_info.get('confidence', 0):.0%} confidence).")
+    else:
+        lang_note = " Language: not determined from the text."
     yield sse("stage", {"stage": stage(
         "EXTRACT_FIELDS", ef_status,
         f"Route: {extracted['extraction_method']}. "
         f"Found: {', '.join(found) if found else 'nothing usable'}."
+        + lang_note
     )})
     await asyncio.sleep(0.3)
     mark()
@@ -591,6 +607,36 @@ async def run_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str = None,
 # authentication endpoints
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# Which language to answer in (Phase L)
+#
+# One dependency, used by every localised endpoint, so that "what does
+# ?lang=pt mean here" has exactly one answer across the whole API -- the same
+# reason `analytics_window` and `log_filters` are single dependencies.
+#
+# THREE THINGS IT IS NOT:
+#
+#   * It is not authentication. It runs alongside the security dependency and
+#     never in front of it; a locale is resolved for a caller who has already
+#     been identified, and resolving one grants nothing.
+#   * It is not a filter. No query in this application reads it. Two callers
+#     with different locales and the same token see the same rows, the same
+#     amounts and the same decision -- only the sentences differ.
+#   * It is not a precondition. An unsupported or malformed value is never a
+#     400: `i18n.resolve` bounds, shape-checks and matches it, and falls back
+#     to English. A preference that could not be honoured is reported in the
+#     response body (`locale`), not raised.
+# --------------------------------------------------------------------------
+
+def request_locale(request: Request,
+                   lang: str = Query(None, max_length=35,
+                                     description="BCP 47 language tag, e.g. pt-BR")
+                   ) -> str:
+    """The language for THIS response: ?lang= first, then Accept-Language."""
+    return i18n.resolve(explicit=lang,
+                        accept_language=request.headers.get("accept-language"))
+
+
 @app.get("/api/health")
 def health():
     """Public liveness probe. Says nothing about configuration, versions, which
@@ -616,12 +662,23 @@ def issue_token(form: OAuth2PasswordRequestForm = Depends()):
 
 
 @app.get("/api/auth/me")
-def whoami(principal: auth.Principal = Security(auth.current_principal)):
+def whoami(principal: auth.Principal = Security(auth.current_principal),
+           locale: str = Depends(request_locale)):
     """Who the token says you are, and what it permits. The UI uses this to
     decide which controls to render -- a convenience, never a control: every
-    endpoint re-checks the scope itself."""
+    endpoint re-checks the scope itself.
+
+    It also carries the language this deployment resolved for the caller and
+    the full list it can answer in (Phase L). That rides here rather than on an
+    endpoint of its own deliberately: the languages available are a property of
+    the session, this is the call every client already makes to open one, and
+    adding a route would mean adding one more thing for the client-portal
+    route sweep to have to make an exception for.
+    """
     return {"username": principal.username, "roles": principal.roles,
-            "scopes": principal.scopes}
+            "scopes": principal.scopes,
+            "languages": i18n.language_options(),
+            **i18n.describe(locale)}
 
 
 # --------------------------------------------------------------------------
@@ -2104,7 +2161,8 @@ def get_log_event(stream: str, event_id: int,
 
 @app.post("/api/chat")
 def post_chat(payload: dict = Body(...),
-              principal: auth.Principal = Depends(ratelimit.rate_limit_chat)):
+              principal: auth.Principal = Depends(ratelimit.rate_limit_chat),
+              locale: str = Depends(request_locale)):
     """Ask the assistant a question about this application's records.
 
     Body: {"message": str, "history": [{"role": "user"|"assistant",
@@ -2129,7 +2187,7 @@ def post_chat(payload: dict = Body(...),
                             detail="Expected a JSON object")
     try:
         return chat.answer(payload.get("message"), payload.get("history"),
-                           principal)
+                           principal, locale=locale)
     except chat.ChatError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except analytics.AnalyticsError as exc:
@@ -2138,7 +2196,8 @@ def post_chat(payload: dict = Body(...),
 
 @app.get("/api/chat/suggestions")
 def get_chat_suggestions(principal: auth.Principal = Security(
-        auth.current_principal, scopes=["invoice:read"])):
+        auth.current_principal, scopes=["invoice:read"]),
+        locale: str = Depends(request_locale)):
     """Starter questions the assistant can actually answer.
 
     Served rather than hard-coded in the UI so a suggestion cannot outlive the
@@ -2148,10 +2207,11 @@ def get_chat_suggestions(principal: auth.Principal = Security(
     when it is not, and the UI should say so rather than let it look broken.
     """
     return {
-        "suggestions": chat.starter_prompts(),
+        "suggestions": chat.starter_prompts(locale),
         "available": chat.provider_available(),
         "note": ("Answers come from this application's own records. The "
                  "assistant is read-only and cannot change anything."),
+        **i18n.describe(locale),
     }
 
 
@@ -2247,6 +2307,7 @@ def get_sample_invoice(name: str,
 
 def portal_context(
     principal: auth.Principal = Depends(ratelimit.rate_limit_portal),
+    locale: str = Depends(request_locale),
 ) -> "portal.ClientContext":
     """Authenticate, authorize, rate limit, then resolve WHO this client is.
 
@@ -2261,7 +2322,7 @@ def portal_context(
     configuration problem and not something re-authenticating would fix.
     """
     try:
-        return portal.context_for(principal)
+        return portal.context_for(principal, locale=locale)
     except portal.PortalError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
 
@@ -2277,7 +2338,7 @@ def _portal_run_or_404(ctx: "portal.ClientContext", invoice_id: int):
     invoice = portal.get_invoice(ctx, invoice_id)
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="No such invoice")
+                            detail=i18n.t("portal.error.no_such_invoice", ctx.locale))
     return invoice
 
 
@@ -2330,7 +2391,7 @@ def portal_invoice_document(invoice_id: int,
     doc = portal.invoice_document_row(ctx, invoice_id)
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="No document is stored for this invoice")
+                            detail=i18n.t("portal.error.no_document", ctx.locale))
     # Attributed to the authenticated supplier login, not to NULL. A NULL
     # actor means "the system did this" (§6.1 of the handoff notes), and a
     # vendor opening their own invoice is neither the system nor anonymous --
@@ -2363,12 +2424,12 @@ def portal_invoice_document_download(invoice_id: int, inline: bool = False,
     doc = portal.invoice_document_row(ctx, invoice_id)
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="No document is stored for this invoice")
+                            detail=i18n.t("portal.error.no_document", ctx.locale))
     try:
         data = documents.get_store().read(doc["storage_key"])
     except (FileNotFoundError, OSError, ValueError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="Document content is no longer available")
+                            detail=i18n.t("portal.error.document_gone", ctx.locale))
 
     storage.log_activity(invoice_id, "DOCUMENT_DOWNLOADED", actor=ctx.username,
                          note="Downloaded through the client portal",
@@ -2398,6 +2459,7 @@ def portal_purchase_orders(ctx: "portal.ClientContext" = Depends(portal_context)
 async def portal_submit_invoice(
     file: UploadFile = File(...),
     principal: auth.Principal = Depends(ratelimit.rate_limit_portal_submit),
+    locale: str = Depends(request_locale),
 ):
     """Submit an invoice through the portal.
 
@@ -2422,14 +2484,13 @@ async def portal_submit_invoice(
     own allowance first means an external caller can exhaust what it was given
     without ever reaching what the internal pipeline needs.
     """
-    ctx = portal_context(principal)
+    ctx = portal_context(principal, locale)
 
     if not quota.try_consume(quota.portal_key(ctx.client_id)):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=(f"This account's daily submission limit of "
-                    f"{config.DAILY_QUOTA_PORTAL_SUBMISSIONS} invoices has been "
-                    f"reached. Please try again tomorrow."),
+            detail=i18n.t("portal.error.daily_limit", ctx.locale,
+                          limit=config.DAILY_QUOTA_PORTAL_SUBMISSIONS),
             headers={"Retry-After": "3600"},
         )
 
@@ -2451,12 +2512,14 @@ async def portal_submit_invoice(
     except Exception as exc:
         print(f"[error] portal submission failed on {filename!r}: "
               f"{exc.__class__.__name__}", file=sys.stderr)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Processing failed. The invoice was not submitted.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=i18n.t("portal.error.processing_failed", ctx.locale))
 
     if not final or not final.get("run_id"):
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Processing failed. The invoice was not submitted.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=i18n.t("portal.error.processing_failed", ctx.locale))
 
     # Re-read through the portal's own visibility predicate rather than
     # projecting the pipeline's in-memory result. Two things fall out of that:
@@ -2467,8 +2530,9 @@ async def portal_submit_invoice(
     # have refused.
     submitted = portal.get_invoice(ctx, final["run_id"])
     if submitted is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Processing failed. The invoice was not submitted.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=i18n.t("portal.error.processing_failed", ctx.locale))
     return {"submitted": True, "invoice": submitted}
 
 

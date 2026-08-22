@@ -930,6 +930,15 @@ def build_audit(status, checks, reasons, extract_info, po_match, extracted=None,
             "provider": info.get("provider"),
             "method": extracted.get("extraction_method"),
             "notes": list(info.get("notes") or []),
+            # What language the document was read AS (Phase L). Recorded so an
+            # auditor can see it, and deliberately not consulted by anything
+            # below: no check in this function branches on it, and the same
+            # numbers produce the same verdict whatever it says. It is
+            # provenance about the reading, in the block that already holds the
+            # route and the provider -- not an input to the decision.
+            "document_language": (info.get("language") or {}).get("language"),
+            "document_script": (info.get("language") or {}).get("script"),
+            "language_confidence": (info.get("language") or {}).get("confidence"),
         },
         "purchase_order": {
             "po_number": po_match.get("po_number"),

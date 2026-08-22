@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiJson, portalDocumentUrl } from "@/lib/api";
 import { amount, when } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import {
   Badge,
   Button,
@@ -29,16 +30,14 @@ import {
 } from "@/components/ui";
 import { IconInvoice } from "@/components/ui/icons";
 import type { ClientState, PortalIdentity, PortalInvoice, PortalInvoiceList } from "@/lib/types";
-import { PortalPage, STATE_WORD, stateTone } from "./PortalApp";
+import { PortalPage, stateTone, useStateWord } from "./PortalApp";
 
 type Filter = "ALL" | ClientState;
 
-const FILTERS: { value: Filter; label: string }[] = [
-  { value: "ALL", label: "All" },
-  { value: "IN_REVIEW", label: "Being checked" },
-  { value: "APPROVED", label: "Approved" },
-  { value: "DECLINED", label: "Declined" },
-];
+/** The filter VALUES are the server's own client-state identifiers and are
+ *  what travels in `?state=`; only the labels are translated (Phase L). Sending
+ *  a translated word would be filtering the database on a UI string. */
+const FILTER_VALUES: Filter[] = ["ALL", "IN_REVIEW", "APPROVED", "DECLINED"];
 
 export default function PortalInvoices({
   identity,
@@ -47,6 +46,8 @@ export default function PortalInvoices({
   identity: PortalIdentity;
   reloadKey: number;
 }) {
+  const t = useT();
+  const stateWord = useStateWord();
   const [filter, setFilter] = useState<Filter>("ALL");
   const [data, setData] = useState<PortalInvoiceList | null>(null);
   const [loading, setLoading] = useState(true);
@@ -63,34 +64,37 @@ export default function PortalInvoices({
     const qs = filter === "ALL" ? "" : `?state=${filter}`;
     apiJson<PortalInvoiceList>(`/api/portal/invoices${qs}`)
       .then(setData)
-      .catch(() => setError("We could not load your invoices. Please try again."))
+      .catch(() => setError(t("portal.invoices.loadFailed")))
       .finally(() => setLoading(false));
   }, [filter]);
 
   useEffect(load, [load, reloadKey]);
 
+  const filters = FILTER_VALUES.map((value) => ({
+    value,
+    label: value === "ALL" ? t("portal.invoices.filter.all") : stateWord(value),
+  }));
+
   return (
     <PortalPage
-      title="My invoices"
+      title={t("portal.invoices.title")}
       description={
         identity.vendors.length
-          ? `Invoices we hold for ${identity.vendors.join(", ")}.`
-          : "Invoices we hold for your company."
+          ? // The vendor names themselves are the supplier's own and are never
+            // translated; only the sentence around them is.
+            `${t("portal.invoices.for").replace(/[.]$/, "")}: ${identity.vendors.join(", ")}`
+          : t("portal.invoices.for")
       }
     >
       <Panel flush>
         <PanelHeader
           bordered
-          title="Invoices"
-          description={
-            data
-              ? `${data.total} invoice${data.total === 1 ? "" : "s"} on file`
-              : undefined
-          }
+          title={t("portal.invoices.panel.title")}
+          description={data ? `${data.total} — ${t("portal.invoices.onFile")}` : undefined}
           actions={
             <Segmented
-              ariaLabel="Filter by status"
-              options={FILTERS}
+              ariaLabel={t("portal.invoices.filterBy")}
+              options={filters}
               value={filter}
               onChange={(v) => {
                 setLoading(true);
@@ -107,22 +111,26 @@ export default function PortalInvoices({
         ) : !data || data.invoices.length === 0 ? (
           <EmptyState
             icon={<IconInvoice size={16} />}
-            title={filter === "ALL" ? "No invoices yet" : "Nothing in this state"}
+            title={
+              filter === "ALL"
+                ? t("portal.invoices.empty")
+                : t("portal.invoices.emptyFiltered")
+            }
             description={
               filter === "ALL"
-                ? "Invoices you send us — by email or through this portal — appear here."
-                : "Try a different status."
+                ? t("portal.invoices.emptyDesc")
+                : t("portal.invoices.tryOther")
             }
           />
         ) : (
           <DataTable minWidth={720}>
             <thead>
               <tr>
-                <TH>Invoice</TH>
-                <TH>Received</TH>
-                <TH align="right">Amount</TH>
-                <TH>Purchase order</TH>
-                <TH>Status</TH>
+                <TH>{t("portal.invoices.col.invoice")}</TH>
+                <TH>{t("portal.invoices.col.received")}</TH>
+                <TH align="right">{t("portal.invoices.col.amount")}</TH>
+                <TH>{t("portal.invoices.col.po")}</TH>
+                <TH>{t("portal.invoices.col.state")}</TH>
               </tr>
             </thead>
             <tbody>
@@ -138,7 +146,7 @@ export default function PortalInvoices({
                     <span className="font-medium">{inv.invoice_number ?? "—"}</span>
                     {inv.submitted_through_portal && (
                       <Badge tone="neutral" className="ml-2">
-                        Sent here
+                        {t("portal.invoices.submittedHere")}
                       </Badge>
                     )}
                   </TD>
@@ -147,7 +155,7 @@ export default function PortalInvoices({
                   <TD>{inv.purchase_orders.join(", ") || "—"}</TD>
                   <TD>
                     <Badge tone={stateTone(inv.state)} dot>
-                      {STATE_WORD[inv.state] ?? inv.state}
+                      {stateWord(inv.state)}
                     </Badge>
                   </TD>
                 </tr>
@@ -176,6 +184,8 @@ function InvoiceDetail({
   invoice: PortalInvoice;
   onClose: () => void;
 }) {
+  const t = useT();
+  const stateWord = useStateWord();
   const [full, setFull] = useState<PortalInvoice>(invoice);
   const [docUrl, setDocUrl] = useState<string | null>(null);
   const [docError, setDocError] = useState<string | null>(null);
@@ -207,24 +217,24 @@ function InvoiceDetail({
     try {
       setDocUrl(await portalDocumentUrl(full.invoice_id));
     } catch {
-      setDocError("This document is no longer available.");
+      setDocError(t("portal.invoices.docGone"));
     }
   };
 
   return (
     <Panel>
       <PanelHeader
-        title={full.invoice_number ?? "Invoice"}
-        description={`Received ${when(full.received_at) || "—"}`}
+        title={full.invoice_number ?? t("portal.invoices.panel.title")}
+        description={`${t("portal.invoices.receivedOn")} ${when(full.received_at) || "—"}`}
         actions={
           <>
             {full.has_document && !docUrl && (
               <Button size="sm" onClick={openDocument}>
-                View document
+                {t("portal.invoices.viewDoc")}
               </Button>
             )}
             <Button size="sm" variant="ghost" onClick={onClose}>
-              Close
+              {t("portal.invoices.close")}
             </Button>
           </>
         }
@@ -234,7 +244,7 @@ function InvoiceDetail({
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2">
             <Badge tone={stateTone(full.state)} dot>
-              {STATE_WORD[full.state] ?? full.state}
+              {stateWord(full.state)}
             </Badge>
             <span className="text-[12.5px] text-muted">{full.state_headline}</span>
           </div>
@@ -252,9 +262,9 @@ function InvoiceDetail({
           <dl className="divide-line">
             {(
               [
-                ["Amount", amount(full.total, full.currency)],
-                ["Purchase order", full.purchase_orders.join(", ") || "—"],
-                ["File", full.filename ?? "—"],
+                [t("portal.invoices.col.amount"), amount(full.total, full.currency)],
+                [t("portal.invoices.col.po"), full.purchase_orders.join(", ") || "—"],
+                [t("portal.invoices.field.file"), full.filename ?? "—"],
               ] as [string, string][]
             ).map(([k, v]) => (
               <div key={k} className="flex items-baseline justify-between gap-4 py-1.5">
@@ -268,7 +278,7 @@ function InvoiceDetail({
         </div>
 
         <div className="flex flex-col gap-3">
-          <p className="t-meta">History</p>
+          <p className="t-meta">{t("portal.invoices.history")}</p>
           {full.timeline && full.timeline.length > 0 ? (
             <ol className="flex flex-col gap-2">
               {full.timeline.map((e, i) => (
@@ -282,7 +292,7 @@ function InvoiceDetail({
               ))}
             </ol>
           ) : (
-            <p className="text-[12.5px] text-faint">Nothing recorded yet.</p>
+            <p className="text-[12.5px] text-faint">{t("portal.invoices.nothingRecorded")}</p>
           )}
         </div>
       </div>
@@ -291,13 +301,13 @@ function InvoiceDetail({
         <object
           data={docUrl}
           type="application/pdf"
-          aria-label="Invoice document"
+          aria-label={t("portal.invoices.docLabel")}
           className="mt-4 h-[60vh] w-full rounded-[var(--radius-md)] border border-line"
         >
           <p className="p-4 text-[12.5px] text-muted">
-            This browser cannot display the PDF inline.{" "}
+            {t("portal.invoices.cannotDisplay")}{" "}
             <a className="underline" href={docUrl} download>
-              Download it instead
+              {t("portal.invoices.downloadInstead")}
             </a>
             .
           </p>

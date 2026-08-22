@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiJson } from "@/lib/api";
 import { amount } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import {
   Badge,
   DataTable,
@@ -34,6 +35,7 @@ import type { PortalIdentity, PortalOrders as Orders } from "@/lib/types";
 import { PortalPage } from "./PortalApp";
 
 export default function PortalOrders({ identity }: { identity: PortalIdentity }) {
+  const t = useT();
   const [data, setData] = useState<Orders | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +44,7 @@ export default function PortalOrders({ identity }: { identity: PortalIdentity })
     setError(null);
     apiJson<Orders>("/api/portal/purchase-orders")
       .then(setData)
-      .catch(() => setError("We could not load your purchase orders. Please try again."))
+      .catch(() => setError(t("portal.orders.loadFailed")))
       .finally(() => setLoading(false));
   }, []);
 
@@ -50,18 +52,20 @@ export default function PortalOrders({ identity }: { identity: PortalIdentity })
 
   return (
     <PortalPage
-      title="Purchase orders"
+      title={t("portal.orders.title")}
       description={
         identity.vendors.length
-          ? `Orders raised to ${identity.vendors.join(", ")}.`
-          : "Orders raised to your company."
+          ? // The vendor NAMES are the supplier's own and are never translated;
+            // only the sentence around them is.
+            `${t("portal.orders.for").replace(/[.]$/, "")}: ${identity.vendors.join(", ")}`
+          : t("portal.orders.for")
       }
     >
       <Panel flush>
         <PanelHeader
           bordered
-          title="Open and closed orders"
-          description="Remaining is what is still available to invoice against each order."
+          title={t("portal.orders.panel.title")}
+          description={t("portal.orders.panel.desc")}
         />
 
         {error ? (
@@ -71,19 +75,19 @@ export default function PortalOrders({ identity }: { identity: PortalIdentity })
         ) : !data || data.purchase_orders.length === 0 ? (
           <EmptyState
             icon={<IconLedger size={16} />}
-            title="No purchase orders"
-            description="We have no orders on file for your company."
+            title={t("portal.orders.empty")}
+            description={t("portal.orders.empty.desc")}
           />
         ) : (
           <DataTable minWidth={760}>
             <thead>
               <tr>
-                <TH>Order</TH>
-                <TH>Description</TH>
-                <TH align="right">Value</TH>
-                <TH align="right">Billed</TH>
-                <TH align="right">Remaining</TH>
-                <TH>State</TH>
+                <TH>{t("portal.orders.col.order")}</TH>
+                <TH>{t("portal.orders.col.description")}</TH>
+                <TH align="right">{t("portal.orders.col.value")}</TH>
+                <TH align="right">{t("portal.orders.col.billed")}</TH>
+                <TH align="right">{t("portal.orders.col.remaining")}</TH>
+                <TH>{t("portal.invoices.col.state")}</TH>
               </tr>
             </thead>
             <tbody>
@@ -119,7 +123,9 @@ export default function PortalOrders({ identity }: { identity: PortalIdentity })
                     </TD>
                     <TD>
                       <Badge tone={po.status === "open" ? "ok" : "neutral"} dot>
-                        {po.status === "open" ? "Open" : "Closed"}
+                        {po.status === "open"
+                          ? t("portal.orders.state.open")
+                          : t("portal.orders.state.closed")}
                       </Badge>
                     </TD>
                   </tr>

@@ -13,8 +13,10 @@
  */
 import { useState } from "react";
 import { useAuth } from "@/lib/auth";
+import { useT } from "@/lib/i18n";
 import { Badge, Button, Callout, Field, Input } from "@/components/ui";
 import { IconAlert, IconCheck, IconShield, IconUser } from "@/components/ui/icons";
+import LanguagePicker from "@/components/ui/LanguagePicker";
 
 const DEMO = [
   { user: "analyst", pass: "demo-analyst", role: "Process invoices" },
@@ -49,6 +51,7 @@ const PIPELINE = [
 
 export default function LoginGate() {
   const { signIn, notice } = useAuth();
+  const t = useT();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +66,7 @@ export default function LoginGate() {
       await signIn(username.trim(), password);
       setPassword("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign-in failed.");
+      setError(err instanceof Error ? err.message : t("login.failed"));
     } finally {
       setBusy(false);
     }
@@ -141,11 +144,19 @@ export default function LoginGate() {
             </div>
           </div>
 
-          <h2 className="t-page">Sign in</h2>
-          <p className="t-meta mt-1">Access is scoped to your account&apos;s permissions.</p>
+          {/* The picker sits ABOVE the form on purpose: it is the one control
+              on this page that someone who cannot read the page needs to find
+              first, and there is no token yet, so it falls back to the list
+              this bundle carries. */}
+          <div className="mb-3 flex justify-end">
+            <LanguagePicker />
+          </div>
+
+          <h2 className="t-page">{t("login.title")}</h2>
+          <p className="t-meta mt-1">{t("login.scopedNote")}</p>
 
           <form onSubmit={submit} autoComplete="on" className="mt-6 flex flex-col gap-4">
-            <Field label="Username" htmlFor="username">
+            <Field label={t("login.username")} htmlFor="username">
               <Input
                 id="username"
                 name="username"
@@ -160,7 +171,7 @@ export default function LoginGate() {
               />
             </Field>
 
-            <Field label="Password" htmlFor="password">
+            <Field label={t("login.password")} htmlFor="password">
               <Input
                 id="password"
                 name="password"
@@ -180,14 +191,14 @@ export default function LoginGate() {
             )}
 
             <Button type="submit" variant="primary" className="h-9 w-full" loading={busy}>
-              {busy ? "Signing in" : "Sign in"}
+              {busy ? t("login.working") : t("login.submit")}
             </Button>
           </form>
 
           {/* ------------------------------------------- demo access panel */}
           <div className="mt-7 rounded-[var(--radius-lg)] border border-line bg-surface">
             <div className="flex items-center justify-between border-b border-line px-3 py-2">
-              <span className="t-caption">Demo access</span>
+              <span className="t-caption">{t("login.demo")}</span>
               <Badge tone="accent">Evaluation</Badge>
             </div>
             <div className="p-1">
@@ -212,7 +223,7 @@ export default function LoginGate() {
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
                         {d.user}
-                        {d.external && <Badge tone="accent">Supplier</Badge>}
+                        {d.external && <Badge tone="accent">{t("login.role.supplier")}</Badge>}
                       </span>
                       <span className="t-meta block text-[11px]">{d.role}</span>
                     </span>
@@ -221,7 +232,7 @@ export default function LoginGate() {
                         <IconCheck size={14} />
                       </span>
                     ) : (
-                      <span className="t-meta text-[11px]">Use</span>
+                      <span className="t-meta text-[11px]">{t("login.use")}</span>
                     )}
                   </button>
                 );

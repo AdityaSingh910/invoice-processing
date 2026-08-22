@@ -20,9 +20,11 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
+import { useT } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
 import { apiJson } from "@/lib/api";
 import { Button, Callout, ErrorState, Spinner, Tooltip } from "@/components/ui";
+import LanguagePicker from "@/components/ui/LanguagePicker";
 import {
   IconBuilding,
   IconInvoice,
@@ -39,21 +41,34 @@ import PortalSubmit from "./PortalSubmit";
 
 type PortalSection = "invoices" | "orders" | "submit";
 
+/** The nav rows, as MESSAGE KEYS rather than as sentences (Phase L). The
+ *  table is still frozen and still declares the scope each row needs; only the
+ *  words are looked up, at render, in the reader's own language. */
 const SECTIONS: {
   id: PortalSection;
-  label: string;
-  hint: string;
+  labelKey: "portal.nav.invoices" | "portal.nav.orders" | "portal.nav.submit";
+  hintKey: "portal.nav.invoices.hint" | "portal.nav.orders.hint" | "portal.nav.submit.hint";
   icon: (p: { size?: number }) => React.ReactElement;
   /** Rendered only when the account's token carries this scope. Courtesy, not
    *  enforcement — the endpoint re-checks it and a forged click gets a 403. */
   scope?: string;
 }[] = [
-  { id: "invoices", label: "My invoices", hint: "Status and history", icon: IconInvoice },
-  { id: "orders", label: "Purchase orders", hint: "What is left to bill", icon: IconLedger },
+  {
+    id: "invoices",
+    labelKey: "portal.nav.invoices",
+    hintKey: "portal.nav.invoices.hint",
+    icon: IconInvoice,
+  },
+  {
+    id: "orders",
+    labelKey: "portal.nav.orders",
+    hintKey: "portal.nav.orders.hint",
+    icon: IconLedger,
+  },
   {
     id: "submit",
-    label: "Send an invoice",
-    hint: "Upload a PDF",
+    labelKey: "portal.nav.submit",
+    hintKey: "portal.nav.submit.hint",
     icon: IconUpload,
     scope: "portal:submit",
   },
@@ -62,6 +77,7 @@ const SECTIONS: {
 export default function PortalApp() {
   const { user, signOut, can } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const t = useT();
   const [section, setSection] = useState<PortalSection>("invoices");
   const [identity, setIdentity] = useState<PortalIdentity | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +89,7 @@ export default function PortalApp() {
     setError(null);
     apiJson<PortalIdentity>("/api/portal/me")
       .then(setIdentity)
-      .catch(() => setError("We could not load your account. Please try again."));
+      .catch(() => setError(t("portal.loadFailed")));
   }, []);
 
   useEffect(load, [load]);
@@ -90,7 +106,7 @@ export default function PortalApp() {
             </span>
             <div className="min-w-0 leading-tight">
               <div className="truncate text-[13px] font-semibold tracking-[-0.015em] text-rail-fg">
-                Supplier portal
+                {t("portal.title")}
               </div>
               {/* The supplier's OWN name, not ours. This screen belongs to
                   them, and naming the buyer here would make it read as our
@@ -137,10 +153,10 @@ export default function PortalApp() {
                     <span
                       className={`block truncate text-[12.5px] ${active ? "font-semibold" : "font-medium"}`}
                     >
-                      {item.label}
+                      {t(item.labelKey)}
                     </span>
                     <span className="block truncate text-[10.5px] text-rail-faint">
-                      {item.hint}
+                      {t(item.hintKey)}
                     </span>
                   </span>
                 </button>
@@ -159,22 +175,26 @@ export default function PortalApp() {
                 {user.username}
               </div>
               <div className="truncate text-[10.5px] text-rail-faint">
-                {can("portal:submit") ? "Supplier" : "Supplier (view only)"}
+                {can("portal:submit") ? t("portal.role.supplier") : t("portal.role.readonly")}
               </div>
             </div>
-            <Tooltip label={theme === "dark" ? "Switch to light" : "Switch to dark"}>
+            {/* The picker is offered the list the SERVER said it can answer in,
+                so a supplier is never shown a language the backend would then
+                answer in English. */}
+            <LanguagePicker options={identity?.languages} compact />
+            <Tooltip label={theme === "dark" ? t("app.theme.toLight") : t("app.theme.toDark")}>
               <button
                 onClick={toggleTheme}
-                aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+                aria-label={theme === "dark" ? t("app.theme.toLight") : t("app.theme.toDark")}
                 className="grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-sm)] text-rail-muted transition-colors hover:bg-rail-hover hover:text-rail-fg"
               >
                 {theme === "dark" ? <IconSun size={14} /> : <IconMoon size={14} />}
               </button>
             </Tooltip>
-            <Tooltip label="Sign out">
+            <Tooltip label={t("app.signOut")}>
               <button
                 onClick={() => signOut()}
-                aria-label="Sign out"
+                aria-label={t("app.signOut")}
                 className="grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-sm)] text-rail-muted transition-colors hover:bg-rail-hover hover:text-rail-fg"
               >
                 <IconSignOut size={14} />
@@ -191,7 +211,7 @@ export default function PortalApp() {
           <div className="grid min-h-[60vh] place-items-center">
             <span className="flex items-center gap-2.5 text-[13px] text-muted">
               <Spinner />
-              Loading
+              {t("app.loading")}
             </span>
           </div>
         ) : (
@@ -203,7 +223,7 @@ export default function PortalApp() {
             {identity.notices.length > 0 && (
               <div className="px-4 pt-4 sm:px-7">
                 <div className="mx-auto max-w-[1400px]">
-                  <Callout tone="warn" title="There is a problem with this account">
+                  <Callout tone="warn" title={t("portal.accountProblem")}>
                     {identity.notices.map((n, i) => (
                       <p key={i} className={i ? "mt-1" : ""}>
                         {n}
@@ -270,11 +290,30 @@ export function stateTone(state: string): "ok" | "warn" | "bad" | "neutral" {
   return "neutral";
 }
 
-export const STATE_WORD: Record<string, string> = {
-  RECEIVED: "Received",
-  IN_REVIEW: "Being checked",
-  APPROVED: "Approved",
-  DECLINED: "Declined",
-};
+/**
+ * The client state as a WORD, in the reader's language (Phase L).
+ *
+ * A hook rather than a constant map, because the words now depend on the
+ * active locale. The STATE ITSELF is still the server's English identifier and
+ * still what is filtered and coloured on -- only the label moves, which is the
+ * same split `_STATE_FOR_STATUS` makes on the server.
+ */
+export function useStateWord() {
+  const t = useT();
+  return (state: string) => {
+    switch (state) {
+      case "RECEIVED":
+        return t("portal.state.RECEIVED");
+      case "IN_REVIEW":
+        return t("portal.state.IN_REVIEW");
+      case "APPROVED":
+        return t("portal.state.APPROVED");
+      case "DECLINED":
+        return t("portal.state.DECLINED");
+      default:
+        return state;
+    }
+  };
+}
 
 export { type PortalSection };

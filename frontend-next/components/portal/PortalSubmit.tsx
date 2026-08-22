@@ -18,12 +18,15 @@
 import { useRef, useState } from "react";
 import { submitPortalInvoice } from "@/lib/api";
 import { amount } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import { Badge, Button, Callout, Panel, PanelHeader, Spinner } from "@/components/ui";
 import { IconUpload } from "@/components/ui/icons";
 import type { PortalInvoice } from "@/lib/types";
-import { PortalPage, STATE_WORD, stateTone } from "./PortalApp";
+import { PortalPage, stateTone, useStateWord } from "./PortalApp";
 
 export default function PortalSubmit({ onSubmitted }: { onSubmitted: () => void }) {
+  const t = useT();
+  const stateWord = useStateWord();
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +42,7 @@ export default function PortalSubmit({ onSubmitted }: { onSubmitted: () => void 
     // extension or by the Content-Type the browser guessed, so a renamed file
     // is caught there whatever this says.
     if (!f.name.toLowerCase().endsWith(".pdf")) {
-      setError("Please choose a PDF. We can only read PDF invoices.");
+      setError(t("portal.submit.notPdf"));
       return;
     }
     setFile(f);
@@ -55,21 +58,18 @@ export default function PortalSubmit({ onSubmitted }: { onSubmitted: () => void 
       setFile(null);
       if (inputRef.current) inputRef.current.value = "";
     } catch (e) {
-      setError(e instanceof Error ? e.message : "The invoice could not be submitted.");
+      setError(e instanceof Error ? e.message : t("portal.submit.failed"));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <PortalPage
-      title="Send an invoice"
-      description="Upload a PDF invoice. We will read it and tell you what happens next."
-    >
+    <PortalPage title={t("portal.submit.title")} description={t("portal.submit.subtitle")}>
       <Panel>
         <PanelHeader
-          title="Upload"
-          description="One PDF at a time. A text-based PDF is read faster than a scan."
+          title={t("portal.submit.panel.title")}
+          description={t("portal.submit.panel.desc")}
         />
 
         <div
@@ -93,12 +93,12 @@ export default function PortalSubmit({ onSubmitted }: { onSubmitted: () => void 
           </span>
           <div>
             <p className="text-[13px] font-medium">
-              {file ? file.name : "Drop a PDF here"}
+              {file ? file.name : t("portal.submit.drop")}
             </p>
             <p className="t-meta mt-1">
               {file
                 ? `${(file.size / 1024).toFixed(0)} KB`
-                : "or choose a file from your computer"}
+                : t("portal.submit.orChoose")}
             </p>
           </div>
 
@@ -112,7 +112,7 @@ export default function PortalSubmit({ onSubmitted }: { onSubmitted: () => void 
           />
           <div className="flex flex-wrap items-center justify-center gap-2">
             <Button size="sm" onClick={() => inputRef.current?.click()} disabled={busy}>
-              Choose file
+              {t("portal.submit.choose")}
             </Button>
             <Button
               size="sm"
@@ -121,20 +121,20 @@ export default function PortalSubmit({ onSubmitted }: { onSubmitted: () => void 
               disabled={!file || busy}
               loading={busy}
             >
-              {busy ? "Sending" : "Send invoice"}
+              {busy ? t("portal.submit.sending") : t("portal.submit.send")}
             </Button>
           </div>
 
           {busy && (
             <span className="flex items-center gap-2 text-[12px] text-muted">
               <Spinner />
-              Reading your invoice — this usually takes a few seconds.
+              {t("portal.submit.reading")}
             </span>
           )}
         </div>
 
         {error && (
-          <Callout tone="bad" className="mt-3" title="Not sent">
+          <Callout tone="bad" className="mt-3" title={t("portal.submit.notSent")}>
             {error}
           </Callout>
         )}
@@ -143,18 +143,18 @@ export default function PortalSubmit({ onSubmitted }: { onSubmitted: () => void 
       {result && (
         <Panel>
           <PanelHeader
-            title="Received"
-            description={`Invoice ${result.invoice_number ?? "—"}`}
+            title={t("portal.submit.received")}
+            description={result.invoice_number ?? "—"}
             actions={
               <Button size="sm" onClick={onSubmitted}>
-                View my invoices
+                {t("portal.submit.viewMine")}
               </Button>
             }
           />
           <div className="mt-3 flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={stateTone(result.state)} dot>
-                {STATE_WORD[result.state] ?? result.state}
+                {stateWord(result.state)}
               </Badge>
               <span className="text-[12.5px] text-muted">{result.state_headline}</span>
               <span className="ml-auto text-[12.5px] font-medium">

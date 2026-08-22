@@ -21,7 +21,7 @@ suite is green.**
 | Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, seven sections, light-first enterprise design with an explicit dark-mode toggle — plus a separate **supplier portal** shell for external clients |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **1,534 passing** deterministically, 28 files, no live API calls |
+| Automated tests | **1,818 passing** deterministically, 29 files, no live API calls |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
@@ -29,6 +29,7 @@ suite is green.**
 | Assistant | Ask about invoices, review status, vendors and POs in plain English — **read-only, answers built from the app's own records** — see [Assistant](#assistant) |
 | Security hardening | Account deactivation that revokes live tokens, per-account brute-force limits, reporting/export limits, CSP and security headers — see [Security hardening](#security-hardening) |
 | Supplier portal | A vendor signs in and sees **their own** invoices, purchase orders and documents — and can send an invoice. Isolation is enforced in SQL against the authenticated account; a client role holds no internal scope at all — see [Supplier portal](#supplier-portal) |
+| Multilingual | Seven languages — English, Spanish, French, German, Portuguese, Italian, Dutch — across the supplier portal, the sign-in screen, the app shell and the assistant, **and** a local extractor that can actually read an invoice in all seven. The language changes the words and never the decision — see [Multilingual](#multilingual) |
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
 | Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine |
 | Email invoice ingestion | Polls a mailbox, triages cheaply before spending an LLM call, and feeds the same pipeline a browser upload drives — **IMAP, or a Gmail mailbox an administrator connects by OAuth from inside the app** (no mailbox password, read-only scope) — held messages are reviewed and released from an **Email queue** screen in the app — see [Connecting Gmail](#connecting-gmail) |
@@ -1501,6 +1502,88 @@ including the limitations.
 
 ---
 
+## Multilingual
+
+**The language changes the words. It never changes the decision.**
+
+That is the whole design, and it is the same idea as *the AI reads, the rules
+decide*: a run's status, the rules it failed and its amounts are computed
+before any language is chosen and are identical whichever language asked for
+them. A locale selects sentences. It is never a filter, never an input to a
+decision, and never an authorization check.
+
+Seven languages ship: **English, Spanish, French, German, Portuguese, Italian
+and Dutch.**
+
+### Two halves, and they never touch
+
+| | |
+|---|---|
+| **Speaking** | What the application says to a person — a supplier's invoice status, why one is held, the assistant's answers, the interface itself. |
+| **Reading** | What language the vendor's PDF is written in, so the local extractor can find *Rechnungsnummer* where it would otherwise only look for *Invoice #*. |
+
+They are separate modules on purpose. If they shared a notion of "the current
+language", the locale a supplier picked in their browser could change how their
+own invoice was parsed — a preference becoming an input to extraction.
+
+**The reading half is the load-bearing one.** A UI in seven languages over an
+extractor that only recognises English labels is a translation, not
+multilingual support: with no provider key configured, every foreign invoice
+would still come out empty and be held for a person. The local pattern
+extractor now has a field vocabulary per language, and reads a German,
+Spanish, French, Portuguese, Italian or Dutch invoice — including `1.234,56`
+as one thousand two hundred and thirty-four, and `15.03.2026` as 15 March.
+
+**An English invoice is untouched by all of it.** The English patterns are
+tried first, always, and the detected language's are appended after them — so
+a wrong detection costs a pattern that fails to match and can never cost a
+field that matched. A test extracts the same English invoice under every
+possible language hint and requires identical results.
+
+### Choosing a language
+
+There is a picker in the sidebar footer, and one above the sign-in form. The
+choice is stored in the browser and sent to the server as `?lang=<tag>` —
+`Accept-Language` is a header `fetch` is not allowed to set. With no stored
+choice, the browser's own `Accept-Language` decides.
+
+For an API caller, either works. An unsupported or malformed language is
+**answered in English rather than refused** — a preference is not a
+precondition — and every localised response says which locale it actually
+used, so a client never has to assume it got what it asked for.
+
+### Adding a language
+
+Drop `data/locales/<tag>.json` and add one row to `i18n.KNOWN_LOCALES` and
+`LOCALE_NAMES`. English lives in Python beside the code that uses it, so a
+sentence about somebody's invoice can never go missing because a file was not
+deployed; everything else is data. A missing or malformed file means that
+language is simply not offered — never a screen of English under a Spanish
+label. `i18n.catalogue_status()` reports what any translation is still
+missing, and the test suite fails on a gap.
+
+### What is deliberately not translated
+
+- **Amounts, dates, invoice numbers, vendor names and PO references.** No
+  catalogue entry interpolates one, so no locale can reformat a figure into
+  something the ledger did not say.
+- **The decision vocabulary.** `APPROVED`, `NEEDS_REVIEW`, `REJECTED`, rule
+  names and event types are identifiers that analytics groups by, the portal
+  keys its explanations on, and `?state=` carries to SQL. Translating an
+  identifier would be filtering the database on a UI string.
+- **The internal reporting screens** — Analytics, Logs, Invoices, Process,
+  Reference and Settings are English. The chrome around them is translated,
+  and every sentence the *server* writes is; the line was drawn at what an
+  external party or a language-switching user reads end to end.
+- **The assistant's intent patterns.** A question typed in another language
+  may not be recognised — so the starter suggestions carry both the label a
+  reader sees and the English question the client actually sends.
+
+`CLAUDE.md` §7i has the full record, including the three real bugs writing the
+tests for this uncovered.
+
+---
+
 ## Running in production
 
 Set `APP_ENV=production` and the app refuses to start on any of the following,
@@ -1607,15 +1690,16 @@ availability, so the badge can briefly contradict the run beside it.
 **Two differently-lettered phase tracks exist — do not conflate them.** The
 numbered table above is the original case-study track (0–7). A separate
 **lettered deployment-prep track (A–M)** turned the case study into a
-deployable multi-user platform: **A–I, K, K2 and J are all complete and
+deployable multi-user platform: **A–I, K, K2, J, G2 and L are all complete and
 committed** (Phase I at `248009e`; Phase K, the security hardening pass, at
 `2b0f97e`; Phase K2, the read-only assistant, at `86f4421`; Phase J, the
-supplier portal, at `79b5b54`). K and K2 were both taken
-before Phase J deliberately: J opens the application to people outside the
-company, and the right order is to fix and finish what is already reachable
+supplier portal, at `79b5b54`; Phase G2, the Gmail OAuth connection, at
+`e1f907b`; Phase L, multilingual support, most recently). K and K2 were both
+taken before Phase J deliberately: J opens the application to people outside
+the company, and the right order is to fix and finish what is already reachable
 before widening who can reach it — an ordering that paid off, since the portal
 leans directly on Phase K's live account re-check and its rate-limiter pattern.
-**Phases L (multilingual) and M (deployment hardening) have not been started.**
+**Only Phase M (deployment hardening) has not been started.**
 `CLAUDE.md` is the authority on that track.
 
 **The most valuable thing left** was Phase 2's confidence gate — done, closing

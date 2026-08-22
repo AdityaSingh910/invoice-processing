@@ -782,14 +782,40 @@ def test_the_response_says_where_the_answer_came_from(client, no_provider):
 
 
 def test_suggestions_are_questions_the_backend_can_actually_route(client):
+    """A suggestion has to route, and Phase L is why it now has two halves.
+
+    Intent routing is pattern-based and those patterns are English, so a
+    suggestion that was translated and then sent back as typed would land on
+    `unrecognised` -- an offer the application makes and then cannot honour.
+    Each suggestion therefore carries a `label` (what the reader sees, in
+    their language) and an `ask` (what the client sends). This checks the half
+    that has to route.
+    """
     body = client.get("/api/chat/suggestions",
                       headers=auth_headers("viewer", "vic")).json()
     assert body["suggestions"]
-    for question in body["suggestions"]:
+    for item in body["suggestions"]:
+        assert item["label"] and item["ask"]
+        question = item["ask"]
         entities = chat.extract_entities(question)
         intent, _fn = chat.resolve_intent(question, entities)
         kind, _ = chat.out_of_scope(question)
         assert intent or kind, f"suggested question routes nowhere: {question}"
+
+
+def test_a_translated_suggestion_still_asks_the_same_question(client):
+    """The label changes with the language; the question behind it never does.
+
+    This is the property that keeps the previous test meaningful in every
+    locale rather than only in English.
+    """
+    en = client.get("/api/chat/suggestions",
+                    headers=auth_headers("viewer", "vic")).json()["suggestions"]
+    de = client.get("/api/chat/suggestions?lang=de",
+                    headers=auth_headers("viewer", "vic")).json()["suggestions"]
+
+    assert [s["ask"] for s in en] == [s["ask"] for s in de]
+    assert [s["label"] for s in en] != [s["label"] for s in de]
 
 
 def test_the_assistant_endpoint_does_not_answer_a_get(client):

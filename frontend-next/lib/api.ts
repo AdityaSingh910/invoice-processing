@@ -14,9 +14,30 @@
  * itself, so they are same-origin; in dev, next.config.mjs proxies /api to the
  * backend. Either way there is no base URL to get wrong.
  */
+import { storedLocale } from "./i18n";
 import type { Identity, PortalSubmission, RunEvent } from "./types";
 
 export const TOKEN_KEY = "ip.token";
+
+/**
+ * Attach the reader's chosen language to a request (Phase L).
+ *
+ * `Accept-Language` is a forbidden header name -- `fetch` may not set it -- so
+ * an explicit choice travels as `?lang=`, which is the parameter the server
+ * gives precedence to. With no stored choice nothing is appended and the
+ * browser's own Accept-Language decides, which is the right default for
+ * someone who has never opened the picker.
+ *
+ * A locale never widens or narrows what comes back. The server resolves the
+ * caller from the bearer token and filters in SQL before a row is read; this
+ * only selects which words the sentences are written in.
+ */
+function withLocale(path: string): string {
+  const tag = storedLocale();
+  if (!tag) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}lang=${encodeURIComponent(tag)}`;
+}
 
 export class ApiError extends Error {
   status: number;
@@ -51,7 +72,7 @@ export async function apiFetch(path: string, opts: RequestInit = {}): Promise<Re
   const token = readToken();
   const headers = new Headers(opts.headers || {});
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(path, { ...opts, headers });
+  const res = await fetch(withLocale(path), { ...opts, headers });
   if (res.status === 401) {
     writeToken(null);
     window.dispatchEvent(new Event("ip:unauthenticated"));

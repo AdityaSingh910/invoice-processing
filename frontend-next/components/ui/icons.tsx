@@ -230,6 +230,18 @@ export const IconSettings = (p: IconProps) => (
   </Svg>
 );
 
+/** Language (Phase L). A globe with a meridian and a parallel — the one mark
+ *  people already read as "change the language" without a word beside it,
+ *  which matters on a control whose whole job is to be findable by someone who
+ *  cannot read the current one. */
+export const IconGlobe = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="6.25" />
+    <path d="M1.75 8h12.5" />
+    <path d="M8 1.75c1.7 1.85 2.6 3.95 2.6 6.25S9.7 12.4 8 14.25C6.3 12.4 5.4 10.3 5.4 8s.9-4.4 2.6-6.25Z" />
+  </Svg>
+);
+
 /** An envelope, for the held-message review queue -- distinct from
  *  IconSettings (the mailbox CONNECTION) because this is about individual
  *  MESSAGES that arrived through it. */

@@ -28,6 +28,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, apiJson } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import type { ChatReply, ChatSuggestions, ChatTurn } from "@/lib/types";
 import { PageBody, PageHeader } from "@/components/layout/AppShell";
 import {
@@ -51,19 +52,32 @@ const HISTORY_TURNS = 6;
  *  limit is a courtesy, not a control. */
 const MAX_CHARS = 2000;
 
-const PROVENANCE: Record<string, { label: string; tone: Tone; hint: string }> = {
+/**
+ * How an answer was produced. The KEY is the server's `answered_from` value and
+ * never changes; `labelKey` is looked up in the reader's language (Phase L).
+ *
+ * The one-line `hint` behind each is left in English on purpose: it is the
+ * explanatory tooltip rather than the label, and translating an explanation of
+ * the provenance model badly would be worse than leaving it in the language it
+ * was written in. The LABEL -- the part somebody has to read at a glance to
+ * know whether a model wrote the sentence -- is translated.
+ */
+const PROVENANCE: Record<
+  string,
+  { labelKey: "assistant.from.data" | "assistant.from.model" | "assistant.from.policy"; tone: Tone; hint: string }
+> = {
   application_data: {
-    label: "From your records",
+    labelKey: "assistant.from.data",
     tone: "ok",
     hint: "Read from this application's database and laid out by the server. No language model was involved.",
   },
   application_data_phrased_by_model: {
-    label: "Records, written up",
+    labelKey: "assistant.from.model",
     tone: "accent",
     hint: "The figures were read from this application's database, then a language model wrote them up. Check the records below if anything matters.",
   },
   application_policy: {
-    label: "What this app tracks",
+    labelKey: "assistant.from.policy",
     tone: "neutral",
     hint: "A fixed answer about what this application does and does not record. Not generated.",
   },
@@ -73,6 +87,7 @@ let turnSeq = 0;
 const nextId = () => `t${++turnSeq}`;
 
 export default function AssistantPage() {
+  const t = useT();
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -168,8 +183,8 @@ export default function AssistantPage() {
   return (
     <>
       <PageHeader
-        title="Assistant"
-        description="Ask about invoices, review status, vendors and purchase orders. Read-only — it answers questions and changes nothing."
+        title={t("assistant.title")}
+        description={t("assistant.subtitle")}
         actions={
           turns.length > 0 ? (
             <Button size="sm" icon={<IconRefresh size={12} />} onClick={() => setTurns([])}>
@@ -198,19 +213,25 @@ export default function AssistantPage() {
             {turns.length === 0 ? (
               <EmptyState
                 icon={<IconChat size={16} />}
-                title="Ask a question about your invoices"
+                title={t("assistant.empty")}
                 description="Answers come from this application's own records. It cannot tell you whether an invoice was paid — nothing here records that."
                 action={
                   suggestions?.suggestions?.length ? (
                     <div className="mt-1 flex flex-wrap justify-center gap-1.5">
+                      {/* Two halves, and the distinction is load-bearing
+                          (Phase L): `label` is what the reader sees, in their
+                          own language, and `ask` is what gets sent. Intent
+                          routing matches English patterns, so sending the
+                          label would offer a question the assistant could not
+                          then recognise. */}
                       {suggestions.suggestions.map((s) => (
                         <button
-                          key={s}
+                          key={s.ask}
                           type="button"
-                          onClick={() => void send(s)}
+                          onClick={() => void send(s.ask)}
                           className="rounded-[var(--radius-md)] border border-line bg-sunken px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-line-strong hover:text-fg"
                         >
-                          {s}
+                          {s.label}
                         </button>
                       ))}
                     </div>
@@ -224,7 +245,7 @@ export default function AssistantPage() {
             {busy && (
               <div className="flex items-center gap-2 text-[12.5px] text-faint">
                 <Spinner size={12} />
-                Looking it up…
+                {t("assistant.thinking")}
               </div>
             )}
           </div>
@@ -250,12 +271,12 @@ export default function AssistantPage() {
                     if (!tooLong) void send(draft);
                   }
                 }}
-                placeholder="Ask about an invoice, a vendor, a PO, or the review queue…"
-                aria-label="Ask the assistant a question"
+                placeholder={t("assistant.placeholder")}
+                aria-label={t("assistant.placeholder")}
                 className="max-h-40 min-h-[2.25rem] flex-1 resize-y rounded-[var(--radius-md)] border border-line bg-sunken px-3 py-2 text-[13px] text-fg placeholder:text-faint focus:border-line-strong focus:outline-none"
               />
               <Button type="submit" variant="primary" loading={busy} disabled={!draft.trim() || tooLong}>
-                Send
+                {t("assistant.send")}
               </Button>
             </div>
             {tooLong && (
@@ -272,6 +293,8 @@ export default function AssistantPage() {
 }
 
 function Turn({ turn, onRetry }: { turn: ChatTurn; onRetry: () => void }) {
+  const t = useT();
+
   if (turn.role === "user") {
     return (
       <div className="flex justify-end">
@@ -291,7 +314,7 @@ function Turn({ turn, onRetry }: { turn: ChatTurn; onRetry: () => void }) {
         <div className="min-w-0">
           <p className="text-[13px] text-bad">{turn.error}</p>
           <Button size="sm" className="mt-1.5" onClick={onRetry}>
-            Try again
+            {t("app.retry")}
           </Button>
         </div>
       </div>
@@ -314,7 +337,7 @@ function Turn({ turn, onRetry }: { turn: ChatTurn; onRetry: () => void }) {
       <div className="flex flex-wrap items-center gap-1.5">
         {provenance && (
           <span title={provenance.hint}>
-            <Badge tone={provenance.tone}>{provenance.label}</Badge>
+            <Badge tone={provenance.tone}>{t(provenance.labelKey)}</Badge>
           </span>
         )}
         {reply?.sources?.map((s) => (
@@ -328,7 +351,7 @@ function Turn({ turn, onRetry }: { turn: ChatTurn; onRetry: () => void }) {
       {reply && reply.facts && Object.keys(reply.facts).length > 0 && (
         <details className="rounded-[var(--radius-md)] border border-line bg-sunken">
           <summary className="cursor-pointer px-3 py-2 text-[12px] text-muted select-none">
-            Records this answer used
+            {t("assistant.records")}
           </summary>
           <pre className="max-h-72 overflow-auto border-t border-line px-3 py-2 text-[11.5px] leading-relaxed text-muted">
             {JSON.stringify(reply.facts, null, 1)}
