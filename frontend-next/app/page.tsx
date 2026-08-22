@@ -72,7 +72,7 @@ export default function Home() {
   if (!ready) {
     return (
       <div className="grid min-h-screen place-items-center">
-        <span className="flex items-center gap-2.5 text-[13px] text-muted">
+        <span className="flex items-center gap-2.5 text-[14px] text-muted">
           <Spinner />
           Loading
         </span>

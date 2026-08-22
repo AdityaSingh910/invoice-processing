@@ -92,7 +92,7 @@ export default function ReviewBar({
     <>
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-line bg-sunken p-3">
         <div className="min-w-0">
-          <p className="text-[12.5px] font-semibold">Your decision</p>
+          <p className="text-[13.5px] font-semibold">Your decision</p>
           <p className="t-meta">
             Review the evidence above, then accept or reject. The automated verdict is kept either
             way.

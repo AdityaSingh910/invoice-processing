@@ -31,9 +31,9 @@ const VARIANT: Record<Variant, string> = {
 };
 
 const SIZE: Record<Size, string> = {
-  xs: "h-6 px-2 text-[11.5px] gap-1 rounded-[var(--radius-sm)]",
-  sm: "h-7 px-2.5 text-[12.5px] gap-1.5 rounded-[var(--radius-sm)]",
-  md: "h-8 px-3 text-[13px] gap-1.5 rounded-[var(--radius-md)]",
+  xs: "h-6 px-2 text-[12.5px] gap-1 rounded-[var(--radius-sm)]",
+  sm: "h-7 px-2.5 text-[13.5px] gap-1.5 rounded-[var(--radius-sm)]",
+  md: "h-8 px-3 text-[14px] gap-1.5 rounded-[var(--radius-md)]",
 };
 
 export function Button({
@@ -131,7 +131,7 @@ export function Badge({
     <span
       title={title}
       className={`inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] px-1.5 py-0.5
-        text-[11.5px] font-medium whitespace-nowrap ${TONE_SOFT[tone]} ${className}`}
+        text-[12.5px] font-medium whitespace-nowrap ${TONE_SOFT[tone]} ${className}`}
     >
       {dot && <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT[tone]}`} />}
       {icon}
@@ -233,7 +233,7 @@ export function PanelHeader({
 /* ------------------------------------------------------------------ inputs */
 
 const FIELD =
-  "rounded-[var(--radius-md)] border border-line bg-sunken text-[13px] text-fg " +
+  "rounded-[var(--radius-md)] border border-line bg-sunken text-[14px] text-fg " +
   "transition-colors placeholder:text-faint hover:border-line-strong " +
   "focus:border-accent focus:bg-surface focus:outline-none focus-visible:outline-none " +
   "disabled:cursor-not-allowed disabled:opacity-50";
@@ -300,7 +300,7 @@ export function Field({
 }) {
   return (
     <div>
-      <label htmlFor={htmlFor} className="mb-1.5 block text-[12.5px] font-medium text-secondary">
+      <label htmlFor={htmlFor} className="mb-1.5 block text-[13.5px] font-medium text-secondary">
         {label}
       </label>
       {children}
@@ -342,13 +342,13 @@ export function Segmented<T extends string>({
             aria-selected={active}
             onClick={() => onChange(o.value)}
             className={`inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 py-1
-              text-[12.5px] font-medium transition-colors ${
+              text-[13.5px] font-medium transition-colors ${
                 active ? "bg-raised text-fg shadow-[var(--shadow-xs)]" : "text-muted hover:text-fg"
               }`}
           >
             {o.label}
             {o.count !== undefined && (
-              <span className="tnum text-[11px] text-faint">{o.count}</span>
+              <span className="tnum text-[12px] text-faint">{o.count}</span>
             )}
           </button>
         );
@@ -380,7 +380,7 @@ export function EmptyState({
         {icon ?? <IconEmpty size={16} />}
       </div>
       <div>
-        <p className="text-[13px] font-medium">{title}</p>
+        <p className="text-[14px] font-medium">{title}</p>
         {description && <p className="t-meta mx-auto mt-1 max-w-xs">{description}</p>}
       </div>
       {action}
@@ -403,7 +403,7 @@ export function ErrorState({
         <IconAlert size={16} />
       </div>
       <div>
-        <p className="text-[13px] font-medium">{title}</p>
+        <p className="text-[14px] font-medium">{title}</p>
         {description && <p className="t-meta mx-auto mt-1 max-w-xs">{description}</p>}
       </div>
       {onRetry && (
@@ -439,7 +439,7 @@ export function Callout({
 
   return (
     <div
-      className={`rounded-[var(--radius-md)] px-3 py-2.5 text-[12.5px] ${TONE_SOFT[tone]} ${className}`}
+      className={`rounded-[var(--radius-md)] px-3 py-2.5 text-[13.5px] ${TONE_SOFT[tone]} ${className}`}
       style={{ borderLeft: `2px solid ${accent}` }}
     >
       <div className="flex items-start gap-2">
@@ -503,7 +503,7 @@ export function Tooltip({
       <span
         role="tooltip"
         className={`pointer-events-none absolute z-50 ${pos} rounded-[var(--radius-sm)]
-          border border-line bg-raised px-2 py-1 text-[11.5px] whitespace-nowrap text-fg
+          border border-line bg-raised px-2 py-1 text-[12.5px] whitespace-nowrap text-fg
           opacity-0 shadow-[var(--shadow-md)] transition-opacity duration-100
           group-hover/tt:opacity-100 group-focus-within/tt:opacity-100`}
       >
@@ -608,7 +608,7 @@ export function SortTH({
         {label}
         <span
           aria-hidden
-          className={`text-[9px] leading-none transition-opacity ${
+          className={`text-[10px] leading-none transition-opacity ${
             active ? "text-accent opacity-100" : "opacity-30"
           }`}
         >
@@ -639,7 +639,7 @@ export function KeyValues({ rows }: { rows: [ReactNode, ReactNode][] }) {
       {rows.map(([k, v], i) => (
         <div key={i} className="flex items-baseline justify-between gap-4 py-1.5">
           <dt className="t-meta shrink-0">{k}</dt>
-          <dd className="min-w-0 text-right text-[12.5px] font-medium break-words">{v}</dd>
+          <dd className="min-w-0 text-right text-[13.5px] font-medium break-words">{v}</dd>
         </div>
       ))}
     </dl>

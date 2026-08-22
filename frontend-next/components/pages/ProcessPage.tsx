@@ -227,7 +227,7 @@ export default function ProcessPage({
                     <div className="flex items-center gap-2 border-b border-line bg-sunken px-3 py-2">
                       <IconFile size={12} className="shrink-0 text-faint" />
                       <span className="t-caption">Document</span>
-                      <span className="min-w-0 flex-1 truncate text-right text-[11px] text-faint">
+                      <span className="min-w-0 flex-1 truncate text-right text-[12px] text-faint">
                         {file.name}
                       </span>
                     </div>
@@ -278,10 +278,10 @@ export default function ProcessPage({
                     >
                       <IconUpload size={16} />
                     </span>
-                    <span className="text-[13px] font-semibold">
+                    <span className="text-[14px] font-semibold">
                       {dragging ? "Drop to load the invoice" : "Drop a PDF here, or browse"}
                     </span>
-                    <span className="t-meta text-[11.5px]">
+                    <span className="t-meta text-[12.5px]">
                       Read by a language model, judged by deterministic rules
                     </span>
                     <input
@@ -299,10 +299,10 @@ export default function ProcessPage({
                         <IconFile size={13} />
                       </span>
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[12.5px] font-medium">
+                        <span className="block truncate text-[13.5px] font-medium">
                           {file.name}
                         </span>
-                        <span className="tnum t-meta block text-[11px]">
+                        <span className="tnum t-meta block text-[12px]">
                           {(file.size / 1024).toFixed(0)} KB
                           {picked ? " · sample invoice" : ""}
                         </span>
@@ -398,7 +398,7 @@ export default function ProcessPage({
                           }`}
                     >
                       <span className="flex items-start justify-between gap-2">
-                        <span className="min-w-0 text-[12.5px] font-medium">
+                        <span className="min-w-0 text-[13.5px] font-medium">
                           {s.label || s.filename}
                         </span>
                         <span className="flex shrink-0 items-center gap-1.5">
@@ -422,7 +422,7 @@ export default function ProcessPage({
                             lines and the picker became the tallest thing on the
                             page. The whole note is still the row's tooltip. */}
                       {s.note && (
-                        <span className="t-meta mt-1 line-clamp-2 text-[11px] leading-snug">
+                        <span className="t-meta mt-1 line-clamp-2 text-[12px] leading-snug">
                           {s.note}
                         </span>
                       )}

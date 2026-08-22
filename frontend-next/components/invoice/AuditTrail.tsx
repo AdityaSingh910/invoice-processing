@@ -120,7 +120,7 @@ export default function AuditTrail({ audit, run }: { audit?: Audit; run?: Review
       <Section title={`Rules evaluated · ${rules.length - failed} of ${rules.length} passed`}>
         <ul className="flex flex-col gap-1.5">
           {rules.map((r, i) => (
-            <li key={i} className="flex items-start gap-2.5 text-[12.5px] leading-snug">
+            <li key={i} className="flex items-start gap-2.5 text-[13.5px] leading-snug">
               <span
                 className="mt-0.5 shrink-0"
                 style={{ color: r.passed ? "var(--ok)" : "var(--bad)" }}
@@ -149,13 +149,13 @@ function HumanRuling({ run }: { run: Reviewed }) {
         <Badge tone={approved ? "ok" : "bad"} icon={<IconUser size={10} />}>
           {String(run.final_decision || "").replace(/_/g, " ").toLowerCase()}
         </Badge>
-        <span className="text-[12.5px]">
+        <span className="text-[13.5px]">
           Reviewed by <b>{run.reviewed_by || "an unattributed reviewer"}</b>
           {run.reviewed_at ? ` on ${when(run.reviewed_at)}` : ""}
         </span>
       </div>
       {run.review_note && <p className="t-meta mt-1.5">{run.review_note}</p>}
-      <p className="t-meta mt-1.5 text-[11px]">
+      <p className="t-meta mt-1.5 text-[12px]">
         The automated decision above is unchanged and kept on record.
       </p>
     </div>

@@ -184,9 +184,9 @@ export function MatchTable({ pm, audit }: { pm: PoMatch; audit?: Audit }) {
       <tbody>
         {rows.map((r) => (
           <tr key={r.field} className={r.state === "mismatch" ? "bg-bad-quiet" : undefined}>
-            <TD className="text-[12.5px] font-medium whitespace-nowrap">{r.field}</TD>
-            <TD className="text-[12.5px]">{r.invoice}</TD>
-            <TD className="text-[12.5px] text-muted">{r.po}</TD>
+            <TD className="text-[13.5px] font-medium whitespace-nowrap">{r.field}</TD>
+            <TD className="text-[13.5px]">{r.invoice}</TD>
+            <TD className="text-[13.5px] text-muted">{r.po}</TD>
             <TD className="text-right">
               <StateBadge state={r.state} label={r.label} />
             </TD>
@@ -372,7 +372,7 @@ function PoBudgetSingle({ pm }: { pm: PoMatch }) {
       </div>
 
       {pm.fx?.applied && (
-        <p className="t-meta mb-2 text-[11.5px]">
+        <p className="t-meta mb-2 text-[12.5px]">
           Invoice is {amount(pm.invoice_total, pm.invoice_currency || "")} — converted to{" "}
           <span className="tnum font-medium text-fg">{money(claim)}</span> at the pinned rate{" "}
           {pm.fx.rate?.toFixed(4)} (FX table v{pm.fx.rate_version}).
@@ -402,14 +402,14 @@ function PoBudgetSingle({ pm }: { pm: PoMatch }) {
           ],
         ].map(([label, value, colour]) => (
           <div key={label as string}>
-            <dt className="t-meta flex items-center gap-1.5 text-[11px]">
+            <dt className="t-meta flex items-center gap-1.5 text-[12px]">
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
                 style={{ background: colour as string }}
               />
               {label}
             </dt>
-            <dd className="tnum mt-0.5 text-[13px] font-semibold">{value}</dd>
+            <dd className="tnum mt-0.5 text-[14px] font-semibold">{value}</dd>
           </div>
         ))}
       </dl>

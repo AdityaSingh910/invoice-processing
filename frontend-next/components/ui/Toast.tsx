@@ -79,7 +79,7 @@ function ToastRow({ toast, onDismiss }: { toast: Toast; onDismiss: () => void })
         <Icon size={14} />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="text-[12.5px] font-medium">{toast.title}</p>
+        <p className="text-[13.5px] font-medium">{toast.title}</p>
         {toast.detail && <p className="t-meta mt-0.5">{toast.detail}</p>}
       </div>
       <button

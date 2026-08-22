@@ -174,15 +174,15 @@ export default function ReferencePage({
                         const tone = over ? "bad" : pct >= 99.5 ? "warn" : "ok";
                         return (
                           <tr key={po.po_number}>
-                            <TD className="tnum text-[12.5px] font-medium">{po.po_number}</TD>
-                            <TD className="text-[12.5px]">{po.vendor}</TD>
-                            <TD align="right" className="text-[12.5px] text-muted">
+                            <TD className="tnum text-[13.5px] font-medium">{po.po_number}</TD>
+                            <TD className="text-[13.5px]">{po.vendor}</TD>
+                            <TD align="right" className="text-[13.5px] text-muted">
                               {money(po.amount)}
                             </TD>
-                            <TD align="right" className="text-[12.5px] text-muted">
+                            <TD align="right" className="text-[13.5px] text-muted">
                               {money(consumed)}
                             </TD>
-                            <TD align="right" className="text-[12.5px] font-semibold">
+                            <TD align="right" className="text-[13.5px] font-semibold">
                               {money(remaining)}
                             </TD>
                             <TD>
@@ -194,7 +194,7 @@ export default function ReferencePage({
                                   height={4}
                                   ariaLabel={`${pct.toFixed(0)} percent consumed`}
                                 />
-                                <span className="tnum w-8 shrink-0 text-right text-[11px] text-faint">
+                                <span className="tnum w-8 shrink-0 text-right text-[12px] text-faint">
                                   {pct.toFixed(0)}%
                                 </span>
                               </div>
@@ -253,8 +253,8 @@ export default function ReferencePage({
                     <tbody>
                       {vendors.map((v) => (
                         <tr key={v.vendor_id}>
-                          <TD className="text-[12.5px] font-medium">{v.vendor_name}</TD>
-                          <TD className="tnum text-[12px] text-muted">{v.vendor_id}</TD>
+                          <TD className="text-[13.5px] font-medium">{v.vendor_name}</TD>
+                          <TD className="tnum text-[13px] text-muted">{v.vendor_id}</TD>
                           <TD>
                             <Badge tone={v.status === "approved" ? "ok" : "neutral"} dot>
                               {v.status}
@@ -301,7 +301,7 @@ function Summary({
       >
         {value}
       </p>
-      <p className="t-meta mt-1 text-[11px]">{caption ?? "\u00A0"}</p>
+      <p className="t-meta mt-1 text-[12px]">{caption ?? "\u00A0"}</p>
     </div>
   );
 }

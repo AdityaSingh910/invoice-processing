@@ -49,7 +49,7 @@ export default function LanguagePicker({
         value={locale}
         onChange={(e) => setLocale(e.target.value)}
         aria-label={t("app.language.choose")}
-        className="cursor-pointer appearance-none bg-transparent py-1 pr-1 text-[12px] text-secondary outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="cursor-pointer appearance-none bg-transparent py-1 pr-1 text-[13px] text-secondary outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
       >
         {list.map((o) => (
           <option key={o.tag} value={o.tag}>

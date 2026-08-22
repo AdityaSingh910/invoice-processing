@@ -61,7 +61,7 @@ function VerdictBanner({ run }: { run: RunLike }) {
           <h2 className="t-metric-sm" style={{ color: `var(--${v.tone})` }}>
             {v.headline}
           </h2>
-          <span className="tnum t-meta text-[11px]">run #{run.id}</span>
+          <span className="tnum t-meta text-[12px]">run #{run.id}</span>
         </div>
         {v.blurb && <p className="t-meta mt-1 max-w-lg">{v.blurb}</p>}
       </div>
@@ -98,7 +98,7 @@ export function ReviewWorkspaceBody({
             <IconFile size={12} className="shrink-0 text-faint" />
             <span className="t-caption">Source document</span>
             <span
-              className="min-w-0 flex-1 truncate text-right text-[11px] text-faint"
+              className="min-w-0 flex-1 truncate text-right text-[12px] text-faint"
               title={run.filename}
             >
               {run.filename}
@@ -254,10 +254,10 @@ export default function ReviewWorkspace({
             to in an AP conversation. The upload filename is how it arrived —
             still on screen, on the document pane below, but not the headline. */}
         <span className="min-w-0 leading-tight">
-          <span className="block truncate text-[13px] font-semibold">
+          <span className="block truncate text-[14px] font-semibold">
             {run.audit?.invoice?.vendor || run.extracted?.vendor_name || run.filename}
           </span>
-          <span className="tnum block truncate text-[11px] text-faint">
+          <span className="tnum block truncate text-[12px] text-faint">
             {run.audit?.invoice?.invoice_number || run.extracted?.invoice_number || "no invoice number"}
             {" · run #"}
             {run.id}

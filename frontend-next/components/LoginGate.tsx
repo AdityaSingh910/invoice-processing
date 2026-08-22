@@ -116,10 +116,10 @@ export default function LoginGate() {
           the server's. */}
       <header className="flex items-center justify-between gap-4 border-b border-line px-5 py-3 sm:px-8">
         <div className="flex items-center gap-2.5">
-          <span className="grid h-7 w-7 place-items-center rounded-[var(--radius-md)] bg-accent text-[11px] font-bold text-accent-fg">
+          <span className="grid h-7 w-7 place-items-center rounded-[var(--radius-md)] bg-accent text-[12px] font-bold text-accent-fg">
             AP
           </span>
-          <span className="text-[13px] font-semibold tracking-[-0.01em]">Invoice Processing</span>
+          <span className="text-[14px] font-semibold tracking-[-0.01em]">Invoice Processing</span>
         </div>
         <LanguagePicker />
       </header>
@@ -136,7 +136,7 @@ export default function LoginGate() {
               {t("login.headline.decides")}
             </h1>
 
-            <p className="mt-4 max-w-[420px] text-[14px] leading-relaxed text-secondary">
+            <p className="mt-4 max-w-[420px] text-[15px] leading-relaxed text-secondary">
               {t("login.tagline")}
             </p>
 
@@ -149,7 +149,7 @@ export default function LoginGate() {
                       &rarr;
                     </span>
                   )}
-                  <span className="rounded-[var(--radius-sm)] border border-line bg-surface px-2.5 py-1 text-[12px] text-secondary">
+                  <span className="rounded-[var(--radius-sm)] border border-line bg-surface px-2.5 py-1 text-[13px] text-secondary">
                     {t(key)}
                   </span>
                 </li>
@@ -159,7 +159,7 @@ export default function LoginGate() {
             <div className="mt-10 grid max-w-[440px] grid-cols-3 gap-6">
               {PILLARS.map((key) => (
                 <div key={key}>
-                  <p className="text-[12.5px] font-semibold">{t(key)}</p>
+                  <p className="text-[13.5px] font-semibold">{t(key)}</p>
                   <span className="mt-2 block border-t border-line-strong" />
                 </div>
               ))}
@@ -240,18 +240,18 @@ export default function LoginGate() {
                           <IconUser size={12} />
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
+                          <span className="flex items-center gap-1.5 text-[13.5px] font-medium">
                             {d.user}
                             {d.external && <Badge tone="accent">{t("login.role.supplier")}</Badge>}
                           </span>
-                          <span className="t-meta block text-[11px]">{d.role}</span>
+                          <span className="t-meta block text-[12px]">{d.role}</span>
                         </span>
                         {active ? (
                           <span className="text-ok">
                             <IconCheck size={14} />
                           </span>
                         ) : (
-                          <span className="t-meta text-[11px]">{t("login.use")}</span>
+                          <span className="t-meta text-[12px]">{t("login.use")}</span>
                         )}
                       </button>
                     );

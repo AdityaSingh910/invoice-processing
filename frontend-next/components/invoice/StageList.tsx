@@ -64,7 +64,7 @@ export function PhaseStepper({ stages, running }: { stages: Stage[]; running: bo
               } ${state === "active" ? "bg-accent-quiet" : ""}`}
             >
               <span
-                className="grid h-[18px] w-[18px] shrink-0 place-items-center rounded-full border text-[10px]"
+                className="grid h-[18px] w-[18px] shrink-0 place-items-center rounded-full border text-[11px]"
                 style={
                   state === "done"
                     ? { background: tone.bg, borderColor: tone.line, color: tone.fg }
@@ -82,7 +82,7 @@ export function PhaseStepper({ stages, running }: { stages: Stage[]; running: bo
                 )}
               </span>
               <span
-                className={`truncate text-[11.5px] ${
+                className={`truncate text-[12.5px] ${
                   state === "pending" ? "text-faint" : "font-medium"
                 }`}
               >
@@ -121,15 +121,15 @@ export function StageRow({ stage, last }: { stage: Stage; index?: number; last: 
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-          <span className="text-[12.5px] font-medium">
+          <span className="text-[13.5px] font-medium">
             {STAGE_LABEL[stage.name] ?? stage.name}
           </span>
           <span className="flex items-center gap-2">
-            <code className="rounded-[var(--radius-xs)] bg-sunken px-1 py-px text-[10px] text-faint">
+            <code className="rounded-[var(--radius-xs)] bg-sunken px-1 py-px text-[11px] text-faint">
               {stage.name}
             </code>
             {stage.ms !== undefined && (
-              <span className="tnum text-[10.5px] text-faint">{stage.ms} ms</span>
+              <span className="tnum text-[11.5px] text-faint">{stage.ms} ms</span>
             )}
           </span>
         </div>
@@ -179,10 +179,10 @@ export default function StageList({
                   idle ? "border-line-strong text-muted" : "border-line text-faint"
                 }`}
             >
-              {active ? <Spinner size={9} /> : <span className="tnum text-[9.5px]">{i + 1}</span>}
+              {active ? <Spinner size={9} /> : <span className="tnum text-[10.5px]">{i + 1}</span>}
             </span>
             <div className="min-w-0 flex-1">
-              <span className={`text-[12.5px] font-medium ${idle ? "text-secondary" : ""}`}>
+              <span className={`text-[13.5px] font-medium ${idle ? "text-secondary" : ""}`}>
                 {STAGE_LABEL[name] ?? name}
               </span>
               {!idle && <p className="t-meta mt-0.5">{active ? "Running…" : "Waiting"}</p>}

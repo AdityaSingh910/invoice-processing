@@ -246,13 +246,13 @@ function InvoiceDetail({
             <Badge tone={stateTone(full.state)} dot>
               {stateWord(full.state)}
             </Badge>
-            <span className="text-[12.5px] text-muted">{full.state_headline}</span>
+            <span className="text-[13.5px] text-muted">{full.state_headline}</span>
           </div>
 
           {full.state_detail.length > 0 && (
             <ul className="flex flex-col gap-1.5">
               {full.state_detail.map((line, i) => (
-                <li key={i} className="text-[12.5px] leading-relaxed text-fg">
+                <li key={i} className="text-[13.5px] leading-relaxed text-fg">
                   {line}
                 </li>
               ))}
@@ -269,12 +269,12 @@ function InvoiceDetail({
             ).map(([k, v]) => (
               <div key={k} className="flex items-baseline justify-between gap-4 py-1.5">
                 <dt className="t-meta shrink-0">{k}</dt>
-                <dd className="min-w-0 text-right text-[12.5px] font-medium break-words">{v}</dd>
+                <dd className="min-w-0 text-right text-[13.5px] font-medium break-words">{v}</dd>
               </div>
             ))}
           </dl>
 
-          {docError && <p className="text-[12px] text-bad">{docError}</p>}
+          {docError && <p className="text-[13px] text-bad">{docError}</p>}
         </div>
 
         <div className="flex flex-col gap-3">
@@ -284,15 +284,15 @@ function InvoiceDetail({
               {full.timeline.map((e, i) => (
                 <li key={i} className="flex items-baseline gap-2.5">
                   <span aria-hidden className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-                  <span className="text-[12.5px]">{e.event}</span>
-                  <span className="ml-auto shrink-0 text-[11.5px] text-faint">
+                  <span className="text-[13.5px]">{e.event}</span>
+                  <span className="ml-auto shrink-0 text-[12.5px] text-faint">
                     {when(e.at)}
                   </span>
                 </li>
               ))}
             </ol>
           ) : (
-            <p className="text-[12.5px] text-faint">{t("portal.invoices.nothingRecorded")}</p>
+            <p className="text-[13.5px] text-faint">{t("portal.invoices.nothingRecorded")}</p>
           )}
         </div>
       </div>
@@ -304,7 +304,7 @@ function InvoiceDetail({
           aria-label={t("portal.invoices.docLabel")}
           className="mt-4 h-[60vh] w-full rounded-[var(--radius-md)] border border-line"
         >
-          <p className="p-4 text-[12.5px] text-muted">
+          <p className="p-4 text-[13.5px] text-muted">
             {t("portal.invoices.cannotDisplay")}{" "}
             <a className="underline" href={docUrl} download>
               {t("portal.invoices.downloadInstead")}

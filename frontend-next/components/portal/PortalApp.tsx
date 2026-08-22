@@ -105,13 +105,13 @@ export default function PortalApp() {
               <IconBuilding size={15} />
             </span>
             <div className="min-w-0 leading-tight">
-              <div className="truncate text-[13px] font-semibold tracking-[-0.015em] text-rail-fg">
+              <div className="truncate text-[14px] font-semibold tracking-[-0.015em] text-rail-fg">
                 {t("portal.title")}
               </div>
               {/* The supplier's OWN name, not ours. This screen belongs to
                   them, and naming the buyer here would make it read as our
                   system that they are visiting. */}
-              <div className="truncate text-[10.5px] tracking-[0.01em] text-rail-faint">
+              <div className="truncate text-[11.5px] tracking-[0.01em] text-rail-faint">
                 {identity?.client_name ?? " "}
               </div>
             </div>
@@ -151,11 +151,11 @@ export default function PortalApp() {
                   </span>
                   <span className="min-w-0 flex-1 leading-tight">
                     <span
-                      className={`block truncate text-[12.5px] ${active ? "font-semibold" : "font-medium"}`}
+                      className={`block truncate text-[13.5px] ${active ? "font-semibold" : "font-medium"}`}
                     >
                       {t(item.labelKey)}
                     </span>
-                    <span className="block truncate text-[10.5px] text-rail-faint">
+                    <span className="block truncate text-[11.5px] text-rail-faint">
                       {t(item.hintKey)}
                     </span>
                   </span>
@@ -167,14 +167,14 @@ export default function PortalApp() {
 
         {user && (
           <div className="flex items-center gap-2.5 border-t border-rail-line px-3 py-3">
-            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-rail-hover text-[10px] font-semibold text-rail-fg uppercase">
+            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-rail-hover text-[11px] font-semibold text-rail-fg uppercase">
               {user.username.slice(0, 2)}
             </span>
             <div className="min-w-0 flex-1 leading-tight">
-              <div className="truncate text-[12px] font-semibold text-rail-fg">
+              <div className="truncate text-[13px] font-semibold text-rail-fg">
                 {user.username}
               </div>
-              <div className="truncate text-[10.5px] text-rail-faint">
+              <div className="truncate text-[11.5px] text-rail-faint">
                 {can("portal:submit") ? t("portal.role.supplier") : t("portal.role.readonly")}
               </div>
             </div>
@@ -209,7 +209,7 @@ export default function PortalApp() {
           <ErrorState description={error} onRetry={load} />
         ) : !identity ? (
           <div className="grid min-h-[60vh] place-items-center">
-            <span className="flex items-center gap-2.5 text-[13px] text-muted">
+            <span className="flex items-center gap-2.5 text-[14px] text-muted">
               <Spinner />
               {t("app.loading")}
             </span>

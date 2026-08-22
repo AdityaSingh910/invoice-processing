@@ -59,7 +59,7 @@ export function VolumeChart({ data }: { data: DayBucket[] }) {
           aria-hidden
         >
           {lines.map((v) => (
-            <span key={v} className="tnum text-[10px] leading-none text-faint">
+            <span key={v} className="tnum text-[11px] leading-none text-faint">
               {v}
             </span>
           ))}
@@ -131,8 +131,8 @@ export function VolumeChart({ data }: { data: DayBucket[] }) {
       {/* One readout line rather than a floating tooltip: no occlusion, and it
           holds a fixed height so the panel does not jump on hover. */}
       <div className="mt-2.5 flex items-center justify-between gap-3 pl-9">
-        <span className="t-meta text-[11px]">{data[0]?.label}</span>
-        <span className="text-[11.5px]" style={{ minHeight: 17 }}>
+        <span className="t-meta text-[12px]">{data[0]?.label}</span>
+        <span className="text-[12.5px]" style={{ minHeight: 17 }}>
           {active ? (
             <span className="flex items-center gap-2.5">
               <span className="font-medium">{active.label}</span>
@@ -153,10 +153,10 @@ export function VolumeChart({ data }: { data: DayBucket[] }) {
               )}
             </span>
           ) : (
-            <span className="t-meta text-[11px]">Hover a column for detail</span>
+            <span className="t-meta text-[12px]">Hover a column for detail</span>
           )}
         </span>
-        <span className="t-meta text-[11px]">{data[data.length - 1]?.label}</span>
+        <span className="t-meta text-[12px]">{data[data.length - 1]?.label}</span>
       </div>
     </div>
   );
@@ -173,7 +173,7 @@ export function LegendItem({
   value?: number;
 }) {
   return (
-    <span className="flex items-center gap-1.5 text-[11.5px]">
+    <span className="flex items-center gap-1.5 text-[12.5px]">
       <span className="h-2 w-2 shrink-0 rounded-[2px]" style={{ background: color }} />
       <span className="text-muted">{label}</span>
       {value !== undefined && <span className="tnum font-medium">{value}</span>}
@@ -287,7 +287,7 @@ export function RateTrend({
           aria-hidden
         >
           {[100, 50, 0].map((v) => (
-            <span key={v} className="tnum text-[10px] leading-none text-faint">
+            <span key={v} className="tnum text-[11px] leading-none text-faint">
               {v}%
             </span>
           ))}
@@ -365,8 +365,8 @@ export function RateTrend({
       </div>
 
       <div className="mt-2.5 flex items-center justify-between gap-3 pl-10">
-        <span className="t-meta text-[11px]">{points[0]?.label}</span>
-        <span className="text-[11.5px]" style={{ minHeight: 17 }}>
+        <span className="t-meta text-[12px]">{points[0]?.label}</span>
+        <span className="text-[12.5px]" style={{ minHeight: 17 }}>
           {active ? (
             <span className="flex items-center gap-2.5">
               <span className="font-medium">{active.label}</span>
@@ -379,10 +379,10 @@ export function RateTrend({
               )}
             </span>
           ) : (
-            <span className="t-meta text-[11px]">Hover a day for detail</span>
+            <span className="t-meta text-[12px]">Hover a day for detail</span>
           )}
         </span>
-        <span className="t-meta text-[11px]">{points[points.length - 1]?.label}</span>
+        <span className="t-meta text-[12px]">{points[points.length - 1]?.label}</span>
       </div>
     </div>
   );

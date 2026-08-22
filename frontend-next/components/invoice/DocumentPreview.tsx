@@ -102,7 +102,7 @@ export default function DocumentPreview({
   if (state === "loading") {
     return (
       <div className="flex h-full min-h-[240px] items-center justify-center">
-        <span className="flex items-center gap-2 text-[12.5px] text-muted">
+        <span className="flex items-center gap-2 text-[13.5px] text-muted">
           <Spinner size={14} />
           Loading document
         </span>
@@ -142,12 +142,12 @@ export default function DocumentPreview({
         {/* Browsers that cannot embed a PDF (rare, mostly mobile) fall through here. */}
         <div className="flex h-full flex-col items-center justify-center gap-2.5 p-6 text-center">
           <IconFile size={20} className="text-faint" />
-          <p className="text-[12.5px]">This browser cannot preview a PDF inline.</p>
+          <p className="text-[13.5px]">This browser cannot preview a PDF inline.</p>
           <a
             href={blobUrl}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-accent hover:underline"
+            className="inline-flex items-center gap-1.5 text-[13.5px] font-medium text-accent hover:underline"
           >
             <IconLink size={12} />
             Open the document in a new tab

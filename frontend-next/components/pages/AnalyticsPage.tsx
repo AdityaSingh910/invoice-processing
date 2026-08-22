@@ -279,7 +279,11 @@ export default function AnalyticsPage() {
               description="Days with no invoices are gaps, not zeroes"
             />
             <div className="mt-4">
-              {trends.loading && !trends.data ? (
+              {trends.error ? (
+                <div className="p-4">
+                  <ErrorState description={trends.error} onRetry={refresh} />
+                </div>
+              ) : trends.loading && !trends.data ? (
                 <Skeleton className="h-[132px] w-full" />
               ) : (
                 <RateTrend
@@ -305,7 +309,11 @@ export default function AnalyticsPage() {
               title="Where the time goes"
               description="Per stage, slowest first — this is the bottleneck view"
             />
-            {processing.loading && !processing.data ? (
+            {processing.error ? (
+              <div className="p-4">
+                <ErrorState description={processing.error} onRetry={refresh} />
+              </div>
+            ) : processing.loading && !processing.data ? (
               <div className="p-4">
                 <Skeleton className="h-[132px]" />
               </div>
@@ -332,7 +340,7 @@ export default function AnalyticsPage() {
                     <tr key={s.stage}>
                       <TD>
                         <span className="font-medium">{s.stage}</span>
-                        <span className="t-meta block text-[11px]">
+                        <span className="t-meta block text-[12px]">
                           {formatCount(s.runs)} runs
                         </span>
                       </TD>
@@ -347,7 +355,7 @@ export default function AnalyticsPage() {
                             tone="accent"
                             ariaLabel={`${s.stage} share of processing time`}
                           />
-                          <span className="tnum t-meta w-8 shrink-0 text-right text-[11px]">
+                          <span className="tnum t-meta w-8 shrink-0 text-right text-[12px]">
                             {formatPercent(s.share_of_time)}
                           </span>
                         </div>
@@ -367,7 +375,11 @@ export default function AnalyticsPage() {
               title="Review funnel"
               description="From held, to ruled on, to the decision reached"
             />
-            {reviews.loading && !reviews.data ? (
+            {reviews.error ? (
+              <div className="p-4">
+                <ErrorState description={reviews.error} onRetry={refresh} />
+              </div>
+            ) : reviews.loading && !reviews.data ? (
               <Skeleton className="mt-4 h-[180px]" />
             ) : !reviews.data ? null : reviews.data.funnel.held_for_review === 0 ? (
               <EmptyState
@@ -426,7 +438,11 @@ export default function AnalyticsPage() {
               title="Why invoices stop"
               description="Grouped by the rule that failed, not by the reason sentence"
             />
-            {reviews.loading && !reviews.data ? (
+            {reviews.error ? (
+              <div className="p-4">
+                <ErrorState description={reviews.error} onRetry={refresh} />
+              </div>
+            ) : reviews.loading && !reviews.data ? (
               <div className="p-4">
                 <Skeleton className="h-[180px]" />
               </div>
@@ -441,7 +457,7 @@ export default function AnalyticsPage() {
               <ul className="divide-line">
                 {reviews.data.reasons.slice(0, 8).map((r) => (
                   <li key={r.rule} className="flex items-center gap-3 px-4 py-2.5">
-                    <span className="min-w-0 flex-1 truncate text-[12.5px]">{r.rule}</span>
+                    <span className="min-w-0 flex-1 truncate text-[13.5px]">{r.rule}</span>
                     <span className="w-[120px] shrink-0">
                       <Meter
                         value={r.share_of_runs ?? 0}
@@ -450,14 +466,14 @@ export default function AnalyticsPage() {
                         ariaLabel={`${r.rule}: ${formatPercent(r.share_of_runs)} of runs`}
                       />
                     </span>
-                    <span className="tnum w-14 shrink-0 text-right text-[12.5px] font-semibold">
+                    <span className="tnum w-14 shrink-0 text-right text-[13.5px] font-semibold">
                       {formatCount(r.runs)}
                     </span>
                   </li>
                 ))}
                 {/* Said explicitly, because a table of these looks like it
                     should sum to the run count and does not. */}
-                <li className="t-meta px-4 py-2 text-[11px]">
+                <li className="t-meta px-4 py-2 text-[12px]">
                   An invoice failing several rules appears in several rows.
                 </li>
               </ul>
@@ -473,7 +489,11 @@ export default function AnalyticsPage() {
               title="Vendor performance"
               description="Invoice behaviour by vendor, in this period"
             />
-            {vendors.loading && !vendors.data ? (
+            {vendors.error ? (
+              <div className="p-4">
+                <ErrorState description={vendors.error} onRetry={refresh} />
+              </div>
+            ) : vendors.loading && !vendors.data ? (
               <div className="p-4">
                 <Skeleton className="h-[180px]" />
               </div>
@@ -517,7 +537,11 @@ export default function AnalyticsPage() {
               title="Purchase order budgets"
               description="Balances are the ledger's own, all-time; the counts are this period"
             />
-            {vendors.loading && !vendors.data ? (
+            {vendors.error ? (
+              <div className="p-4">
+                <ErrorState description={vendors.error} onRetry={refresh} />
+              </div>
+            ) : vendors.loading && !vendors.data ? (
               <div className="p-4">
                 <Skeleton className="h-[180px]" />
               </div>
@@ -540,7 +564,7 @@ export default function AnalyticsPage() {
                     <tr key={p.po_number}>
                       <TD>
                         <span className="tnum font-medium">{p.po_number}</span>
-                        <span className="t-meta block max-w-[150px] truncate text-[11px]">
+                        <span className="t-meta block max-w-[150px] truncate text-[12px]">
                           {p.vendor}
                         </span>
                       </TD>
@@ -559,7 +583,7 @@ export default function AnalyticsPage() {
                             tone={p.over_budget ? "bad" : p.utilisation && p.utilisation > 0.8 ? "warn" : "accent"}
                             ariaLabel={`${p.po_number} budget used`}
                           />
-                          <span className="tnum t-meta w-8 shrink-0 text-right text-[11px]">
+                          <span className="tnum t-meta w-8 shrink-0 text-right text-[12px]">
                             {formatPercent(p.utilisation)}
                           </span>
                         </div>
@@ -592,7 +616,11 @@ export default function AnalyticsPage() {
                 )
               }
             />
-            {users.loading && !users.data ? (
+            {users.error ? (
+              <div className="p-4">
+                <ErrorState description={users.error} onRetry={refresh} />
+              </div>
+            ) : users.loading && !users.data ? (
               <div className="p-4">
                 <Skeleton className="h-[150px]" />
               </div>
@@ -640,7 +668,7 @@ export default function AnalyticsPage() {
                 {/* The server decides this from the token, so the note is a
                     statement of what was returned, not a UI-side restriction. */}
                 {users.data.note && (
-                  <p className="t-meta border-t border-line px-4 py-2.5 text-[11px]">
+                  <p className="t-meta border-t border-line px-4 py-2.5 text-[12px]">
                     {users.data.note}
                   </p>
                 )}
@@ -653,7 +681,11 @@ export default function AnalyticsPage() {
               title="Email ingestion"
               description="What arrived, what was filtered, what became an invoice"
             />
-            {email.loading && !email.data ? (
+            {email.error ? (
+              <div className="p-4">
+                <ErrorState description={email.error} onRetry={refresh} />
+              </div>
+            ) : email.loading && !email.data ? (
               <Skeleton className="mt-4 h-[150px]" />
             ) : !email.data || email.data.funnel.received === 0 ? (
               <EmptyState
@@ -694,7 +726,7 @@ export default function AnalyticsPage() {
                   of={email.data.funnel.attachments || email.data.funnel.received}
                   tone="ok"
                 />
-                <p className="t-meta text-[11px]">
+                <p className="t-meta text-[12px]">
                   One email can carry several invoices, so runs are counted from
                   attachments rather than from messages.
                 </p>
@@ -707,7 +739,7 @@ export default function AnalyticsPage() {
         {o && (o.data_quality.malformed_total > 0 || o.volume.runs > 0) && (
           <Panel>
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="t-meta text-[11.5px]">
+              <p className="t-meta text-[12.5px]">
                 Computed from {formatCount(o.data_quality.runs_scanned)} runs
                 {o.data_quality.runs_with_timing !== o.data_quality.runs_scanned && (
                   <> · {formatCount(o.data_quality.runs_with_timing)} carried stage timings</>
@@ -774,7 +806,7 @@ function KpiCell({
           <Tooltip label={help}>
             <span
               tabIndex={0}
-              className="grid h-3.5 w-3.5 cursor-help place-items-center rounded-full border border-line text-[9px] text-faint"
+              className="grid h-3.5 w-3.5 cursor-help place-items-center rounded-full border border-line text-[10px] text-faint"
             >
               ?
             </span>
@@ -786,7 +818,7 @@ function KpiCell({
         <div className="t-metric tnum">
           {literal !== undefined ? literal : state === "unavailable" ? "—" : formatPercent(kpi!.value)}
         </div>
-        <p className="t-meta mt-1 text-[11px] leading-snug">
+        <p className="t-meta mt-1 text-[12px] leading-snug">
           {state === "unavailable" && kpi ? (
             // NOT "0%". There is no rate here to report.
             <span>No invoices in this period</span>
@@ -851,14 +883,14 @@ function FunnelRow({
 }) {
   return (
     <div className="flex items-center gap-3">
-      <span className="w-[132px] shrink-0 text-[12.5px]">{label}</span>
+      <span className="w-[132px] shrink-0 text-[13.5px]">{label}</span>
       <span className="min-w-0 flex-1">
         <Meter value={value} max={of || 1} tone={tone} ariaLabel={`${label}: ${value} of ${of}`} />
       </span>
-      <span className="tnum w-10 shrink-0 text-right text-[12.5px] font-semibold">
+      <span className="tnum w-10 shrink-0 text-right text-[13.5px] font-semibold">
         {formatCount(value)}
       </span>
-      <span className="tnum t-meta w-9 shrink-0 text-right text-[11px]">
+      <span className="tnum t-meta w-9 shrink-0 text-right text-[12px]">
         {/* Null, not "0%", when the step above was empty — there is no share
             of nothing. */}
         {of > 0 ? formatPercent(value / of) : "—"}
@@ -882,10 +914,10 @@ function Latency({
           {label}
         </span>
       </Tooltip>
-      <div className="tnum mt-1 text-[15px] font-semibold">
+      <div className="tnum mt-1 text-[16px] font-semibold">
         {formatSeconds(block.median_seconds)}
       </div>
-      <p className="t-meta text-[11px]">
+      <p className="t-meta text-[12px]">
         {block.samples === 0
           ? "nothing measured"
           : `median of ${formatCount(block.samples)}${

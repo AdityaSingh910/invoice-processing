@@ -215,7 +215,7 @@ export default function AppShell({
 
         return (
           <div key={group.labelKey}>
-            <p className="px-2.5 pb-2 text-[10px] font-semibold tracking-[0.08em] text-rail-faint uppercase">
+            <p className="px-2.5 pb-2 text-[11px] font-semibold tracking-[0.08em] text-rail-faint uppercase">
               {t(group.labelKey)}
             </p>
             <div className="flex flex-col gap-0.5">
@@ -259,11 +259,11 @@ export default function AppShell({
 
                     <span className="min-w-0 flex-1 leading-tight">
                       <span
-                        className={`block truncate text-[12.5px] ${active ? "font-semibold" : "font-medium"}`}
+                        className={`block truncate text-[13.5px] ${active ? "font-semibold" : "font-medium"}`}
                       >
                         {t(item.labelKey)}
                       </span>
-                      <span className="block truncate text-[10.5px] text-rail-faint">
+                      <span className="block truncate text-[11.5px] text-rail-faint">
                         {t(item.hintKey)}
                       </span>
                     </span>
@@ -272,7 +272,7 @@ export default function AppShell({
                       <span
                         title={`${badge} ${t("app.awaitingReview")}`}
                         className="tnum inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center
-                          rounded-full bg-warn-vivid px-1 text-[10.5px] font-semibold text-white"
+                          rounded-full bg-warn-vivid px-1 text-[11.5px] font-semibold text-white"
                       >
                         {badge}
                       </span>
@@ -294,7 +294,7 @@ export default function AppShell({
     <div className="flex items-center gap-2.5">
       <span
         className={`grid h-8 w-8 shrink-0 place-items-center rounded-[var(--radius-md)]
-          text-[11px] font-bold tracking-[-0.02em] shadow-[var(--shadow-xs)] ${
+          text-[12px] font-bold tracking-[-0.02em] shadow-[var(--shadow-xs)] ${
             dark ? "bg-rail-accent text-rail-accent-fg" : "bg-accent text-accent-fg"
           }`}
       >
@@ -302,14 +302,14 @@ export default function AppShell({
       </span>
       <div className="min-w-0 leading-tight">
         <div
-          className={`truncate text-[13px] font-semibold tracking-[-0.015em] ${
+          className={`truncate text-[14px] font-semibold tracking-[-0.015em] ${
             dark ? "text-rail-fg" : "text-fg"
           }`}
         >
           Invoice Processing
         </div>
         <div
-          className={`truncate text-[10.5px] tracking-[0.01em] ${
+          className={`truncate text-[11.5px] tracking-[0.01em] ${
             dark ? "text-rail-faint" : "text-faint"
           }`}
         >
@@ -330,12 +330,12 @@ export default function AppShell({
 
   const account = user && (
     <div className="flex items-center gap-2.5 border-t border-rail-line px-3 py-3">
-      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-rail-hover text-[10px] font-semibold text-rail-fg uppercase">
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-rail-hover text-[11px] font-semibold text-rail-fg uppercase">
         {user.username.slice(0, 2)}
       </span>
       <div className="min-w-0 flex-1 leading-tight">
-        <div className="truncate text-[12px] font-semibold text-rail-fg">{user.username}</div>
-        <div className="truncate text-[10.5px] text-rail-faint">{roleOf()}</div>
+        <div className="truncate text-[13px] font-semibold text-rail-fg">{user.username}</div>
+        <div className="truncate text-[11.5px] text-rail-faint">{roleOf()}</div>
       </div>
       {/* Offered the list the SERVER said it can answer in, so nobody is shown
           a language the backend would then answer in English. */}

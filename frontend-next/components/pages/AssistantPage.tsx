@@ -229,7 +229,7 @@ export default function AssistantPage() {
                           key={s.ask}
                           type="button"
                           onClick={() => void send(s.ask)}
-                          className="rounded-[var(--radius-md)] border border-line bg-sunken px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-line-strong hover:text-fg"
+                          className="rounded-[var(--radius-md)] border border-line bg-sunken px-2.5 py-1.5 text-[13px] text-muted transition-colors hover:border-line-strong hover:text-fg"
                         >
                           {s.label}
                         </button>
@@ -243,7 +243,7 @@ export default function AssistantPage() {
             )}
 
             {busy && (
-              <div className="flex items-center gap-2 text-[12.5px] text-faint">
+              <div className="flex items-center gap-2 text-[13.5px] text-faint">
                 <Spinner size={12} />
                 {t("assistant.thinking")}
               </div>
@@ -273,7 +273,7 @@ export default function AssistantPage() {
                 }}
                 placeholder={t("assistant.placeholder")}
                 aria-label={t("assistant.placeholder")}
-                className="max-h-40 min-h-[2.25rem] flex-1 resize-y rounded-[var(--radius-md)] border border-line bg-sunken px-3 py-2 text-[13px] text-fg placeholder:text-faint focus:border-line-strong focus:outline-none"
+                className="max-h-40 min-h-[2.25rem] flex-1 resize-y rounded-[var(--radius-md)] border border-line bg-sunken px-3 py-2 text-[14px] text-fg placeholder:text-faint focus:border-line-strong focus:outline-none"
               />
               <Button type="submit" variant="primary" loading={busy} disabled={!draft.trim() || tooLong}>
                 {t("assistant.send")}
@@ -298,7 +298,7 @@ function Turn({ turn, onRetry }: { turn: ChatTurn; onRetry: () => void }) {
   if (turn.role === "user") {
     return (
       <div className="flex justify-end">
-        <p className="max-w-[85%] rounded-[var(--radius-md)] bg-accent-quiet px-3 py-2 text-[13px] whitespace-pre-wrap">
+        <p className="max-w-[85%] rounded-[var(--radius-md)] bg-accent-quiet px-3 py-2 text-[14px] whitespace-pre-wrap">
           {turn.content}
         </p>
       </div>
@@ -312,7 +312,7 @@ function Turn({ turn, onRetry }: { turn: ChatTurn; onRetry: () => void }) {
           <IconAlert size={14} />
         </span>
         <div className="min-w-0">
-          <p className="text-[13px] text-bad">{turn.error}</p>
+          <p className="text-[14px] text-bad">{turn.error}</p>
           <Button size="sm" className="mt-1.5" onClick={onRetry}>
             {t("app.retry")}
           </Button>
@@ -326,10 +326,10 @@ function Turn({ turn, onRetry }: { turn: ChatTurn; onRetry: () => void }) {
 
   return (
     <div className="max-w-[92%] space-y-2">
-      <p className="text-[13px] whitespace-pre-wrap">{turn.content}</p>
+      <p className="text-[14px] whitespace-pre-wrap">{turn.content}</p>
 
       {reply?.notice && (
-        <Callout tone="warn" className="text-[12px]">
+        <Callout tone="warn" className="text-[13px]">
           {reply.notice}
         </Callout>
       )}
@@ -350,10 +350,10 @@ function Turn({ turn, onRetry }: { turn: ChatTurn; onRetry: () => void }) {
 
       {reply && reply.facts && Object.keys(reply.facts).length > 0 && (
         <details className="rounded-[var(--radius-md)] border border-line bg-sunken">
-          <summary className="cursor-pointer px-3 py-2 text-[12px] text-muted select-none">
+          <summary className="cursor-pointer px-3 py-2 text-[13px] text-muted select-none">
             {t("assistant.records")}
           </summary>
-          <pre className="max-h-72 overflow-auto border-t border-line px-3 py-2 text-[11.5px] leading-relaxed text-muted">
+          <pre className="max-h-72 overflow-auto border-t border-line px-3 py-2 text-[12.5px] leading-relaxed text-muted">
             {JSON.stringify(reply.facts, null, 1)}
           </pre>
         </details>

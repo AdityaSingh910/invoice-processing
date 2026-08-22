@@ -301,9 +301,9 @@ export default function OverviewPage({
                             background: blocking ? "var(--bad-vivid)" : "var(--warn-vivid)",
                           }}
                         />
-                        <span className="tnum w-3 shrink-0 text-[11px] text-faint">{i + 1}</span>
-                        <span className="min-w-0 flex-1 truncate text-[12.5px]">{r.reason}</span>
-                        <span className="tnum shrink-0 text-[13px] font-semibold">{r.count}</span>
+                        <span className="tnum w-3 shrink-0 text-[12px] text-faint">{i + 1}</span>
+                        <span className="min-w-0 flex-1 truncate text-[13.5px]">{r.reason}</span>
+                        <span className="tnum shrink-0 text-[14px] font-semibold">{r.count}</span>
                         <Badge tone={blocking ? "bad" : "warn"} className="shrink-0">
                           {blocking ? "Blocks" : "Holds"}
                         </Badge>
@@ -351,14 +351,14 @@ export default function OverviewPage({
                     const tone = over ? "bad" : pct >= 99.5 ? "warn" : "ok";
                     return (
                       <tr key={po.po_number}>
-                        <TD className="tnum text-[12.5px] font-medium">{po.po_number}</TD>
-                        <TD className="max-w-[150px] truncate text-[12.5px] text-muted">
+                        <TD className="tnum text-[13.5px] font-medium">{po.po_number}</TD>
+                        <TD className="max-w-[150px] truncate text-[13.5px] text-muted">
                           {po.vendor}
                         </TD>
-                        <TD align="right" className="text-[12.5px] text-muted">
+                        <TD align="right" className="text-[13.5px] text-muted">
                           {money(consumed)}
                         </TD>
-                        <TD align="right" className="text-[12.5px] font-semibold">
+                        <TD align="right" className="text-[13.5px] font-semibold">
                           {money(remaining)}
                         </TD>
                         <TD>
@@ -370,7 +370,7 @@ export default function OverviewPage({
                               height={4}
                               ariaLabel={`${pct.toFixed(0)}% consumed`}
                             />
-                            <span className="tnum w-8 shrink-0 text-right text-[11px] text-faint">
+                            <span className="tnum w-8 shrink-0 text-right text-[12px] text-faint">
                               {pct.toFixed(0)}%
                             </span>
                           </div>
@@ -430,15 +430,15 @@ export default function OverviewPage({
                             an invoice. The upload FILENAME is an artefact of
                             how it arrived — kept as the row's tooltip, not as
                             its headline. */}
-                        <span className="block truncate text-[12.5px] font-medium">
+                        <span className="block truncate text-[13.5px] font-medium">
                           {r.vendor_name || "Unknown vendor"}
                         </span>
-                        <span className="t-meta tnum block truncate text-[11px]">
+                        <span className="t-meta tnum block truncate text-[12px]">
                           {r.invoice_number || "no invoice number"}
                           {r.po_number ? ` · ${r.po_number}` : ""}
                         </span>
                       </span>
-                      <span className="tnum shrink-0 text-[12.5px] font-semibold">
+                      <span className="tnum shrink-0 text-[13.5px] font-semibold">
                         {amount(r.total, r.audit?.invoice?.currency || "USD")}
                       </span>
                       <StatusBadge status={r.status} />
@@ -446,7 +446,7 @@ export default function OverviewPage({
                           w-11 it wrapped onto two lines in any locale that
                           formats time that way, which pushed every feed row
                           out of alignment. */}
-                      <span className="tnum t-meta w-16 shrink-0 text-right text-[11px] whitespace-nowrap">
+                      <span className="tnum t-meta w-16 shrink-0 text-right text-[12px] whitespace-nowrap">
                         {whenCompact(r.created_at)}
                       </span>
                     </button>
@@ -494,7 +494,7 @@ function Stat({
           <Tooltip label={hint}>
             <span
               tabIndex={0}
-              className="grid h-3.5 w-3.5 cursor-help place-items-center rounded-full border border-line text-[9px] text-faint"
+              className="grid h-3.5 w-3.5 cursor-help place-items-center rounded-full border border-line text-[10px] text-faint"
             >
               ?
             </span>
@@ -505,7 +505,7 @@ function Stat({
       <div className="mt-2.5 flex items-end justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="t-metric tnum">{value}</div>
-          <p className="t-meta mt-1 text-[11px] leading-snug">{caption}</p>
+          <p className="t-meta mt-1 text-[12px] leading-snug">{caption}</p>
         </div>
         {/* The sparkline is supporting detail, and it is the first thing to
             go when the cell narrows: at four cells across a laptop viewport it

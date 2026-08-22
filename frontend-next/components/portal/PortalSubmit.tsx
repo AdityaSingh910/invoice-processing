@@ -92,7 +92,7 @@ export default function PortalSubmit({ onSubmitted }: { onSubmitted: () => void 
             <IconUpload size={16} />
           </span>
           <div>
-            <p className="text-[13px] font-medium">
+            <p className="text-[14px] font-medium">
               {file ? file.name : t("portal.submit.drop")}
             </p>
             <p className="t-meta mt-1">
@@ -126,7 +126,7 @@ export default function PortalSubmit({ onSubmitted }: { onSubmitted: () => void 
           </div>
 
           {busy && (
-            <span className="flex items-center gap-2 text-[12px] text-muted">
+            <span className="flex items-center gap-2 text-[13px] text-muted">
               <Spinner />
               {t("portal.submit.reading")}
             </span>
@@ -156,8 +156,8 @@ export default function PortalSubmit({ onSubmitted }: { onSubmitted: () => void 
               <Badge tone={stateTone(result.state)} dot>
                 {stateWord(result.state)}
               </Badge>
-              <span className="text-[12.5px] text-muted">{result.state_headline}</span>
-              <span className="ml-auto text-[12.5px] font-medium">
+              <span className="text-[13.5px] text-muted">{result.state_headline}</span>
+              <span className="ml-auto text-[13.5px] font-medium">
                 {amount(result.total, result.currency)}
               </span>
             </div>
@@ -169,7 +169,7 @@ export default function PortalSubmit({ onSubmitted }: { onSubmitted: () => void 
             {result.state_detail.length > 0 && (
               <ul className="flex flex-col gap-1.5">
                 {result.state_detail.map((line, i) => (
-                  <li key={i} className="text-[12.5px] leading-relaxed">
+                  <li key={i} className="text-[13.5px] leading-relaxed">
                     {line}
                   </li>
                 ))}

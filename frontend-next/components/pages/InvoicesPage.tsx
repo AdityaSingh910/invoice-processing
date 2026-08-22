@@ -67,6 +67,23 @@ export default function InvoicesPage({
 
   const rows = useMemo(() => runs.data ?? [], [runs.data]);
 
+  /* INVOICES AND REVIEW QUEUE ARE THE SAME SECTION, SO NEITHER REMOUNTS.
+     `initialFilter` was read by useState, which uses its argument on the FIRST
+     render and ignores it forever after. Both nav rows open section "invoices",
+     so React keeps this instance mounted and merely hands it a new prop -- and
+     nothing read it. Clicking "Review queue" while on "Invoices" lit the other
+     row and changed nothing else; the only way to actually switch was to visit
+     a different section first, because that unmounted this page and let the
+     initialiser run again.
+
+     Syncing the prop is what makes the two rows navigate. `page` goes back to
+     one for the same reason the effect below does it: the new filter has its
+     own row count. */
+  useEffect(() => {
+    setFilter(initialFilter ?? "ALL");
+    setPage(0);
+  }, [initialFilter]);
+
   // Any change to the query shape returns to page one, or a filter can strand
   // you on a page that no longer exists.
   useEffect(() => setPage(0), [filter, query, sort, asc]);
@@ -279,29 +296,29 @@ export default function InvoicesPage({
                       }}
                       className="interactive"
                     >
-                      <TD className="tnum text-[11.5px] text-faint">{r.id}</TD>
+                      <TD className="tnum text-[12.5px] text-faint">{r.id}</TD>
 
                       {/* Vendor leads. An AP clerk looks for "who is billing
                           me", then "which invoice" — the upload filename is an
                           artefact of transport and belongs underneath, not in
                           the identity column where it was before. */}
                       <TD>
-                        <div className="max-w-[190px] truncate text-[12.5px] font-medium">
+                        <div className="max-w-[190px] truncate text-[13.5px] font-medium">
                           {r.vendor_name || "Unknown vendor"}
                         </div>
                         <div
-                          className="t-meta max-w-[190px] truncate text-[11px]"
+                          className="t-meta max-w-[190px] truncate text-[12px]"
                           title={r.filename}
                         >
                           {r.filename}
                         </div>
                       </TD>
 
-                      <TD className="tnum text-[12.5px]">
+                      <TD className="tnum text-[13.5px]">
                         {r.invoice_number || <span className="text-faint">—</span>}
                       </TD>
 
-                      <TD align="right" className="text-[12.5px] font-semibold">
+                      <TD align="right" className="text-[13.5px] font-semibold">
                         {/* Falls back to USD, matching the extractor's own
                             default -- a run with no stored audit trail must
                             not lose its currency SYMBOL, just its precision
@@ -309,7 +326,7 @@ export default function InvoicesPage({
                         {amount(r.total, r.audit?.invoice?.currency || "USD")}
                       </TD>
 
-                      <TD className="tnum text-[12px] text-muted">
+                      <TD className="tnum text-[13px] text-muted">
                         {r.po_number || <span className="text-faint">—</span>}
                       </TD>
 
@@ -336,7 +353,7 @@ export default function InvoicesPage({
                             its width on a year and a seconds field nobody is
                             scanning for. */}
                         <Tooltip label={when(r.created_at)} side="top">
-                          <span className="tnum t-meta text-[11.5px]">
+                          <span className="tnum t-meta text-[12.5px]">
                             {whenCompact(r.created_at)}
                           </span>
                         </Tooltip>
@@ -347,7 +364,7 @@ export default function InvoicesPage({
               </DataTable>
 
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-sunken px-4 py-2.5">
-                <p className="t-meta text-[11.5px]">
+                <p className="t-meta text-[12.5px]">
                   Showing{" "}
                   <span className="tnum font-semibold text-secondary">
                     {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, filtered.length)}
@@ -367,7 +384,7 @@ export default function InvoicesPage({
                       aria-label="Previous page"
                       icon={<IconChevronLeft size={14} />}
                     />
-                    <span className="tnum px-1 text-[11.5px] text-muted">
+                    <span className="tnum px-1 text-[12.5px] text-muted">
                       Page <span className="font-semibold text-secondary">{page + 1}</span> of{" "}
                       {pages}
                     </span>

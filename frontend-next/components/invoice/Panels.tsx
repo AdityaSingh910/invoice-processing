@@ -48,7 +48,7 @@ export function ReasonList({ reasons }: { reasons: Reason[] }) {
       {items.map((r, i) => {
         const { color, Icon } = LEVEL[r.level] ?? LEVEL.info;
         return (
-          <li key={i} className="flex gap-2.5 text-[12.5px] leading-snug">
+          <li key={i} className="flex gap-2.5 text-[13.5px] leading-snug">
             <span className="mt-px shrink-0" style={{ color }}>
               <Icon size={13} />
             </span>
@@ -135,7 +135,7 @@ export function ExtractionSummary({ e }: { e: Extracted }) {
           {route.label}
         </Badge>
       </div>
-      {route.note && <p className="t-meta text-[11.5px] leading-snug">{route.note}</p>}
+      {route.note && <p className="t-meta text-[12.5px] leading-snug">{route.note}</p>}
 
       {missing.length > 0 && (
         <Callout
@@ -242,7 +242,7 @@ export function ExtractedFields({ e, audit }: { e: Extracted; audit?: Audit }) {
           withBadge(
             "total",
             e.total != null ? (
-              <span key="tt" className="tnum text-[13px] font-semibold">
+              <span key="tt" className="tnum text-[14px] font-semibold">
                 {amount(e.total, e.currency)}
               </span>
             ) : (
@@ -309,7 +309,7 @@ export function ReviewerBrief({ audit, extracted }: { audit?: Audit; extracted?:
       {audit.reason && (
         <div>
           <h4 className="t-caption mb-1">Why it was flagged</h4>
-          <p className="text-[12.5px] leading-snug">{audit.reason}</p>
+          <p className="text-[13.5px] leading-snug">{audit.reason}</p>
         </div>
       )}
 
@@ -327,7 +327,7 @@ export function ReviewerBrief({ audit, extracted }: { audit?: Audit; extracted?:
                   className="rounded-[var(--radius-sm)] border border-line bg-sunken px-2.5 py-2"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[12.5px] font-medium">{fieldLabel(f)}</span>
+                    <span className="text-[13.5px] font-medium">{fieldLabel(f)}</span>
                     {p?.confidence != null && (
                       // Coloured by the same rule as everywhere else. It used
                       // to read `confidence >= 0.65 ? "warn" : "bad"`, which
@@ -343,14 +343,14 @@ export function ReviewerBrief({ audit, extracted }: { audit?: Audit; extracted?:
                     )}
                   </div>
                   {p?.evidence ? (
-                    <p className="t-meta mt-1 text-[11.5px] leading-snug">
+                    <p className="t-meta mt-1 text-[12.5px] leading-snug">
                       “{p.evidence}”{p.source ? ` — ${p.source}` : ""}
                       {p.evidence_verified === false && (
                         <span className="text-bad"> (not found in the document — unverified)</span>
                       )}
                     </p>
                   ) : (
-                    <p className="t-meta mt-1 text-[11.5px]">No extracted evidence on record for this field.</p>
+                    <p className="t-meta mt-1 text-[12.5px]">No extracted evidence on record for this field.</p>
                   )}
                 </li>
               );
