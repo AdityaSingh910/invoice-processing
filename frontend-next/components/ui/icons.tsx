@@ -229,3 +229,13 @@ export const IconSettings = (p: IconProps) => (
     <path d="M8 1.5v1.75M8 12.75v1.75M14.5 8h-1.75M3.25 8H1.5M12.6 3.4l-1.24 1.24M4.64 11.36 3.4 12.6M12.6 12.6l-1.24-1.24M4.64 4.64 3.4 3.4" />
   </Svg>
 );
+
+/** An envelope, for the held-message review queue -- distinct from
+ *  IconSettings (the mailbox CONNECTION) because this is about individual
+ *  MESSAGES that arrived through it. */
+export const IconMail = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="1.75" y="3.25" width="12.5" height="9.5" rx="1.5" />
+    <path d="M2.25 4.25 8 8.75l5.75-4.5" />
+  </Svg>
+);

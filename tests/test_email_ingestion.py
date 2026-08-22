@@ -1098,6 +1098,59 @@ def test_the_release_then_process_workflow_over_http(db, client, trusted):
     assert response.json()["processed_attachments"] == 1
 
 
+def test_a_gmail_invoice_is_released_and_processed_over_http_by_one_reviewer(db, client):
+    """The exact chain the Email queue screen drives, over the real HTTP
+    endpoints rather than by calling storage/email_ingest functions directly
+    (test_a_gmail_vendor_invoice_completes_the_full_chain_after_release, above,
+    proves the underlying mechanics; this proves the API surface a browser
+    actually calls, end to end, for a consumer-webmail sender with no
+    authentication evidence -- the case this feature exists for).
+
+    'reviewer' is used for both calls because that is the role that holds both
+    invoice:review and invoice:process (auth.ROLE_SCOPES) -- the same
+    combination the queue's "Release & process" button requires before it
+    renders at all.
+    """
+    result = ingest(invoice_email(from_header="Vendor <vendor@gmail.com>",
+                                  subject="Invoice for August"),
+                    trusted_senders=[])
+    assert result["status"] == "QUARANTINED"
+    email_id = result["email_id"]
+
+    detail = client.get(f"/api/email/messages/{email_id}",
+                        headers=auth_headers("viewer")).json()
+    assert detail["classification"] == "UNVERIFIED"
+    assert detail["status"] == "QUARANTINED"
+    assert "consumer/free-mail" in " ".join(detail["reasons"])
+    assert detail["audit"]["sender_context"]["sender_type"] == "PERSONAL"
+
+    release = client.post(f"/api/email/messages/{email_id}/release",
+                          json={"note": "called the vendor, confirmed the invoice"},
+                          headers=auth_headers("reviewer"))
+    assert release.status_code == 200
+    assert release.json()["status"] == "RELEASED"
+
+    process = client.post(f"/api/email/messages/{email_id}/process",
+                          headers=auth_headers("reviewer"))
+    assert process.status_code == 200
+    body = process.json()
+    assert body["processed_attachments"] == 1
+    assert len(body["runs"]) == 1
+    run_id = body["runs"][0]
+
+    runs = client.get("/api/runs", headers=auth_headers("viewer")).json()
+    assert any(r["id"] == run_id for r in runs), \
+        "the resulting invoice must be findable the same way Invoices / Review queue find it"
+
+    # And the message's own history carries the release note and both actors,
+    # exactly what an auditor reviewing a consumer-webmail admission needs.
+    activity = client.get(f"/api/email/messages/{email_id}",
+                          headers=auth_headers("viewer")).json()["activity"]
+    released_events = [a for a in activity if a["event_type"] == "RELEASED"]
+    assert released_events and released_events[0]["actor"] == "test-reviewer"
+    assert released_events[0]["note"] == "called the vendor, confirmed the invoice"
+
+
 def test_processing_an_unknown_message_is_404(db, client):
     assert client.post("/api/email/messages/999999/process",
                        headers=auth_headers("analyst")).status_code == 404

@@ -31,7 +31,7 @@ suite is green.**
 | Supplier portal | A vendor signs in and sees **their own** invoices, purchase orders and documents — and can send an invoice. Isolation is enforced in SQL against the authenticated account; a client role holds no internal scope at all — see [Supplier portal](#supplier-portal) |
 | Database | PostgreSQL via `DATABASE_URL` — no SQLite fallback anywhere |
 | Email trusted-source verification | Real DKIM verification, DMARC alignment, quarantine |
-| Email invoice ingestion | Polls a mailbox, triages cheaply before spending an LLM call, and feeds the same pipeline a browser upload drives — **IMAP, or a Gmail mailbox an administrator connects by OAuth from inside the app** (no mailbox password, read-only scope) — see [Connecting Gmail](#connecting-gmail) |
+| Email invoice ingestion | Polls a mailbox, triages cheaply before spending an LLM call, and feeds the same pipeline a browser upload drives — **IMAP, or a Gmail mailbox an administrator connects by OAuth from inside the app** (no mailbox password, read-only scope) — held messages are reviewed and released from an **Email queue** screen in the app — see [Connecting Gmail](#connecting-gmail) |
 | KPIs and analytics | Automation / task-success / review KPIs, per-stage bottlenecks, review latency, vendor + PO + email funnels — **all derived at read time, no stored counters** |
 | Logs, filters & exports | Searchable, groupable, exportable history across invoices, messages and pipeline stages — **a query over the rows already on file, never a second log table** |
 | Email invoice ingestion | IMAP mailbox → cheap sender/relevance filter → security verification → the same invoice pipeline a browser upload uses |
@@ -867,6 +867,23 @@ verification is held, its invoice PDF is preserved in the same document store
 everything else uses, and a reviewer releases or discards it with the same
 permission that accepts a held invoice. Processing re-reads the *stored*
 security status, so there is no argument a caller can pass that gets around it.
+
+**Reviewing a held message happens in the app, at Administration → Email
+queue.** A message that could not be authenticated — again, the ordinary
+condition of an invoice sent from Gmail, Outlook or Yahoo, not a finding — sits
+there with its evidence: the classification (a security finding: verified,
+failed, suspicious, or unverified) shown as its own badge, separate from the
+processing state (held, released, discarded) shown as another, so the two are
+never read as one thing. A reviewer opens the message, reads the SPF/DKIM/DMARC
+results and the sender's trust context, and either **Discards** it, **Releases**
+it, or **Releases & processes** it in one step — which fires the same two
+existing, separately-authorised calls (release, then process) a reviewer with
+both permissions could always make by hand, just without needing to script it.
+The resulting invoice run then shows up in Invoices / Review queue exactly like
+any other. Nothing here changes admission: a message still needs a real
+authentication pass to be trusted automatically, and being on the trusted-sender
+list or looking like consumer webmail only changes what the reviewer reads, per
+above — never whether it was cryptographically provable.
 
 **The provider is replaceable.** IMAP is implemented — real, TLS-only, on the
 standard library, preferring an OAuth2 token over a mailbox password — and

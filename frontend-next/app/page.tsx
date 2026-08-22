@@ -25,6 +25,7 @@ import AppShell, {
 } from "@/components/layout/AppShell";
 import AnalyticsPage from "@/components/pages/AnalyticsPage";
 import AssistantPage from "@/components/pages/AssistantPage";
+import EmailQueuePage from "@/components/pages/EmailQueuePage";
 import OverviewPage from "@/components/pages/OverviewPage";
 import ProcessPage from "@/components/pages/ProcessPage";
 import InvoicesPage from "@/components/pages/InvoicesPage";
@@ -137,6 +138,9 @@ export default function Home() {
           server's mailbox connection rather than about invoice rows, so there
           is nothing in the shared run/reference data to hand down. */}
       {section === "settings" && <SettingsPage />}
+      {/* Email review queue: fetches its own data, same reason as Settings --
+          it is about held messages, not about the shared run/reference data. */}
+      {section === "email-queue" && <EmailQueuePage />}
       {section === "reference" && (
         <ReferencePage reference={reference} runs={runs} initialTab={referenceTab} />
       )}

@@ -907,8 +907,11 @@ deterministic, which is itself tested.
    out-of-the-box default — every unsigned message is UNVERIFIED and
    quarantined.** That is correct and safe, but it means the feature does
    nothing useful until a deployment names its boundary or enables DNS.
-6. **No frontend.** These endpoints have no UI; Phase F is backend-and-tests
-   only, the same restriction Phases D and E worked under (§11).
+6. **No frontend at the time this phase shipped.** These endpoints had no UI;
+   Phase F was backend-and-tests only, the same restriction Phases D and E
+   worked under (§11). **The Email queue screen (§7b.14, a later, post-Phase-G2
+   patch) is that UI** — listing every message this module classified, its
+   evidence, and the release/discard actions this section's endpoints expose.
 
 ## 7b. Email invoice ingestion & extraction (Phase G)
 
@@ -1129,10 +1132,12 @@ uvicorn workers is safe — see §7b.5.
    tokens. The IMAP provider was deliberately left exactly as it was.
 4. **PDF only.** The extraction pipeline reads PDFs, so other formats are
    recorded and skipped with a reason rather than half-processed.
-5. **No frontend — EXCEPT the Gmail connection screen.** The message,
-   quarantine and attachment endpoints still have no UI, the same restriction
-   Phases D, E and F worked under (§11). Phase G2 added one screen, and only
-   one: connecting a mailbox (§7h.8).
+5. **No frontend — EXCEPT the Gmail connection screen and the Email queue.**
+   Phase G2 added the mailbox-connection screen (§7h.8); the post-Phase-G2
+   patch in §7b.14 added the Email queue — listing, evidence, and
+   release/discard/process for the message, quarantine and attachment
+   endpoints. Every OTHER reporting/log surface in this codebase still has no
+   UI, the same restriction Phases D, E and F worked under (§11).
 6. **The relevance filter is a heuristic**, deliberately biased toward
    processing. It can pass junk through to an LLM call; it is built not to stop
    a real invoice, and stopped messages are kept and re-runnable either way.
@@ -1241,10 +1246,12 @@ changed — the detail endpoint (`GET /api/email/messages/{id}`) already returns
 the full record via `SELECT *`, so the new sentence and the new `audit` key are
 already visible there with no API change.
 
-**No frontend change.** There is still no dedicated quarantine-queue UI
-(§7b.12 item 5 / §7a.10 item 6) — this is purely a backend/audit change,
-consumed today through the API or the existing Settings ingestion counters,
-neither of which needed editing.
+**No frontend change — at the time this patch landed.** There was still no
+dedicated quarantine-queue UI (§7b.12 item 5 / §7a.10 item 6): this patch was
+purely a backend/audit change, consumed through the API or the existing
+Settings ingestion counters. **That gap is closed in §7b.14, in the same
+session** — read that section for what actually changed once an operator
+tried to use this from a browser.
 
 **Tests.** 11 new test cases in `tests/test_email_ingestion.py`, section
 "8a. Consumer-webmail sender context": a Gmail sender with missing evidence
@@ -1258,6 +1265,104 @@ None of the pre-existing 95 tests in that file, nor any of the 110 in
 `test_email_security.py`, needed to change — this patch is additive by
 construction, and the full suite for both files (216 tests) passes unchanged
 alongside the 11 new ones.
+
+### 7b.14 The Email queue screen (post-Phase-G2 patch, not a new phase)
+
+**Status: implemented, tested, verified. NOT A NEW PHASE** — same designation
+as §7b.13: a targeted product fix, not a redesign.
+
+**THE PROBLEM WAS THE PRODUCT, NOT THE POLICY.** A real end-to-end test —
+sending an invoice from a Gmail account to the connected Gmail mailbox, in a
+browser, as an actual supplier would — showed "Held for review: 1, Invoices
+created: 0" on the Settings screen with no way to get from one number to the
+other. Reading `email_security.classify()` and `email_ingest.py` end to end
+confirms the backend was already correct: `classification`
+(`VERIFIED`/`FAILED`/`SUSPICIOUS`/`UNVERIFIED`) is a security finding, decided
+once and never rewritten; `status`
+(`ADMITTED`/`QUARANTINED`/`RELEASED`/`DISCARDED`) is a separate processing
+state a person can move; a message with no cryptographic evidence — the
+ordinary condition of an invoice sent from Gmail, Outlook or Yahoo, never a
+sign of anything hostile — lands `UNVERIFIED`/`QUARANTINED` exactly like a
+message from a total stranger would, and `POST
+/api/email/messages/{id}/release` then `POST
+/api/email/messages/{id}/process` already ran it through the same pipeline
+every other door uses. **None of that changed here.** The gap was
+§7b.12 item 5 / §7a.10 item 6's stated limitation — "no frontend" — made
+literal: there was nowhere in the browser to press Release. A held invoice
+was, in practice, stuck, even though the API behind it always worked. §7b.13's
+own "No frontend change" line is corrected in place to point here.
+
+**THE FIX IS ONE NEW SCREEN, `frontend-next/components/pages/EmailQueuePage.tsx`,
+CALLING ENDPOINTS THAT ALREADY EXISTED.** Nothing in `backend/` changed for
+this — no new endpoint, no new scope, no schema change, no altered admission
+rule. The screen:
+
+- Lists messages from `GET /api/email/messages` (optionally
+  `?status_filter=`), with a segmented filter defaulting to **Held for
+  review** — the queue a reviewer actually works, not the full history.
+- Renders **classification and status as two separate badges, never merged**
+  — the same split §7g.6/§7i.6 already draw between a decision and its
+  presentation, applied here to keep "why this was held" (a security finding)
+  visibly distinct from "what happens to it next" (a process state). A
+  `FAILED` message and an `UNVERIFIED` one are both `QUARANTINED`, and
+  collapsing the badges would erase exactly the difference this feature exists
+  to surface.
+- Shows the full evidence from `GET /api/email/messages/{id}` — SPF/DKIM/DMARC,
+  the digital-signature result, the triage sender type/trust status/relevance,
+  and, when present, §7b.13's `audit.sender_context` block (already appended
+  to `reasons` by the server, so the reviewer reads the same sentence the
+  stored record carries, not a paraphrase of it) — plus the attachment list
+  and the full activity history, unfiltered: this is the internal review
+  queue, not the supplier portal, so nothing here is behind Phase J's
+  frozen-vocabulary translation (§7g.6 — that restriction is for a client's
+  own screen, not an AP reviewer's).
+- Offers **Release**, **Discard**, **Process attachments**, and a combined
+  **Release & process** button — gated client-side on `can("invoice:review")`
+  / `can("invoice:process")` (a courtesy; every endpoint re-checks server-side,
+  same as everywhere else in this codebase, §7e.8). "Release & process" makes
+  **two separate HTTP calls, one after the other** — it is not a new endpoint
+  and does not change what `/release` means. §7b.10's "release does not
+  auto-process" decision is unchanged: releasing and processing remain two
+  separately-authorized, separately-audited actions: this is a one-click
+  convenience for the common case where the same reviewer holds both scopes
+  (the `reviewer` demo role does, §8), not a new server-side behaviour.
+
+**Nav entry:** a new "Email queue" row in the existing Administration group,
+beside "Email integration" (Settings), scoped on `invoice:read` — visible to
+anyone who can already read invoice data, since a viewer should be able to see
+what is held even without the authority to act on it. Files: new
+`components/pages/EmailQueuePage.tsx`; edits to `lib/types.ts` (the
+`EmailMessageSummary`/`EmailMessageDetail`/`EmailAttachment` shapes),
+`components/layout/AppShell.tsx` (the nav row and the `Section`/`NavId`
+unions), `app/page.tsx` (routing), `components/ui/icons.tsx` (one icon,
+`IconMail`, appended), and `lib/i18n.tsx` (two nav message keys, English
+only — the existing per-key fallback, §7i.3's rule applied to the frontend's
+own catalogue, means every other language reads the English label rather than
+a blank one until translated).
+
+**Tests.** One new HTTP-level end-to-end test,
+`test_a_gmail_invoice_is_released_and_processed_over_http_by_one_reviewer` in
+`tests/test_email_ingestion.py`, drives exactly the chain this screen calls —
+`GET /api/email/messages/{id}` → `POST .../release` → `POST .../process` →
+`GET /api/runs` — for a `vendor@gmail.com` sender with no authentication
+evidence, through the real `TestClient`, as `reviewer` (the role that holds
+both `invoice:review` and `invoice:process`, matching what the combined button
+requires before it even renders). §7b.13's own
+`test_a_gmail_vendor_invoice_completes_the_full_chain_after_release` already
+proved the underlying mechanics by calling `storage`/`email_ingest` directly;
+this proves the API surface a browser actually calls. All 106 pre-existing
+tests in `test_email_ingestion.py`, all 110 in `test_email_security.py`, and
+all 144 in `test_gmail_oauth.py` pass unchanged (§10).
+
+**What this deliberately did not do.** No admission rule changed: `gmail.com`
+is still not trusted by being popular (§7b.13), a trusted address with no
+cryptographic evidence is still refused admission (still asserted by
+`test_a_trusted_gmail_address_with_missing_evidence_is_still_quarantined_not_admitted`),
+a structural spoof or a broken DKIM signature still reads `FAILED` regardless
+of how consumer-like the domain looks, and `email_security.py` still has no
+notion of triage's sender/trust axes (§7b.13's whole design). This session
+built the missing product surface for an already-correct policy; it did not
+redesign the policy.
 
 ## 7c. KPIs & analytics (Phase H)
 
@@ -4195,6 +4300,8 @@ OPERATIONS   Overview            performance, and what is blocked on a person
              Invoices            the full register
              Review queue        the same section, filtered     (badge = open holds)
 ADMIN        Email integration   connect a Gmail mailbox       [invoice:admin]
+             Email queue         held/released messages,       [invoice:read]
+                                 release/discard/process        (§7b.14)
 REPORTING    Analytics           Phase H KPIs and trends
              Assistant           Phase K2, ask about your invoices
 REFERENCE    Purchase orders     the same section, orders tab

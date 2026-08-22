@@ -705,6 +705,140 @@ export interface GmailDisconnectResult {
   ingestion_active: boolean;
 }
 
+/* --------------------------------------------------------- email queue (F/G)
+ *
+ * Shapes for GET/POST /api/email/messages* -- Phase F's verification record
+ * and Phase G's ingestion/triage columns on the same row. `classification`
+ * (VERIFIED/FAILED/SUSPICIOUS/UNVERIFIED) is the SECURITY FINDING, decided
+ * once and never rewritten; `status` (ADMITTED/QUARANTINED/RELEASED/
+ * DISCARDED) is the PROCESSING/ELIGIBILITY STATE a person can move. They are
+ * never the same field and must never be rendered as though they were.
+ */
+
+export type EmailClassification = "VERIFIED" | "FAILED" | "SUSPICIOUS" | "UNVERIFIED";
+export type EmailStatus = "ADMITTED" | "QUARANTINED" | "RELEASED" | "DISCARDED";
+
+/** Explains an UNVERIFIED verdict in terms of Phase G's triage, without ever
+ *  changing it -- see `email_ingest._annotate_unverified_sender_context()`.
+ *  Present only when classification is UNVERIFIED and the sender is either
+ *  trusted or a recognised consumer/free-mail domain. */
+export interface EmailSenderContext {
+  sender_type: "CORPORATE" | "PERSONAL" | "UNKNOWN" | null;
+  trust_status: "TRUSTED" | "UNTRUSTED" | "UNKNOWN" | null;
+  vendor_name: string | null;
+  note: string;
+}
+
+/** Summary row from GET /api/email/messages. `audit` is deliberately absent
+ *  here -- it is the largest column and a list view never needs it. */
+export interface EmailMessageSummary {
+  id: number;
+  run_id: number | null;
+  sha256: string;
+  message_id: string | null;
+  received_at: string;
+  submitted_by: string | null;
+  source: string;
+  from_address: string | null;
+  from_domain: string | null;
+  from_display_name: string | null;
+  subject: string | null;
+  size_bytes: number | null;
+  attachment_count: number | null;
+  has_pdf_attachment: boolean;
+  spf_result: string | null;
+  dkim_result: string | null;
+  dmarc_result: string | null;
+  dmarc_aligned: boolean;
+  signature_kind: string | null;
+  signature_result: string | null;
+  trusted_sender: boolean;
+  classification: EmailClassification | null;
+  status: EmailStatus | null;
+  reasons: string[];
+  released_by: string | null;
+  released_at: string | null;
+  release_note: string | null;
+  /** Phase G columns -- present on a message that arrived through ingestion,
+   *  null on one submitted directly at the Phase F endpoint. */
+  ingest_status?: string | null;
+  sender_type?: string | null;
+  trust_status?: string | null;
+  relevance?: string | null;
+}
+
+export interface EmailActivityEntry {
+  id: number;
+  email_id: number;
+  event_type: string;
+  actor: string | null;
+  created_at: string;
+  note: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/** The full record from GET /api/email/messages/{id}: everything in the
+ *  summary row plus the authentication evidence and the activity history. */
+export interface EmailMessageDetail extends EmailMessageSummary {
+  audit: {
+    evaluated_mechanisms?: Record<string, { state: string; result: string; detail?: string | null }>;
+    trusted_sender?: { matched: boolean; matched_on: string | null; vendor_name: string | null };
+    conflicts?: string[];
+    limitations?: string[];
+    sender_context?: EmailSenderContext;
+    triage_only?: boolean;
+    note?: string;
+    [key: string]: unknown;
+  } | null;
+  triage?: {
+    sender: {
+      sender_type: string;
+      trust_status: string;
+      vendor_name: string | null;
+      from_address: string | null;
+      from_domain: string | null;
+    };
+    relevance: { relevance: string; reasons: string[] };
+  } | null;
+  activity: EmailActivityEntry[];
+}
+
+export interface EmailAttachment {
+  id: number;
+  email_id: number;
+  seq: number;
+  filename: string | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  sha256: string | null;
+  is_invoice_candidate: boolean;
+  status: string;
+  skip_reason: string | null;
+  run_id: number | null;
+  run_status: string | null;
+  error: string | null;
+  created_at: string;
+  processed_at: string | null;
+}
+
+export interface EmailReleaseResult {
+  ok: boolean;
+  id: number;
+  status: EmailStatus;
+  by: string | null;
+}
+
+export interface EmailProcessResult {
+  ok: boolean;
+  email_id: number;
+  status: string;
+  classification: string | null;
+  processed_attachments: number;
+  skipped_attachments: number;
+  failed_attachments: number;
+  runs: number[];
+}
+
 export interface EmailIngestionStatus {
   enabled: boolean;
   active: boolean;
