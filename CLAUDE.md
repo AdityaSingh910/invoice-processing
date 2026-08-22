@@ -5714,7 +5714,7 @@ is already configured.
 
 | Username | Password | Can |
 |---|---|---|
-| `demo` | `demodemodemo` | **the sign-in box opens on this one** — reviewer scopes |
+| `demo` | `zampisthebest` | **the sign-in box opens on this one** — reviewer scopes |
 | `viewer` | `demo-viewer` | read |
 | `analyst` | `demo-analyst` | + process invoices |
 | `reviewer` | `demo-reviewer` | + accept/reject held invoices, claim reviews |
@@ -5731,7 +5731,7 @@ any of them present.
 
 ### The prefilled credential
 
-**`LoginGate.tsx`'s `OPENING_CREDENTIAL` puts `demo` / `demodemodemo` in the
+**`LoginGate.tsx`'s `OPENING_CREDENTIAL` puts `demo` / `zampisthebest` in the
 sign-in fields, so a visitor presses one button and is inside the product.**
 That password is compiled into the browser bundle in clear text, which is the
 point rather than a leak — anyone who reaches the page has it.

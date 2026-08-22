@@ -200,7 +200,7 @@ npm run build      # regenerates the static export FastAPI serves
 ### Signing in
 
 The API requires authentication, so the app opens on a sign-in screen — **with
-`demo` / `demodemodemo` already in the fields, so there is nothing to type.
+`demo` / `zampisthebest` already in the fields, so there is nothing to type.
 Press Sign in.** That account has reviewer scopes, which is the whole product:
 upload an invoice, watch the nine stages, work the review queue, accept or
 reject.
@@ -211,7 +211,7 @@ panel under the sign-in box. All ship in `data/users.json`:
 
 | Username | Password | Can |
 |---|---|---|
-| `demo` | `demodemodemo` | **prefilled** — process invoices, accept / reject held ones |
+| `demo` | `zampisthebest` | **prefilled** — process invoices, accept / reject held ones |
 | `viewer` | `demo-viewer` | read runs, audit trails, reference data |
 | `analyst` | `demo-analyst` | the above + process invoices |
 | `reviewer` | `demo-reviewer` | the above + accept / reject held invoices |

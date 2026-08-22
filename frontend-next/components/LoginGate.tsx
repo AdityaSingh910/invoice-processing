@@ -85,7 +85,7 @@ const SHOW_DEMO_ACCOUNTS = !process.env.NEXT_PUBLIC_API_BASE_URL;
  * history from the Overview screen. Widening it is a decision about what
  * strangers may do, not a convenience.
  */
-const OPENING_CREDENTIAL = { username: "demo", password: "demodemodemo" };
+const OPENING_CREDENTIAL = { username: "demo", password: "zampisthebest" };
 
 const DEMO = [
   // The one the box already opens on. Listed anyway rather than left implicit:
