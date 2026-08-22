@@ -30,33 +30,12 @@ import OverviewPage from "@/components/pages/OverviewPage";
 import ProcessPage from "@/components/pages/ProcessPage";
 import InvoicesPage from "@/components/pages/InvoicesPage";
 import PortalApp from "@/components/portal/PortalApp";
-import SettingsPage from "@/components/pages/SettingsPage";
 import ReferencePage from "@/components/pages/ReferencePage";
 import { Spinner } from "@/components/ui";
 
-/**
- * Where to open on first render.
- *
- * Normally Overview. The exception is the Gmail OAuth round trip (Phase G2):
- * Google redirects the browser back to `/?gmail=<result>`, and the person
- * making that trip was on the Email integration screen when they left. Landing
- * them on Overview would drop them somewhere that says nothing about what just
- * happened, with the outcome sitting unread in the address bar — so the
- * parameter that carries the result also chooses the destination.
- *
- * Lazily evaluated and guarded, because this is a static export: there is no
- * `window` during prerender.
- */
-function initialSection(): "overview" | "settings" {
-  if (typeof window === "undefined") return "overview";
-  return new URLSearchParams(window.location.search).has("gmail")
-    ? "settings"
-    : "overview";
-}
-
 export default function Home() {
   const { user, ready, can } = useAuth();
-  const [section, setSection] = useState<Section>(initialSection);
+  const [section, setSection] = useState<Section>("overview");
   // Set only by a navigation that promised a filtered view (Overview's "Open
   // review queue", or the sidebar's own "Review queue" item); consumed once
   // by InvoicesPage's own initial state, so it does not fight the reviewer's
@@ -68,7 +47,7 @@ export default function Home() {
   // Which sidebar ROW is lit. Seven rows share five sections, so the section
   // alone cannot say — see NavId in AppShell. Derived from the same options
   // the caller already passes, so navigate()'s signature is unchanged.
-  const [navId, setNavId] = useState<NavId>(initialSection);
+  const [navId, setNavId] = useState<NavId>("overview");
   // Bumped when a run finishes or a review lands, so every view refetches.
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -134,10 +113,6 @@ export default function Home() {
       {section === "assistant" && <AssistantPage />}
       {section === "process" && <ProcessPage runs={runs} onRan={refresh} />}
       {section === "invoices" && <InvoicesPage runs={runs} initialFilter={invoicesFilter} />}
-      {/* Email integration (Phase G2). Fetches its own status: it is about the
-          server's mailbox connection rather than about invoice rows, so there
-          is nothing in the shared run/reference data to hand down. */}
-      {section === "settings" && <SettingsPage />}
       {/* Email review queue: fetches its own data, same reason as Settings --
           it is about held messages, not about the shared run/reference data. */}
       {section === "email-queue" && <EmailQueuePage />}

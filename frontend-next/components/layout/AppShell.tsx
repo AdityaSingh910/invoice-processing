@@ -27,7 +27,6 @@ import {
   IconSignOut,
   IconSun,
   IconChat,
-  IconSettings,
   IconUpload,
   IconX,
 } from "@/components/ui/icons";
@@ -39,7 +38,6 @@ export type Section =
   | "process"
   | "invoices"
   | "reference"
-  | "settings"
   | "email-queue";
 
 /**
@@ -64,7 +62,6 @@ export type NavId =
   | "review-queue"
   | "purchase-orders"
   | "approved-vendors"
-  | "settings"
   | "email-queue";
 
 /** `exceptionsOnly` lets a caller (Overview's exception card, or the "Review
@@ -140,17 +137,6 @@ const GROUPS: {
   {
     labelKey: "nav.group.admin",
     items: [
-      {
-        // Scoped to invoice:admin, so it does not render for anyone who would
-        // only get a 403 from it. That is a courtesy, not a control -- every
-        // endpoint behind it re-checks the scope server-side.
-        id: "settings",
-        key: "settings",
-        labelKey: "nav.settings",
-        hintKey: "nav.settings.hint",
-        icon: IconSettings,
-        scope: "invoice:admin",
-      },
       {
         // Reading the queue is `invoice:read`, same as everything else here,
         // but nobody without `invoice:review` can act on a row -- gated on
