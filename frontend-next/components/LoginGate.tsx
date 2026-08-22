@@ -55,6 +55,29 @@ import LanguagePicker from "@/components/ui/LanguagePicker";
  */
 const SHOW_DEMO_ACCOUNTS = !process.env.NEXT_PUBLIC_API_BASE_URL;
 
+/**
+ * The credential the sign-in box opens with, so a visitor can just press the
+ * button.
+ *
+ * THIS IS A PUBLIC CREDENTIAL AND IS MEANT TO BE. It ships in the browser
+ * bundle in clear text, which is not a leak -- it is the point. Anyone who
+ * reaches this page has it.
+ *
+ * IT ONLY WORKS IF THE SERVER'S USER STORE ACTUALLY HAS THIS ACCOUNT. Prefilled
+ * fields that fail are worse than empty ones: the visitor presses Sign in, gets
+ * "incorrect username or password", and concludes the product is broken rather
+ * than that they were handed a credential nobody provisioned. `AUTH_USERS_JSON`
+ * on the API host is what decides, and the account must NOT carry the `demo`
+ * flag -- `APP_ENV=production` refuses to start while any flagged account is in
+ * the store (§8), which is exactly the guard that keeps the SHIPPED demo
+ * accounts out of a real deployment.
+ *
+ * Give it the narrowest role that still shows the product. Whatever scopes it
+ * holds, every visitor holds -- including, if it were an administrator, the
+ * authority to override a decision and to clear the run history.
+ */
+const OPENING_CREDENTIAL = { username: "demo", password: "demo" };
+
 const DEMO = [
   { user: "analyst", pass: "demo-analyst", role: "Process invoices" },
   { user: "reviewer", pass: "demo-reviewer", role: "Process, accept, reject" },
@@ -188,8 +211,8 @@ function Row({
 export default function LoginGate() {
   const { signIn, notice } = useAuth();
   const t = useT();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [username, setUsername] = useState(OPENING_CREDENTIAL.username);
+  const [password, setPassword] = useState(OPENING_CREDENTIAL.password);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -294,18 +317,6 @@ export default function LoginGate() {
                 </button>
               </div>
 
-              {/* Three properties the API can actually be held to, not three
-                  adjectives. */}
-              <ul className="mt-9 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[12.5px] text-white/40 lg:justify-start">
-                {[t("login.footer.secure"), t("login.footer.roleBased"), t("login.footer.explainable")].map(
-                  (item) => (
-                    <li key={item} className="flex items-center gap-1.5">
-                      <IconCheck size={13} className="text-emerald-400/70" />
-                      {item}
-                    </li>
-                  )
-                )}
-              </ul>
             </section>
 
             {/* --------------------------------------------- authentication */}
