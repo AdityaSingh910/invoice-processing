@@ -199,11 +199,19 @@ npm run build      # regenerates the static export FastAPI serves
 
 ### Signing in
 
-The API requires authentication, so the app opens on a sign-in screen. Demo
-accounts ship in `data/users.json`:
+The API requires authentication, so the app opens on a sign-in screen — **with
+`demo` / `demodemodemo` already in the fields, so there is nothing to type.
+Press Sign in.** That account has reviewer scopes, which is the whole product:
+upload an invoice, watch the nine stages, work the review queue, accept or
+reject.
+
+The other accounts are there to see the same application through a different
+permission, and any of them can be loaded into the form with one click from the
+panel under the sign-in box. All ship in `data/users.json`:
 
 | Username | Password | Can |
 |---|---|---|
+| `demo` | `demodemodemo` | **prefilled** — process invoices, accept / reject held ones |
 | `viewer` | `demo-viewer` | read runs, audit trails, reference data |
 | `analyst` | `demo-analyst` | the above + process invoices |
 | `reviewer` | `demo-reviewer` | the above + accept / reject held invoices |
@@ -211,14 +219,18 @@ accounts ship in `data/users.json`:
 | `acme` | `demo-acme` | **supplier portal** — Acme's own invoices and POs, and may send one |
 | `globex` | `demo-globex` | **supplier portal** — Globex's own records, view only |
 
-The last two are EXTERNAL accounts. They sign in here through the same token
-endpoint — there is no separate client login — and land in the
+`acme` and `globex` are EXTERNAL accounts. They sign in here through the same
+token endpoint — there is no separate client login — and land in the
 [supplier portal](#supplier-portal) rather than in the application above. They
 hold no `invoice:*` scope at all, so every internal endpoint refuses them.
 
-These are demo credentials and all six are flagged as such in the file. A
+These are demo credentials and all seven are flagged as such in the file. A
 production start refuses to boot while they exist — see
-[Running in production](#running-in-production).
+[Running in production](#running-in-production). A deployment that wants the
+prefilled sign-in to work therefore provisions its own **unflagged** `demo`
+entry through `AUTH_USERS_JSON`; the prefilled password is compiled into the
+browser bundle, which is the point of it, so give that account no more
+authority than a stranger should have.
 
 > Set `AUTH_SECRET` in `.env` before a demo. Without it a fresh signing key is
 > generated per process, so every server restart silently invalidates the token

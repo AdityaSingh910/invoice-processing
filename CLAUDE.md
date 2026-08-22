@@ -494,11 +494,40 @@ The uploaded PDF survives the run that processed it.
 
 - **`documents` table** (above) holds **metadata only** — never the bytes.
 - **`backend/documents.py`** is the content-storage abstraction:
-  `DocumentStore` interface, with `LocalDocumentStore` (default; files under
-  `config.DOCUMENT_STORAGE_DIR`, `./data/documents`, gitignored — writes
-  atomically via temp-file + `os.replace`) and `S3DocumentStore`
-  (S3-compatible bucket; `boto3` imported lazily inside `__init__` so a
-  local-only install never needs the package).
+  `DocumentStore` interface, with three implementations —
+  `LocalDocumentStore` (default; files under `config.DOCUMENT_STORAGE_DIR`,
+  `./data/documents`, gitignored — writes atomically via temp-file +
+  `os.replace`), `PostgresDocumentStore` (the bytes as `bytea` in a
+  `document_blobs` table) and `S3DocumentStore` (S3-compatible bucket; `boto3`
+  imported lazily inside `__init__` so a local-only install never needs the
+  package). `DOCUMENT_STORE_BACKEND` picks one; nothing outside this module
+  knows which is active.
+
+  **`postgres` exists because `local` is SILENTLY wrong on a container host**
+  (§7k.9 item 1): the filesystem is replaced on every deploy while the
+  `documents` row, being in Postgres, survives — so the run still opens, the
+  audit trail is still complete, and only the download 404s, with nothing
+  warning anyone because the write really did succeed. `s3` fixes that and is
+  still the right answer at volume, but it needs a bucket, a key pair, a region
+  and an endpoint correct before the first document is safe. `postgres` needs
+  one variable, because the deployment already has a durable, credentialed
+  place to put bytes. The table is created on first use, the way `quota.py`
+  creates `extraction_quota`, so a deployment that does not select this backend
+  never gets the table and one that does needs no migration.
+
+  The trade is stated rather than hidden: PDF bytes in a table are bytes the
+  database has to back up and stream, and a bulk read costs more here than
+  against object storage. At AP volumes — one row per invoice, a few hundred
+  KB, read when a reviewer opens one — that is a good trade; at a much larger
+  one it is not, and the remedy is `DOCUMENT_STORE_BACKEND=s3`, which needs no
+  code change because it is already written.
+
+  **This is the ninth time this project has weighed storing something, and the
+  second time the answer was yes** (§7h.4's refresh token was the first). A PDF
+  is not derivable from anything on file, so the "derive it, do not store it"
+  rule (§3, §6.2, §7c.1, §7d.1, §7f.5, §7g.11, §7i.12, §7k.10) never applied to
+  it — the only question was *where*, and the answer had been "a disk that goes
+  away".
 - **The storage key is never the original filename.** Always
   `documents.new_storage_key()` — a server-generated UUID4 — validated
   against a fixed shape (`^[0-9a-f]{32}\.pdf$`) before ever touching a
@@ -4685,10 +4714,15 @@ Item 4 stands only if someone later wants Gmail back.
    means UPLOADED PDFs DO NOT SURVIVE A REDEPLOY.** The `documents` row lives in
    Supabase so the run still opens and the audit trail is intact, but the
    download 404s and the audit report has no source document — and nothing warns
-   you, because from the application's side the write succeeded. §7k.6 and
-   `DEPLOYMENT.md` §1.3 have the fix (Supabase Storage speaks S3; `boto3` is
-   already in the image). **Verify it in Railway's Variables tab before trusting
-   any stored document.**
+   you, because from the application's side the write succeeded.
+   **THE FIX IS NOW ONE VARIABLE: set `DOCUMENT_STORE_BACKEND=postgres` in
+   Railway's Variables tab.** A third store (§5) puts the bytes in the database
+   the deployment already has — no bucket, no key pair, no second vendor, and
+   the table is created on first use so there is no migration. `s3` is still
+   there and still right at volume; it just is not the cheapest way to stop
+   losing documents today. **Check the variable before trusting any stored
+   document** — a document's own `storage_backend` column records which store
+   actually wrote it.
 2. **A real open bug in `doclang.normalise_date`** — see §10 and the checklist
    at the end of this file. Nobody has looked at it.
 3. **`test_api_security.py::test_the_frontend_bundle_contains_no_secret` reads
@@ -5497,6 +5531,52 @@ Phase L's locale layer are all in the history.
 | Phase G2 Gmail connection screen | `e1f907b` |
 | Phase L locale layer and language picker | (see §13.3) |
 
+### 11.-1 Three interface fixes (post-deployment, not a phase)
+
+Found by using the deployed application rather than by reading it. All three
+are frontend-only — no endpoint, no scope, no schema, no rule changed.
+
+**A long tooltip escaped its card and drew over its neighbours.** `Tooltip`
+was `position: absolute` inside the trigger and `whitespace-nowrap`, so a
+sentence-length label on a trigger near a panel's right edge — the "?" on every
+Overview KPI card is exactly that — rendered as one ~700px line that ran across
+the cards beside it and was clipped by the window: unreadable text on top of
+readable text. It is now rendered in a **body portal**, `position: fixed`,
+**wrapping** inside `max-w-[min(22rem,calc(100vw-1rem))]`, and **measured after
+mount and clamped into the viewport** — shifting sideways to stay on screen and
+flipping below the trigger when there is no room above. The portal is what makes
+the clamp reliable at all: inside the card, `overflow` and stacking contexts on
+any ancestor get a vote, and several of them do clip. Verified in a real browser
+across all six Overview help markers: every tooltip fully inside the viewport,
+2–3 wrapped lines instead of one clipped one.
+
+**A ruling did not move the Recent activity feed.** The feed sorted on
+`created_at` — when the invoice ARRIVED. So accepting or rejecting a held
+invoice from last week changed the register and the badge but left this panel,
+the one place on the landing screen that claims to show what just happened,
+completely still. The work looked lost. It now sorts on the run's **last
+touch** — `reviewed_at` if there is one, `created_at` otherwise, both written by
+the same `datetime.now(timezone.utc).isoformat()` call so they are directly
+comparable — and the row's clock shows the same timestamp it is ordered by,
+because a ruling recorded at 14:02 sitting at the top showing last week's
+arrival time reads as a sorting bug. Verified end to end in a browser: of four
+invoices, accepting the one that arrived THIRD moved it to position 1 with its
+review time and its new Approved badge.
+
+**Every reload threw the user back to Overview.** `section` was plain component
+state seeded to `"overview"`, so F5 — and every "Refresh" anyone reached for out
+of habit — lost their place. It now lives in the **URL hash**. The NAV ID is
+what is stored rather than the section, because it is the finer of the two:
+seven rows share five sections, so the section alone cannot restore a
+pre-filtered review queue and the id can. `destinationFor` is the inverse of
+`AppShell.navIdFor`, one table, so the two cannot drift. An unrecognised hash is
+ignored rather than treated as a section, `replaceState` rather than a hash
+assignment keeps the sidebar from piling up a history entry per click, a
+`hashchange` listener makes Back and Forward work, and the whole thing is gated
+on `internal` so a supplier's URL is never stamped with a row their shell does
+not have. Verified: `#review-queue` and `#analytics` both survive a reload, with
+the right heading and the right nav row lit.
+
 ### 11.0 There are TWO frontends in one bundle (Phase J)
 
 `app/page.tsx` branches on the signed-in identity: a principal carrying
@@ -5634,6 +5714,7 @@ is already configured.
 
 | Username | Password | Can |
 |---|---|---|
+| `demo` | `demodemodemo` | **the sign-in box opens on this one** — reviewer scopes |
 | `viewer` | `demo-viewer` | read |
 | `analyst` | `demo-analyst` | + process invoices |
 | `reviewer` | `demo-reviewer` | + accept/reject held invoices, claim reviews |
@@ -5641,12 +5722,46 @@ is already configured.
 | `acme` | `demo-acme` | **supplier portal** — Acme's own invoices and POs, and may submit |
 | `globex` | `demo-globex` | **supplier portal** — Globex's own records, view only |
 
-The last two are EXTERNAL accounts (Phase J). They sign in at the same screen
-through the same token endpoint — there is no separate client login — and land
-in the **supplier portal**, not in the application above. They hold no
-`invoice:*` scope at all, so every internal endpoint refuses them. All six
+`acme` and `globex` are EXTERNAL accounts (Phase J). They sign in at the same
+screen through the same token endpoint — there is no separate client login —
+and land in the **supplier portal**, not in the application above. They hold no
+`invoice:*` scope at all, so every internal endpoint refuses them. All seven
 accounts carry the `demo` flag, so `APP_ENV=production` refuses to start with
 any of them present.
+
+### The prefilled credential
+
+**`LoginGate.tsx`'s `OPENING_CREDENTIAL` puts `demo` / `demodemodemo` in the
+sign-in fields, so a visitor presses one button and is inside the product.**
+That password is compiled into the browser bundle in clear text, which is the
+point rather than a leak — anyone who reaches the page has it.
+
+**IT IS TWO SEPARATE PROVISIONINGS AND BOTH ARE REQUIRED.** `data/users.json`
+carries it for the local demo, flagged `demo` like everything else shipped
+here. A real deployment reads `AUTH_USERS_JSON` instead, and its entry must
+**not** carry the flag — the production gate refuses to start while any flagged
+account is in the store, and that guard is what keeps the six published
+accounts out of a real deployment. So the deployed store needs its own entry:
+
+```json
+{"username": "demo", "roles": ["reviewer"], "password_hash": "pbkdf2_sha256$390000$..."}
+```
+
+Generate the hash with `scripts/make_user_store.py generate --user demo:reviewer`,
+which uses the same `auth.hash_password` the application verifies against.
+
+**If the constant and the deployment's store ever disagree, the CONSTANT is the
+one that is wrong.** A prefilled field that fails is worse than an empty one:
+the visitor presses Sign in, is told the username or password is incorrect, and
+concludes the product is broken rather than that nobody provisioned the
+credential they were handed.
+
+**The role is `reviewer`, and it is a ceiling rather than a default.** Whatever
+scopes this account holds, every visitor holds. `reviewer` reaches the whole
+product — upload, the nine stages, the review queue, accept and reject — while
+stopping short of `invoice:admin`, which would hand every passer-by the
+authority to override a decision and to clear the run history from Overview.
+Widening it is a decision about what strangers may do, not a convenience.
 
 **Known operational gotchas:**
 - **To revoke a supplier's access, DISABLE the record, do not delete it** —
