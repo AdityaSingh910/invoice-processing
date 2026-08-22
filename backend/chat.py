@@ -445,9 +445,16 @@ def retrieve_processing(entities, principal) -> dict:
     data = analytics.processing(window)
     return {
         "range": data.get("range"),
-        "run_duration": data.get("run_duration"),
+        # THESE TWO KEYS ARE NOT WHAT analytics.processing() CALLS THEM, and
+        # reading the wrong name here does not fail -- it quietly returns null,
+        # so the assistant reported "not recorded" for a run time and a route
+        # breakdown that were both sitting in the payload. `run_time_ms` is the
+        # top-level name, and `by_route` lives under `extraction` beside
+        # `by_provider` (the route is what the pipeline CHOSE, the provider is
+        # who answered -- §7c.2).
+        "run_duration": data.get("run_time_ms"),
         "slowest_stages": (data.get("stages") or [])[:6],
-        "by_route": data.get("by_route"),
+        "by_route": (data.get("extraction") or {}).get("by_route"),
         "extraction_budget": data.get("quota"),
     }
 
@@ -1012,12 +1019,297 @@ def _structured_answer(intent: str, facts: dict, locale: str = None) -> str:
                 f"{facts.get('consumed_by_approved_invoices')} consumed by "
                 f"approved invoices, {facts.get('remaining')} remaining.")
 
-    # Everything else is a figures payload; hand it back as readable JSON
-    # rather than inventing a sentence per analytics shape.
+    if intent == "overview":
+        return _lay_out_overview(facts)
+
+    if intent == "processing":
+        return _lay_out_processing(facts)
+
+    if intent == "reviews":
+        return _lay_out_reviews(facts)
+
+    if intent == "vendor":
+        return _lay_out_vendor(facts)
+
+    if intent == "my_work":
+        return _lay_out_my_work(facts)
+
+    if intent == "activity":
+        return _lay_out_activity(facts)
+
+    # A retriever added later, before anyone writes a layout for it. Readable
+    # JSON is a poor answer but it is a TRUE one, and it is better than an
+    # invented sentence about a shape this function has never seen.
     try:
         return json.dumps(facts, default=str, indent=1)[:MAX_ANSWER_CHARS]
     except (TypeError, ValueError):
         return str(facts)[:MAX_ANSWER_CHARS]
+
+
+# ---------------------------------------------------------------------------
+# Layouts for the figures payloads.
+#
+# Every one of these prints values EXACTLY AS RETRIEVED. Nothing is rounded,
+# recomputed, or summed -- a layout that did arithmetic would be a second,
+# unaudited implementation of analytics.py, and the two would disagree.
+#
+# The single presentational liberty is a rate: `0.6666666666666666` is rendered
+# `67%` and always beside the counts it came from, so the raw numerator and
+# denominator remain on the page. That is the same value, shown the way the
+# Analytics screen already shows it -- not a different one.
+# ---------------------------------------------------------------------------
+
+def _plain(value, absent: str = "not recorded") -> str:
+    """A retrieved value, or a phrase saying it was never measured.
+
+    NULL IS NOT ZERO here any more than it is in analytics.py (§7c.3): "no
+    invoices were processed" and "0% were automated" are different statements
+    and only one of them is true on a quiet day.
+    """
+    return absent if value is None else str(value)
+
+
+def _rate_line(kpi) -> str:
+    """A KPI as a percentage with the counts it was derived from."""
+    if not isinstance(kpi, dict):
+        return "not recorded"
+    value, num, den = kpi.get("value"), kpi.get("numerator"), kpi.get("denominator")
+    if value is None:
+        return f"not measured — nothing in range (0 of {_plain(den, '0')})"
+    try:
+        pct = f"{float(value) * 100:.0f}%"
+    except (TypeError, ValueError):
+        pct = str(value)
+    return f"{pct} ({_plain(num, '0')} of {_plain(den, '0')})"
+
+
+def _range_label(facts: dict) -> str:
+    rng = facts.get("range") or {}
+    return rng.get("label") or rng.get("key") or "the selected period"
+
+
+def _lay_out_overview(facts: dict) -> str:
+    kpis = facts.get("kpis") or {}
+    lines = [f"{_range_label(facts)} (UTC).", ""]
+
+    for key, label in (
+        ("automation_rate", "Automation rate"),
+        ("processing_success_rate", "Processing success"),
+        ("task_success_ratio", "Task success"),
+        ("human_review_rate", "Sent to a person"),
+        ("review_completion_rate", "Reviews completed"),
+    ):
+        if key in kpis:
+            lines.append(f"- {label}: {_rate_line(kpis.get(key))}")
+
+    value = facts.get("value_by_currency") or {}
+    if value:
+        # NEVER a combined total. Adding 1,000 EUR to 1,000 USD produces a
+        # number that is not an amount of anything (§7c.7), so this reads out
+        # one bucket per currency exactly as the payload holds them.
+        lines.append("")
+        lines.append("Value processed, per currency (never summed across them):")
+        for ccy, row in list(value.items())[:6]:
+            if isinstance(row, dict):
+                lines.append(f"- {ccy}: {_plain(row.get('processed'))} processed, "
+                             f"{_plain(row.get('approved'))} approved")
+
+    backlog = facts.get("backlog") or {}
+    if backlog:
+        lines.append("")
+        lines.append(f"Waiting on a person right now: "
+                     f"{_plain(backlog.get('awaiting_review'), '0')} awaiting review, "
+                     f"{_plain(backlog.get('claimed_now'), '0')} currently claimed.")
+    return "\n".join(lines)
+
+
+def _lay_out_processing(facts: dict) -> str:
+    lines = [f"{_range_label(facts)} (UTC).", ""]
+
+    duration = facts.get("run_duration")
+    if isinstance(duration, dict) and duration.get("samples"):
+        lines.append(f"Run time over {duration['samples']} run(s): "
+                     f"median {_plain(duration.get('median'))} ms, "
+                     f"average {_plain(duration.get('average'))} ms, "
+                     f"p95 {_plain(duration.get('p95'))} ms.")
+    else:
+        lines.append("No run timings were recorded in this period.")
+
+    stages = facts.get("slowest_stages") or []
+    if stages:
+        lines.append("")
+        lines.append("Slowest stages first — this is the bottleneck view:")
+        for s in stages:
+            if isinstance(s, dict):
+                lines.append(f"- {s.get('stage')}: median {_plain(s.get('median'))} ms "
+                             f"over {_plain(s.get('runs'), '0')} run(s)")
+
+    routes = facts.get("by_route")
+    if isinstance(routes, dict) and routes:
+        lines.append("")
+        lines.append("Which route read the document: "
+                     + ", ".join(f"{k} {v}" for k, v in routes.items()))
+
+    budget = facts.get("extraction_budget") or {}
+    providers = budget.get("providers") if isinstance(budget, dict) else None
+    if providers:
+        lines.append("")
+        lines.append("Extraction budget today:")
+        for p in providers:
+            if isinstance(p, dict):
+                lines.append(f"- {p.get('provider')}: {_plain(p.get('used_today'), '0')} used "
+                             f"of {_plain(p.get('limit'))}, "
+                             f"{_plain(p.get('remaining'))} remaining")
+        # Request counts only. This application records no token counts and no
+        # price table, so a spend figure cannot be derived from it (§7c.12).
+        lines.append("These are request counts. No monetary cost can be derived from them.")
+    return "\n".join(lines)
+
+
+def _lay_out_reviews(facts: dict) -> str:
+    funnel = facts.get("funnel") or {}
+    lines = [f"{_range_label(facts)} (UTC).", ""]
+
+    if funnel:
+        lines.append(f"{_plain(funnel.get('runs'), '0')} invoice(s) entered. "
+                     f"{_plain(funnel.get('held_for_review'), '0')} were held for review, "
+                     f"{_plain(funnel.get('ruled_on'), '0')} have been ruled on "
+                     f"({_plain(funnel.get('accepted'), '0')} accepted, "
+                     f"{_plain(funnel.get('rejected'), '0')} rejected), "
+                     f"{_plain(funnel.get('still_awaiting'), '0')} still awaiting.")
+
+    for key, label, note in (
+        ("time_to_decision", "Invoice arrived to ruling recorded", ""),
+        ("handling_time", "Claimed to ruling recorded",
+         "claiming is optional, so this covers claimed reviews only"),
+    ):
+        block = facts.get(key)
+        if isinstance(block, dict):
+            if block.get("samples"):
+                lines.append("")
+                lines.append(f"{label}: median "
+                             f"{_plain(block.get('median_seconds'))} s over "
+                             f"{block['samples']} sample(s)"
+                             + (f" — {note}" if note else "."))
+            else:
+                lines.append("")
+                lines.append(f"{label}: nothing measured in this period.")
+
+    held = facts.get("why_invoices_were_held") or []
+    if held:
+        lines.append("")
+        # Grouped by the RULE that failed, not by the reason sentence -- a
+        # sentence embeds the invoice's own amounts, so grouping by it lists
+        # invoices rather than causes (§7c.11). A run failing three rules
+        # appears three times, so these do not sum to the run count.
+        lines.append("Why invoices were held, by the rule that failed "
+                     "(one run can fail several, so these do not sum to the total):")
+        for row in held[:8]:
+            if isinstance(row, dict):
+                lines.append(f"- {row.get('rule')}: {_plain(row.get('runs'), '0')} run(s)")
+
+    lines.append("")
+    lines.append("A hold a reviewer then accepted is not evidence the hold was "
+                 "wrong, and one they rejected is not evidence it was right — "
+                 "this application holds no record of what the correct answer was.")
+    return "\n".join(lines)
+
+
+def _lay_out_vendor(facts: dict) -> str:
+    name = facts.get("vendor_searched_for")
+    lines = [f"Vendor searched for: {_plain(name, 'none named in the question')}.", ""]
+
+    approved = facts.get("on_the_approved_vendor_list") or []
+    if approved:
+        for v in approved:
+            if isinstance(v, dict):
+                lines.append(f"- On the approved vendor list: {v.get('vendor_name')} "
+                             f"(status: {_plain(v.get('status'))})")
+    else:
+        lines.append("- No matching entry on the approved vendor list.")
+
+    totals = facts.get("totals_in_range") or []
+    if totals:
+        lines.append("")
+        lines.append(f"{_range_label(facts)}:")
+        for row in totals:
+            if isinstance(row, dict):
+                lines.append(f"- {row.get('vendor')}: {_plain(row.get('runs'), '0')} invoice(s), "
+                             f"{_plain(row.get('approved'), '0')} approved, "
+                             f"{_plain(row.get('rejected'), '0')} rejected")
+
+    invoices = facts.get("recent_invoices") or []
+    if invoices:
+        lines.append("")
+        lines.append("Recent invoices:")
+        for item in invoices[:10]:
+            if isinstance(item, dict):
+                lines.append(f"- {item.get('invoice_number')}: {_plain(item.get('total'))} "
+                             f"{_plain(item.get('currency'), '')}, the rules decided "
+                             f"{_plain(item.get('automated_decision'))}, ledger status "
+                             f"{_plain(item.get('ledger_status'))}")
+    return "\n".join(lines)
+
+
+def _lay_out_my_work(facts: dict) -> str:
+    people = facts.get("people") or []
+    scope = facts.get("scope")
+    lines = [f"{_range_label(facts)} — "
+             + ("everyone's figures." if scope == "all" else "your own figures only."),
+             ""]
+
+    if not people:
+        lines.append("No reviews were recorded in this period.")
+        return "\n".join(lines)
+
+    for row in people:
+        if not isinstance(row, dict):
+            continue
+        line = (f"- {row.get('username')}: {_plain(row.get('reviews'), '0')} review(s), "
+                f"{_plain(row.get('accepted'), '0')} accepted, "
+                f"{_plain(row.get('rejected'), '0')} rejected")
+        median = row.get("median_time_to_decision_seconds")
+        if median is not None:
+            line += f", median {median} s to a decision"
+        lines.append(line)
+
+    note = facts.get("note")
+    if note:
+        lines.append("")
+        lines.append(str(note))
+    return "\n".join(lines)
+
+
+def _lay_out_activity(facts: dict) -> str:
+    invoice = facts.get("invoice") or {}
+    lines = [
+        f"{_plain(invoice.get('invoice_number'))} from "
+        f"{_plain(invoice.get('vendor'))}: the rules decided "
+        f"{_plain(invoice.get('automated_decision'))}, and the ledger status is "
+        f"{_plain(invoice.get('ledger_status'))}.",
+        "",
+    ]
+
+    history = facts.get("history") or []
+    if not history:
+        lines.append("Nothing has been recorded against it yet.")
+        return "\n".join(lines)
+
+    lines.append("History, oldest first:")
+    for event in history:
+        if not isinstance(event, dict):
+            continue
+        # A NULL actor means the SYSTEM acted -- an auto-approval cascade, a
+        # claim that expired unattended (§6.1). Said as such rather than given
+        # an invented name, which would be indistinguishable from a real user
+        # called that.
+        actor = event.get("actor")
+        who = f"by {actor}" if actor else "by the system"
+        line = f"- {_plain(event.get('at'))}: {event.get('event')} {who}"
+        if event.get("note"):
+            line += f" — {event['note']}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _guess_vendor_name(question: str) -> str:
