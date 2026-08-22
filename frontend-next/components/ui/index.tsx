@@ -15,6 +15,8 @@ import type {
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { IconAlert, IconChevronDown, IconEmpty, IconSearch } from "./icons";
 
 /* ------------------------------------------------------------------ button */
@@ -482,7 +484,25 @@ export function SkeletonRows({ rows = 6, cols = 5 }: { rows?: number; cols?: num
 
 /* ---------------------------------------------------------------- tooltip */
 
-/** Shows on hover AND keyboard focus, which a `title` attribute never does. */
+/**
+ * Shows on hover AND keyboard focus, which a `title` attribute never does.
+ *
+ * POSITIONED IN A PORTAL, AGAINST THE VIEWPORT -- not absolutely, inside the
+ * trigger. The absolutely-positioned version was laid out relative to whatever
+ * the nearest positioned ancestor happened to be, and it was `whitespace-nowrap`,
+ * so a long label on a trigger near the right-hand edge of a panel (the "?" on
+ * every Overview KPI card is exactly that) rendered as one long line that
+ * escaped its card, ran across its neighbours and was clipped by the window --
+ * unreadable text drawn on top of readable text.
+ *
+ * Two things fix it and both are needed. The label WRAPS inside a bounded
+ * width, so a sentence is a small block rather than a 700px line; and the block
+ * is measured after it mounts and then CLAMPED into the viewport, so it can
+ * shift sideways to stay on screen and flip below the trigger when there is no
+ * room above. `position: fixed` in a body portal is what makes that possible at
+ * all -- inside the card, `overflow` and stacking contexts on any ancestor get
+ * a vote, and several of them do clip.
+ */
 export function Tooltip({
   label,
   children,
@@ -490,26 +510,98 @@ export function Tooltip({
 }: {
   label: string;
   children: ReactNode;
+  /** Preferred side. Honoured when it fits; flipped when it does not. */
   side?: "top" | "right";
 }) {
-  const pos =
-    side === "right"
-      ? "left-full top-1/2 ml-2 -translate-y-1/2"
-      : "bottom-full left-1/2 mb-1.5 -translate-x-1/2";
+  const triggerRef = useRef<HTMLSpanElement | null>(null);
+  const bubbleRef = useRef<HTMLSpanElement | null>(null);
+  const [open, setOpen] = useState(false);
+  // Null until measured. Rendering at 0,0 for one frame would flash the
+  // tooltip in the corner of the screen before it jumps into place.
+  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
+
+  const place = useCallback(() => {
+    const trigger = triggerRef.current?.getBoundingClientRect();
+    const bubble = bubbleRef.current?.getBoundingClientRect();
+    if (!trigger || !bubble) return;
+
+    const gap = 8;
+    const margin = 8; // never closer than this to a window edge
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    let top: number;
+    let left: number;
+
+    if (side === "right" && trigger.right + gap + bubble.width + margin <= vw) {
+      left = trigger.right + gap;
+      top = trigger.top + trigger.height / 2 - bubble.height / 2;
+    } else {
+      left = trigger.left + trigger.width / 2 - bubble.width / 2;
+      // Above by preference; below when the top of the window is in the way.
+      top = trigger.top - gap - bubble.height;
+      if (top < margin) top = trigger.bottom + gap;
+    }
+
+    // Clamp last, so the flip above cannot push it back off screen.
+    left = Math.min(Math.max(margin, left), Math.max(margin, vw - bubble.width - margin));
+    top = Math.min(Math.max(margin, top), Math.max(margin, vh - bubble.height - margin));
+
+    setAt({ top, left });
+  }, [side]);
+
+  // Layout effect, not effect: measure and place before the browser paints, so
+  // the tooltip is never visible in the wrong position even for one frame.
+  useLayoutEffect(() => {
+    if (!open) {
+      setAt(null);
+      return;
+    }
+    place();
+    // A tooltip anchored to a row in a scrolling panel has to follow it, and
+    // one near an edge has to re-clamp when the window changes size.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, place]);
 
   return (
-    <span className="group/tt relative inline-flex">
-      {children}
+    <>
       <span
-        role="tooltip"
-        className={`pointer-events-none absolute z-50 ${pos} rounded-[var(--radius-sm)]
-          border border-line bg-raised px-2 py-1 text-[12.5px] whitespace-nowrap text-fg
-          opacity-0 shadow-[var(--shadow-md)] transition-opacity duration-100
-          group-hover/tt:opacity-100 group-focus-within/tt:opacity-100`}
+        ref={triggerRef}
+        className="relative inline-flex"
+        onPointerEnter={() => setOpen(true)}
+        onPointerLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
       >
-        {label}
+        {children}
       </span>
-    </span>
+      {open &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <span
+            ref={bubbleRef}
+            role="tooltip"
+            style={{
+              top: at?.top ?? 0,
+              left: at?.left ?? 0,
+              // Hidden rather than unmounted until measured: it has to be in
+              // the document to have a width to measure.
+              visibility: at ? "visible" : "hidden",
+            }}
+            className="pointer-events-none fixed z-[100] max-w-[min(22rem,calc(100vw-1rem))]
+              rounded-[var(--radius-sm)] border border-line bg-raised px-2 py-1
+              text-[12.5px] leading-snug text-fg shadow-[var(--shadow-md)]"
+          >
+            {label}
+          </span>,
+          document.body
+        )}
+    </>
   );
 }
 

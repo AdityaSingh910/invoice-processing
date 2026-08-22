@@ -64,6 +64,21 @@ const TONE_VAR: Record<string, string> = {
   neutral: "line-strong",
 };
 
+/**
+ * When a run was last acted on: its human ruling if one was recorded, its
+ * arrival otherwise. Used to order the activity feed -- see `recent` below.
+ *
+ * An unparseable or absent timestamp reads as 0 rather than NaN, which would
+ * make the comparator non-transitive and shuffle the feed unpredictably.
+ */
+function lastTouched(r: RunRecord): number {
+  const t = (v?: string | null) => {
+    const ms = v ? new Date(v).getTime() : NaN;
+    return Number.isFinite(ms) ? ms : 0;
+  };
+  return Math.max(t(r.reviewed_at), t(r.created_at));
+}
+
 export default function OverviewPage({
   runs,
   reference,
@@ -81,10 +96,26 @@ export default function OverviewPage({
     () => poUsage(rows, reference.data?.purchase_orders ?? []),
     [rows, reference.data]
   );
+  /**
+   * "Recent activity" means the last things that HAPPENED, not the last things
+   * that ARRIVED.
+   *
+   * This used to sort on `created_at` alone, which is when the invoice reached
+   * the pipeline. So a reviewer who accepted or rejected a held invoice from
+   * last week saw nothing change here: the ruling was recorded, the register
+   * showed the new status, and this panel -- the one place on the landing
+   * screen that claims to show what just happened -- did not move, because the
+   * invoice's arrival time had not moved. The work looked lost.
+   *
+   * A run's last touch is its human ruling if it has one, and its arrival
+   * otherwise. Both columns are written by the same `datetime.now(timezone.utc)
+   * .isoformat()` call every timestamp in this application uses, so they are
+   * directly comparable.
+   */
   const recent = useMemo(
     () =>
       [...rows]
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .sort((a, b) => lastTouched(b) - lastTouched(a))
         .slice(0, 7),
     [rows]
   );
@@ -442,12 +473,15 @@ export default function OverviewPage({
                         {amount(r.total, r.audit?.invoice?.currency || "USD")}
                       </span>
                       <StatusBadge status={r.status} />
-                      {/* Wide enough for a 12-hour clock ("12:42 AM"). At
-                          w-11 it wrapped onto two lines in any locale that
-                          formats time that way, which pushed every feed row
-                          out of alignment. */}
+                      {/* The time this row is ORDERED by, so the clock agrees
+                          with the position -- a ruling recorded at 14:02 that
+                          sat at the top showing last week's arrival time read
+                          as a sorting bug. Wide enough for a 12-hour clock
+                          ("12:42 AM"): at w-11 it wrapped onto two lines in any
+                          locale that formats time that way, which pushed every
+                          feed row out of alignment. */}
                       <span className="tnum t-meta w-16 shrink-0 text-right text-[12px] whitespace-nowrap">
-                        {whenCompact(r.created_at)}
+                        {whenCompact(r.reviewed_at || r.created_at)}
                       </span>
                     </button>
                   </li>
