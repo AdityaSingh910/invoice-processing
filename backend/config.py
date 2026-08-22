@@ -462,6 +462,42 @@ DAILY_QUOTA_PORTAL_SUBMISSIONS = int(
     os.environ.get("DAILY_QUOTA_PORTAL_SUBMISSIONS", "25") or 25)
 
 # --------------------------------------------------------------------------
+# Database connection pool
+#
+# The ceiling on simultaneous connections this process holds open. It used to
+# be hard-coded at 10 in storage.py, which is fewer than the 40 threads
+# Starlette runs sync endpoints on -- so a burst of ordinary reads (somebody
+# pressing Refresh a few times) could ask for more connections than existed
+# and the surplus requests failed outright rather than waiting their turn.
+#
+# `storage.get_conn()` now waits for a connection rather than refusing, which
+# is the actual fix; this raises the ceiling as well, and makes it settable,
+# because the right number is a property of the DATABASE and not of this code.
+# A hosted Postgres has its own connection limit shared across every client --
+# Supabase's direct connection allows far fewer than its pooler does -- so a
+# deployment that runs several instances must divide that limit between them,
+# and only the operator knows how many there are.
+# --------------------------------------------------------------------------
+DB_POOL_MAX_ENV = "DB_POOL_MAX"
+
+
+def db_pool_max() -> int:
+    """Maximum pooled connections. Read at call time like every other setting
+    here. A missing, unparseable or absurd value falls back to the default
+    rather than raising: a typo in this variable must not stop the process
+    starting, and every value it could take is a performance choice, not a
+    correctness one."""
+    raw = os.environ.get(DB_POOL_MAX_ENV, "").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 16
+    # One connection is enough to serve requests one at a time; more than a
+    # hundred from a single process is a misconfiguration rather than a plan.
+    return value if 1 <= value <= 100 else 16
+
+
+# --------------------------------------------------------------------------
 # Document storage (Phase C)
 #
 # The uploaded PDF itself, kept after processing so a run can still be opened

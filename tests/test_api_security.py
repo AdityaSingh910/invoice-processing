@@ -546,6 +546,129 @@ def test_cors_is_not_wide_open_by_default():
 
 
 # --------------------------------------------------------------------------
+# 7a. a burst of ordinary reads must not fail, and must not end the session
+#
+# THE BUG THIS PINS. `ThreadedConnectionPool.getconn()` raises the instant
+# every connection is checked out -- it does not queue -- and the ceiling was
+# hard-coded at 10 while Starlette runs sync endpoints on a threadpool of 40.
+# So a handful of simultaneous reads, which is all that pressing Refresh a few
+# times amounts to, could ask for more connections than existed and the surplus
+# came back 500.
+#
+# On its own that is a bad error. What made it a SIGN-OUT is that the browser's
+# AuthProvider treated any failure of /api/auth/me as a dead session and threw
+# the token away -- so a 500 on that one endpoint, caused by nothing but haste,
+# logged the user out. Both halves are fixed; this is the server half, which is
+# the one that can be tested here.
+#
+# Real threads against real Postgres, the same technique the ledger and review
+# races already use -- a simulated pool would prove nothing about the pool.
+# --------------------------------------------------------------------------
+
+def test_a_burst_of_concurrent_reads_never_fails_and_never_401s(client, monkeypatch):
+    """Twelve threads, four rounds, on the three endpoints a page load hits.
+
+    THE POOL IS DELIBERATELY SQUEEZED TO TWO CONNECTIONS FIRST, and without
+    that this test cannot fail: a dozen short reads rarely hold ten connections
+    at once, so it passed just as happily against the refuse-instantly pool
+    that caused the bug. A test that cannot go red is not a guard. At a ceiling
+    of two, twenty-four concurrent reads MUST contend, so the only way through
+    is for the surplus to wait its turn.
+
+    Every response must be a 200. A 500 is the pool refusing to queue; a 401
+    would be worse still, because that is the status the frontend acts on by
+    ending the session -- and nothing about being busy makes a token invalid.
+    """
+    import threading
+
+    original_pool = storage._POOL
+    monkeypatch.setenv(config.DB_POOL_MAX_ENV, "2")
+    storage._POOL = None                    # force a rebuild at the new ceiling
+    try:
+        headers = auth_headers("reviewer")
+        paths = ["/api/auth/me", "/api/runs", "/api/reference"]
+        n = 12
+        results, lock, barrier = [], threading.Lock(), threading.Barrier(n)
+
+        def worker(i):
+            path = paths[i % len(paths)]
+            barrier.wait()                  # everyone starts together
+            for _ in range(4):
+                r = client.get(path, headers=headers)
+                with lock:
+                    results.append((path, r.status_code))
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(results) == n * 4
+        bad = [r for r in results if r[1] != 200]
+        assert not bad, f"a burst of ordinary reads produced non-200s: {sorted(set(bad))}"
+    finally:
+        squeezed, storage._POOL = storage._POOL, original_pool
+        if squeezed is not None and squeezed is not original_pool:
+            try:
+                squeezed.closeall()
+            except Exception:
+                pass
+
+
+def test_the_pool_waits_for_a_connection_instead_of_refusing(db):
+    """Hold every connection, then ask for one more.
+
+    The request must BLOCK and then succeed once a connection comes back --
+    not raise. Checked by releasing one from another thread after a delay the
+    borrower could not have satisfied by luck.
+    """
+    import threading
+    import time
+
+    pool = storage._pool()
+    held = [storage.get_conn() for _ in range(config.db_pool_max())]
+
+    outcome = {}
+
+    def borrow():
+        started = time.monotonic()
+        try:
+            conn = storage.get_conn()
+            outcome["waited"] = time.monotonic() - started
+            conn.close()
+            outcome["ok"] = True
+        except Exception as exc:                      # pragma: no cover
+            outcome["ok"] = False
+            outcome["error"] = exc
+
+    t = threading.Thread(target=borrow)
+    t.start()
+    time.sleep(0.3)                       # the borrower is now genuinely waiting
+    held.pop().close()                    # ... and this is what lets it through
+    t.join(timeout=10)
+
+    assert outcome.get("ok") is True, f"getconn refused instead of waiting: {outcome}"
+    assert outcome["waited"] >= 0.25, "it did not actually wait for the release"
+
+    for conn in held:
+        conn.close()
+    assert pool is storage._pool(), "the pool must not have been rebuilt"
+
+
+def test_the_pool_ceiling_is_configurable_and_refuses_a_nonsense_value(monkeypatch):
+    """The right ceiling is a property of the database, not of this code -- a
+    hosted Postgres shares one connection limit across every client. But a typo
+    in the variable must not stop the process starting, so anything
+    unparseable or absurd falls back to the default."""
+    monkeypatch.setenv(config.DB_POOL_MAX_ENV, "32")
+    assert config.db_pool_max() == 32
+    for nonsense in ("0", "-1", "9999", "sixteen", ""):
+        monkeypatch.setenv(config.DB_POOL_MAX_ENV, nonsense)
+        assert config.db_pool_max() == 16, nonsense
+
+
+# --------------------------------------------------------------------------
 # 8. regression: the pipeline still works behind all of this
 # --------------------------------------------------------------------------
 

@@ -42,6 +42,7 @@ directly (see auth.py) and was never part of this database.
 import json
 import os
 import re
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -97,9 +98,55 @@ def _pool() -> "psycopg2.pool.ThreadedConnectionPool":
                 _POOL.closeall()
             except Exception:
                 pass
-        _POOL = psycopg2.pool.ThreadedConnectionPool(1, 10, dsn=dsn)
+        _POOL = psycopg2.pool.ThreadedConnectionPool(1, config.db_pool_max(), dsn=dsn)
         _POOL_DSN = dsn
     return _POOL
+
+
+# How long `get_conn()` will WAIT for a pooled connection before giving up, and
+# how often it re-checks while waiting.
+#
+# THE POOL USED TO REFUSE INSTANTLY, AND THAT WAS A REAL, REPRODUCIBLE BUG.
+# `ThreadedConnectionPool.getconn()` raises `PoolError("connection pool
+# exhausted")` the moment every connection is checked out -- it does not queue.
+# Starlette runs every sync endpoint in a threadpool of 40, so 40 requests can
+# be in flight against a ceiling that was hard-coded at 10, and the eleventh
+# did not wait its turn: it raised, fell through to the generic handler, and
+# came back as a 500.
+#
+# That is the wrong answer to the wrong question. These queries take single-
+# digit milliseconds, so a burst is not "more load than this database can
+# serve" -- it is a queue that has not been allowed to form. Somebody pressing
+# Refresh five times in two seconds is the ordinary case, not an attack, and
+# `/api/auth/me` failing that way is what signed them out (see the frontend's
+# AuthProvider, which used to treat any failure as a dead session).
+#
+# So a caller now waits, briefly and with a deadline. Waiting turns a burst
+# into a queue; the deadline keeps a genuinely stuck database from turning
+# every request thread into a hostage. Past it the PoolError still propagates,
+# because at that point the database really is unavailable and saying so is
+# correct.
+_POOL_WAIT_SECONDS = 5.0
+_POOL_POLL_SECONDS = 0.01
+
+
+def _getconn_waiting(pool):
+    """`pool.getconn()`, but a burst queues instead of failing.
+
+    Polling rather than a condition variable: psycopg2's pool offers no way to
+    be woken when a connection is returned, and wrapping it in one would mean
+    reimplementing `putconn` as well. At a 10ms poll the wait is invisible next
+    to the query it is waiting for, and the loop only spins at all while the
+    pool is genuinely full.
+    """
+    deadline = time.monotonic() + _POOL_WAIT_SECONDS
+    while True:
+        try:
+            return pool.getconn()
+        except psycopg2.pool.PoolError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(_POOL_POLL_SECONDS)
 
 
 class _PooledConnection:
@@ -155,7 +202,7 @@ def get_conn():
     change at all.
     """
     pool = _pool()
-    raw = pool.getconn()
+    raw = _getconn_waiting(pool)
     raw.cursor_factory = psycopg2.extras.RealDictCursor
     raw.autocommit = True   # matches sqlite3's default; write_txn() turns it off
     with raw.cursor() as cur:
