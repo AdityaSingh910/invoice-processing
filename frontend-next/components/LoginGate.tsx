@@ -75,74 +75,84 @@ const DEMO = [
 
 /* -------------------------------------------------------------- the cards */
 
+/**
+ * THREE LINES, IN THE ORDER SOMEBODY READS THEM: what this row is, the one
+ * figure that matters, and what happened to it.
+ *
+ * The first pass gave every card a reference, a status pill, a vendor, an
+ * amount and a footnote -- five things competing at five weights, multiplied
+ * by seventeen cards in constant motion. Individually legible, collectively
+ * noise. A drifting card is glanced at, never read, so it gets one focal
+ * point and nothing else may compete with it: the subject is muted and small,
+ * the figure carries all the weight, the outcome is a quiet line beneath.
+ *
+ * The status pill is gone entirely. Its colour is now a 6px dot on the
+ * outcome line, which is the whole of what a badge was communicating at this
+ * size anyway.
+ */
 type Tone = "ok" | "warn" | "bad" | "plain";
 
 interface SampleCard {
-  tag: string;
-  tone: Tone;
-  ref: string;
-  sub: string;
+  /** What this is about -- reference and party, or the name of the check. */
+  subject: string;
+  /** The one figure. */
   value: string;
-  foot: string;
+  /** What became of it. */
+  outcome: string;
+  tone: Tone;
 }
 
-const TONE: Record<Tone, { chip: string; dot: string }> = {
-  ok: { chip: "bg-emerald-400/12 text-emerald-300 ring-emerald-400/25", dot: "bg-emerald-400" },
-  warn: { chip: "bg-amber-400/12 text-amber-300 ring-amber-400/25", dot: "bg-amber-400" },
-  bad: { chip: "bg-rose-400/12 text-rose-300 ring-rose-400/25", dot: "bg-rose-400" },
-  plain: { chip: "bg-white/[0.06] text-white/70 ring-white/15", dot: "bg-white/40" },
+const DOT: Record<Tone, string> = {
+  ok: "bg-emerald-400",
+  warn: "bg-amber-400",
+  bad: "bg-rose-400",
+  plain: "bg-white/30",
 };
 
 // Row one: invoices, as the register lists them.
 const ROW_INVOICES: SampleCard[] = [
-  { tag: "APPROVED", tone: "ok", ref: "INV-1042", sub: "Acme Office Supplies", value: "₹1,234.28", foot: "Matched PO-1001" },
-  { tag: "NEEDS REVIEW", tone: "warn", ref: "INV-2287", sub: "Globex Logistics", value: "$8,400.00", foot: "Spans two purchase orders" },
-  { tag: "APPROVED", tone: "ok", ref: "INV-3310", sub: "Initech Supplies", value: "€2,000.00", foot: "Converted at the pinned rate" },
-  { tag: "REJECTED", tone: "bad", ref: "INV-1042", sub: "Acme Office Supplies", value: "₹1,234.28", foot: "Duplicate check" },
-  { tag: "APPROVED", tone: "ok", ref: "INV-7701", sub: "Wayne Facilities", value: "$6,500.00", foot: "Within tolerance" },
-  { tag: "NEEDS REVIEW", tone: "warn", ref: "INV-5064", sub: "Soylent Foods", value: "₹78,900.00", foot: "Low extraction confidence" },
+  { subject: "INV-1042 · Acme Office Supplies", value: "₹1,234.28", outcome: "Approved · matched PO-1001", tone: "ok" },
+  { subject: "INV-2287 · Globex Logistics", value: "$8,400.00", outcome: "Needs review · spans two orders", tone: "warn" },
+  { subject: "INV-3310 · Initech Supplies", value: "€2,000.00", outcome: "Approved · converted at the pinned rate", tone: "ok" },
+  { subject: "INV-1042 · Acme Office Supplies", value: "₹1,234.28", outcome: "Rejected · duplicate check", tone: "bad" },
+  { subject: "INV-7701 · Wayne Facilities", value: "$6,500.00", outcome: "Approved · within tolerance", tone: "ok" },
+  { subject: "INV-5064 · Soylent Foods", value: "₹78,900.00", outcome: "Needs review · low extraction confidence", tone: "warn" },
 ];
 
 // Row two: the orders those invoices are billed against.
 const ROW_ORDERS: SampleCard[] = [
-  { tag: "OPEN", tone: "plain", ref: "PO-1001", sub: "Acme Office Supplies", value: "₹1,240.00", foot: "remaining of ₹2,474.28" },
-  { tag: "OPEN", tone: "plain", ref: "PO-1006", sub: "Wayne Facilities", value: "$6,500.00", foot: "remaining of $13,000.00" },
-  { tag: "FULLY BILLED", tone: "ok", ref: "PO-1008", sub: "Initech Supplies", value: "$0.00", foot: "remaining of $2,160.00" },
-  { tag: "OPEN", tone: "plain", ref: "PO-1002", sub: "Globex Logistics", value: "$5,000.00", foot: "remaining of $9,400.00" },
-  { tag: "OPEN", tone: "plain", ref: "PO-1004", sub: "Soylent Foods", value: "₹21,100.00", foot: "remaining of ₹100,000.00" },
+  { subject: "PO-1001 · Acme Office Supplies", value: "₹1,240.00", outcome: "remaining of ₹2,474.28", tone: "plain" },
+  { subject: "PO-1006 · Wayne Facilities", value: "$6,500.00", outcome: "remaining of $13,000.00", tone: "plain" },
+  { subject: "PO-1008 · Initech Supplies", value: "$0.00", outcome: "fully billed", tone: "ok" },
+  { subject: "PO-1002 · Globex Logistics", value: "$5,000.00", outcome: "remaining of $9,400.00", tone: "plain" },
+  { subject: "PO-1004 · Soylent Foods", value: "₹21,100.00", outcome: "remaining of ₹100,000.00", tone: "plain" },
 ];
 
 // Row three: the checks themselves, in the words the audit trail uses.
 const ROW_CHECKS: SampleCard[] = [
-  { tag: "PASSED", tone: "ok", ref: "Duplicate check", sub: "No earlier run matches", value: "9 of 9", foot: "checks completed" },
-  { tag: "PASSED", tone: "ok", ref: "Within tolerance", sub: "$12.40 under a $50.00 allowance", value: "PO-1001", foot: "one-sided by design" },
-  { tag: "PASSED", tone: "ok", ref: "Vendor approved", sub: "On the approved vendor list", value: "V-001", foot: "matched on a normalised name" },
-  { tag: "HELD", tone: "warn", ref: "Confidence gate", sub: "Vendor name scored 0.58", value: "0.65", foot: "threshold to clear" },
-  { tag: "PASSED", tone: "ok", ref: "PO match", sub: "Single order referenced", value: "PO-1006", foot: "bound to the ledger" },
-  { tag: "PASSED", tone: "ok", ref: "Arithmetic", sub: "Subtotal + tax equals total", value: "±0.01", foot: "rounding allowance" },
+  { subject: "Duplicate check", value: "9 of 9", outcome: "checks completed, none short-circuited", tone: "ok" },
+  { subject: "Within tolerance", value: "$12.40", outcome: "under a $50.00 allowance", tone: "ok" },
+  { subject: "Vendor approved", value: "V-001", outcome: "matched on a normalised name", tone: "ok" },
+  { subject: "Confidence gate", value: "0.58", outcome: "held · below the 0.65 threshold", tone: "warn" },
+  { subject: "PO match", value: "PO-1006", outcome: "bound to the allocation ledger", tone: "ok" },
+  { subject: "Arithmetic", value: "±0.01", outcome: "subtotal plus tax equals total", tone: "ok" },
 ];
 
 function Card({ card }: { card: SampleCard }) {
-  const tone = TONE[card.tone];
   return (
     <article
       aria-hidden
-      className="mr-3.5 w-[248px] shrink-0 rounded-2xl border border-white/[0.08] bg-white/[0.035]
-        p-3.5 backdrop-blur-sm sm:w-[268px]"
+      className="mr-4 w-[272px] shrink-0 rounded-xl border border-white/[0.07] bg-white/[0.03]
+        px-5 py-[18px] sm:w-[296px]"
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-[12px] tracking-tight text-white/85">{card.ref}</span>
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-full px-2 py-[3px] text-[10px]
-            font-semibold tracking-wide ring-1 ring-inset ${tone.chip}`}
-        >
-          <span className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />
-          {card.tag}
-        </span>
-      </div>
-      <p className="mt-2 truncate text-[12.5px] text-white/50">{card.sub}</p>
-      <p className="mt-2.5 font-mono text-[19px] tracking-tight text-white">{card.value}</p>
-      <p className="mt-1 text-[11.5px] text-white/35">{card.foot}</p>
+      <p className="truncate text-[12px] leading-none text-white/40">{card.subject}</p>
+      <p className="mt-3 text-[25px] leading-none font-semibold tracking-[-0.025em] text-white/90">
+        {card.value}
+      </p>
+      <p className="mt-3 flex items-center gap-2 text-[11.5px] leading-none text-white/35">
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT[card.tone]}`} />
+        <span className="truncate">{card.outcome}</span>
+      </p>
     </article>
   );
 }
@@ -166,7 +176,7 @@ function Row({
         style={{ ["--marquee-duration" as string]: duration }}
       >
         {[...cards, ...cards].map((card, i) => (
-          <Card key={`${card.ref}-${i}`} card={card} />
+          <Card key={`${card.subject}-${i}`} card={card} />
         ))}
       </div>
     </div>
@@ -224,7 +234,7 @@ export default function LoginGate() {
           than as one sheet sliding. */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-[8%] flex select-none flex-col gap-4 opacity-[0.55]"
+        className="pointer-events-none absolute inset-x-0 top-[7%] flex select-none flex-col gap-5 opacity-[0.5]"
       >
         <Row cards={ROW_INVOICES} direction="rtl" duration="72s" />
         <Row cards={ROW_ORDERS} direction="ltr" duration="86s" />
