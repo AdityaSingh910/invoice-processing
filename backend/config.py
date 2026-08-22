@@ -471,8 +471,15 @@ DAILY_QUOTA_PORTAL_SUBMISSIONS = int(
 #
 # Backend selection is a config switch, not a code fork: "local" writes files
 # under DOCUMENT_STORAGE_DIR (the default, needs nothing installed or
-# configured), "s3" writes to an S3-compatible bucket for a real deployment.
-# Nothing outside documents.py knows which one is active.
+# configured), "postgres" writes them into the database this application
+# already has, and "s3" writes to an S3-compatible bucket. Nothing outside
+# documents.py knows which one is active.
+#
+# ON A CONTAINER PLATFORM, "local" LOSES EVERY UPLOADED PDF AT THE NEXT DEPLOY
+# and says nothing about it -- the `documents` row is in Postgres and survives,
+# so the run still opens and only the download 404s. Either of the other two
+# fixes that; "postgres" needs no credential, no bucket and no second vendor,
+# which is why it exists (see documents.py for the trade it makes).
 # --------------------------------------------------------------------------
 DOCUMENT_STORE_BACKEND_ENV = "DOCUMENT_STORE_BACKEND"
 DOCUMENT_STORAGE_DIR = os.environ.get(
@@ -494,10 +501,18 @@ DOCUMENT_SOURCES = ("MANUAL_UPLOAD", "EMAIL", "CLIENT_PORTAL")
 
 
 def document_store_backend() -> str:
-    """'local' or 's3'. Read at call time, like every other env-backed
-    setting here, so a value set in .env after import is still honoured."""
+    """'local', 'postgres' or 's3'. Read at call time, like every other
+    env-backed setting here, so a value set in .env after import is still
+    honoured.
+
+    An unrecognised value falls back to 'local' rather than raising, which is
+    this codebase's posture for every other setting -- but note that it is the
+    one fallback here that is quietly lossy on a container host, so a typo in
+    this variable is worth checking against the documents backend actually
+    reported by a stored document's `storage_backend` column.
+    """
     backend = os.environ.get(DOCUMENT_STORE_BACKEND_ENV, "local").strip().lower()
-    return backend if backend in ("local", "s3") else "local"
+    return backend if backend in ("local", "postgres", "s3") else "local"
 
 
 def document_s3_bucket() -> str:

@@ -10,7 +10,7 @@ actual file content, behind a small interface (`DocumentStore`) so the rest
 of the application never knows or cares whether a document lives on local
 disk or in an S3 bucket.
 
-Two implementations:
+Three implementations:
 
 * `LocalDocumentStore` -- files under `config.DOCUMENT_STORAGE_DIR`. Needs
   nothing installed, nothing configured. This is what local development and
@@ -19,6 +19,33 @@ Two implementations:
   the application may run on several instances or ephemeral containers with
   no shared local disk. `boto3` is imported lazily, inside the constructor,
   so a local-only install never needs the dependency at all.
+* `PostgresDocumentStore` -- the bytes in the database this application
+  already has. See below.
+
+WHY THERE IS A DATABASE-BACKED STORE AS WELL AS S3
+
+`local` is silently wrong on a container platform, and that is the whole
+reason this third backend exists. A container filesystem does not survive a
+deploy, so with `local` every uploaded PDF is gone at the next restart --
+while the `documents` ROW survives, because that lives in Postgres. The run
+still opens, the audit trail is still complete, and only the download 404s.
+Nothing warns anyone, because from the application's side the write
+succeeded. That is the worst shape a data-loss bug can take.
+
+`s3` fixes it and remains the right answer at volume, but it needs a bucket,
+a key pair, a region and an endpoint before it stores anything -- four
+things to get right before the first document is safe. This deployment
+already has exactly one durable, already-configured, already-credentialed
+place to put bytes: the database. `postgres` uses it. One setting, no new
+credential, no new vendor, and an uploaded invoice survives a redeploy.
+
+The trade is stated rather than hidden: PDF bytes in a table are bytes the
+database has to back up, cache and stream, and a bulk read of many documents
+costs more here than it would against object storage. At AP volumes -- one
+row per invoice, a few hundred KB each, read one at a time when a reviewer
+opens an invoice -- that is a good trade. At a much larger one it is not,
+and the remedy is `DOCUMENT_STORE_BACKEND=s3`, which needs no code change
+because it is already written.
 
 WHY THE STORAGE KEY IS NEVER THE ORIGINAL FILENAME
 
@@ -34,6 +61,8 @@ as metadata for display and for the filename offered on download.
 import abc
 import os
 import re
+
+import psycopg2
 
 import config
 
@@ -181,6 +210,105 @@ class S3DocumentStore(DocumentStore):
         self._client.delete_object(Bucket=self.bucket, Key=self._object_key(key))
 
 
+class PostgresDocumentStore(DocumentStore):
+    """The PDF bytes, in the database, as `bytea`.
+
+    The table is created on first use rather than in `storage.init_db()`, the
+    same way `quota.py` creates `extraction_quota`: a deployment that does not
+    select this backend never gets the table at all, and one that does gets it
+    without a migration step. `CREATE TABLE IF NOT EXISTS` is cheap and, being
+    executed per call against the connection's own `search_path`, it is also
+    correct under the per-test schema isolation the suite relies on.
+
+    `storage` is imported inside the methods, not at module scope: `storage`
+    imports this module (to delete a run's documents in `clear_run_history`),
+    and importing it back at the top would make that a cycle.
+    """
+
+    _DDL = """CREATE TABLE IF NOT EXISTS document_blobs (
+        storage_key TEXT PRIMARY KEY,
+        data BYTEA NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    )"""
+
+    def _ensure(self, cur):
+        cur.execute(self._DDL)
+
+    def save(self, key: str, data: bytes) -> None:
+        import storage
+        key = _validate_key(key)
+        if len(data) > config.MAX_UPLOAD_BYTES:
+            raise ValueError("document exceeds the configured upload limit")
+        from datetime import datetime, timezone
+        conn = storage.get_conn()
+        try:
+            with conn.cursor() as cur:
+                self._ensure(cur)
+                # A storage key is a fresh UUID4 per upload, so a conflict
+                # here means the identical document is being written twice --
+                # a retry, not a collision. Overwriting with the same bytes is
+                # the harmless resolution, and it keeps save() idempotent.
+                cur.execute(
+                    """INSERT INTO document_blobs (storage_key, data, size_bytes, created_at)
+                       VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (storage_key) DO UPDATE
+                         SET data = EXCLUDED.data,
+                             size_bytes = EXCLUDED.size_bytes""",
+                    (key, psycopg2.Binary(data), len(data),
+                     datetime.now(timezone.utc).isoformat()))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def read(self, key: str) -> bytes:
+        import storage
+        key = _validate_key(key)
+        conn = storage.get_conn()
+        try:
+            with conn.cursor() as cur:
+                self._ensure(cur)
+                cur.execute("SELECT data FROM document_blobs WHERE storage_key=%s", (key,))
+                row = cur.fetchone()
+            conn.commit()
+        finally:
+            conn.close()
+        if row is None:
+            # Same failure the local store gives for a missing file, so every
+            # caller's existing handling applies unchanged.
+            raise FileNotFoundError(key)
+        return bytes(row["data"])
+
+    def exists(self, key: str) -> bool:
+        import storage
+        try:
+            key = _validate_key(key)
+        except ValueError:
+            return False
+        conn = storage.get_conn()
+        try:
+            with conn.cursor() as cur:
+                self._ensure(cur)
+                cur.execute("SELECT 1 FROM document_blobs WHERE storage_key=%s", (key,))
+                found = cur.fetchone() is not None
+            conn.commit()
+            return found
+        finally:
+            conn.close()
+
+    def delete(self, key: str) -> None:
+        import storage
+        key = _validate_key(key)
+        conn = storage.get_conn()
+        try:
+            with conn.cursor() as cur:
+                self._ensure(cur)
+                cur.execute("DELETE FROM document_blobs WHERE storage_key=%s", (key,))
+            conn.commit()
+        finally:
+            conn.close()
+
+
 def get_store() -> DocumentStore:
     """The active document store, chosen by `DOCUMENT_STORE_BACKEND`.
 
@@ -189,6 +317,9 @@ def get_store() -> DocumentStore:
     .env or the environment mid-process -- which only ever happens in tests
     -- takes effect on the next call rather than needing a restart.
     """
-    if config.document_store_backend() == "s3":
+    backend = config.document_store_backend()
+    if backend == "s3":
         return S3DocumentStore()
+    if backend == "postgres":
+        return PostgresDocumentStore()
     return LocalDocumentStore()

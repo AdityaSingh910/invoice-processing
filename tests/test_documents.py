@@ -354,6 +354,128 @@ def test_local_store_refuses_content_over_the_upload_limit(tmp_path, monkeypatch
         store.save(documents.new_storage_key(), b"0" * 100)
 
 
+# --------------------------------------------------------------------------
+# 5a. the database-backed store
+#
+# THE CLAIM UNDER TEST: an uploaded PDF stored with
+# DOCUMENT_STORE_BACKEND=postgres survives anything that wipes the container
+# filesystem, because it never touched the filesystem -- and it behaves
+# identically to the local store at every point the rest of the application
+# can observe, so choosing it is a configuration change and nothing more.
+#
+# That last part is why these tests mirror the local-store tests above case
+# for case rather than inventing their own shapes: the interface is the
+# contract, and a backend that honoured it "mostly" would fail in production
+# on whichever call it got wrong.
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def pg_store(db, monkeypatch):
+    monkeypatch.setenv("DOCUMENT_STORE_BACKEND", "postgres")
+    return documents.PostgresDocumentStore()
+
+
+def test_the_backend_switch_selects_the_postgres_store(db, monkeypatch):
+    monkeypatch.setenv("DOCUMENT_STORE_BACKEND", "postgres")
+    assert config.document_store_backend() == "postgres"
+    assert isinstance(documents.get_store(), documents.PostgresDocumentStore)
+
+
+def test_an_unrecognised_backend_still_falls_back_to_local(monkeypatch):
+    monkeypatch.setenv("DOCUMENT_STORE_BACKEND", "gcs")
+    assert config.document_store_backend() == "local"
+    assert isinstance(documents.get_store(), documents.LocalDocumentStore)
+
+
+def test_postgres_store_round_trips_a_real_key(pg_store):
+    key = documents.new_storage_key()
+    data = pdf_bytes()
+    pg_store.save(key, data)
+    assert pg_store.exists(key) is True
+    assert pg_store.read(key) == data
+    pg_store.delete(key)
+    assert pg_store.exists(key) is False
+
+
+def test_postgres_store_preserves_bytes_exactly(pg_store):
+    """Not a formality: bytea round trips through psycopg2's own encoding, and
+    a PDF is full of NULs and high bytes that a text path would mangle."""
+    key = documents.new_storage_key()
+    data = bytes(range(256)) * 40 + bytes([0, 13, 10, 39, 34, 92]) * 5
+    pg_store.save(key, data)
+    assert pg_store.read(key) == data
+
+
+@pytest.mark.parametrize("bad_key", [
+    "../../../etc/passwd",
+    "..\\..\\windows\\system32",
+    "sub/dir/x.pdf",
+    "no-extension",
+    "",
+    "a" * 32 + ".exe",
+])
+def test_postgres_store_refuses_every_non_conforming_key(pg_store, bad_key):
+    with pytest.raises(ValueError):
+        pg_store.save(bad_key, b"whatever")
+    with pytest.raises(ValueError):
+        pg_store.read(bad_key)
+    with pytest.raises(ValueError):
+        pg_store.delete(bad_key)
+    assert pg_store.exists(bad_key) is False
+
+
+def test_postgres_store_refuses_content_over_the_upload_limit(pg_store, monkeypatch):
+    monkeypatch.setattr(config, "MAX_UPLOAD_BYTES", 10)
+    with pytest.raises(ValueError):
+        pg_store.save(documents.new_storage_key(), b"0" * 100)
+
+
+def test_postgres_store_reads_a_missing_key_as_not_found(pg_store):
+    """The same exception the local store raises for a missing file, so the
+    endpoint's existing 404 handling applies unchanged."""
+    with pytest.raises(FileNotFoundError):
+        pg_store.read(documents.new_storage_key())
+
+
+def test_saving_the_same_key_twice_is_a_retry_not_a_crash(pg_store):
+    key = documents.new_storage_key()
+    pg_store.save(key, b"%PDF-first")
+    pg_store.save(key, b"%PDF-second")
+    assert pg_store.read(key) == b"%PDF-second"
+
+
+def test_deleting_a_key_that_is_not_there_is_not_an_error(pg_store):
+    pg_store.delete(documents.new_storage_key())
+
+
+def test_a_document_stored_in_postgres_survives_the_filesystem_being_wiped(
+        client, monkeypatch, tmp_path):
+    """THE POINT OF THE WHOLE BACKEND, stated as a test.
+
+    A container redeploy replaces the filesystem and keeps the database. This
+    reproduces exactly that: process an invoice with the postgres backend
+    selected, then repoint DOCUMENT_STORAGE_DIR at an empty directory -- the
+    strongest available stand-in for "the disk this ran on is gone" -- and
+    require the download to still return the original bytes.
+
+    Run against the local backend, this same sequence 404s.
+    """
+    monkeypatch.setenv("DOCUMENT_STORE_BACKEND", "postgres")
+    run_id, _ = process_happy_path(client)
+
+    meta = client.get(f"/api/runs/{run_id}/document", headers=auth_headers("viewer"))
+    assert meta.status_code == 200
+
+    gone = tmp_path / "after-redeploy"
+    gone.mkdir()
+    monkeypatch.setattr(config, "DOCUMENT_STORAGE_DIR", str(gone))
+
+    r = client.get(f"/api/runs/{run_id}/document/download", headers=auth_headers("viewer"))
+    assert r.status_code == 200
+    assert r.content == pdf_bytes()
+    assert not any(gone.iterdir()), "the postgres store must not touch the filesystem"
+
+
 def test_save_document_rejects_an_unrecognised_source(db):
     run_id = storage.save_run(
         "x.pdf", "APPROVED",
