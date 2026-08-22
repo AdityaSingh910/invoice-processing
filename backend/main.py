@@ -19,15 +19,18 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 
 import analytics
+import audit_export
 import auth
 import chat
 import config
 import documents
 import email_ingest
+import email_outbound
 import email_security
 import extraction
 import logs
 import matching
+import notifications
 import oauth_google
 import portal
 import quota
@@ -1023,6 +1026,112 @@ def get_run_activity(run_id: int,
         "activity": storage.list_activity(run_id),
         "current_claim": storage.get_active_claim(run_id),
     }
+
+
+# --------------------------------------------------------------------------
+# Rejection notification -- email the vendor why their invoice was rejected
+#
+# Two endpoints, deliberately not one, mirroring the release-then-process
+# split Phase G's email quarantine already established (§7b.10): the first
+# COMPOSES a draft and sends nothing; only the second, explicitly confirmed
+# by the reviewer, sends. `invoice:read` reads the draft (the same permission
+# that already reads the run and its audit trail); `invoice:review` sends,
+# the same authority that accepts or rejects a held invoice.
+# --------------------------------------------------------------------------
+@app.get("/api/runs/{run_id}/rejection-email")
+def preview_rejection_email(run_id: int,
+                            principal: auth.Principal = Security(auth.current_principal,
+                                                                 scopes=["invoice:read"])):
+    """A ready-to-review draft: recipient, subject, body, and the reasons it
+    was built from -- plus whether one was already sent, and whether this
+    deployment can currently send at all. Sends nothing."""
+    run = storage.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.get("status") != "REJECTED":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="This invoice is not rejected; there is no rejection "
+                                   "notice to compose.")
+    draft = notifications.compose_rejection_email(run)
+    return {
+        "run_id": run_id,
+        "draft": draft,
+        "sender": notifications.sender_availability(),
+        "history": notifications.rejection_email_history(run_id),
+        "already_sent": notifications.last_successful_send(run_id) is not None,
+    }
+
+
+@app.post("/api/runs/{run_id}/rejection-email/send")
+def send_rejection_email(run_id: int, payload: dict = Body(...),
+                         principal: auth.Principal = Depends(ratelimit.rate_limit_notify)):
+    """Send the rejection notice a reviewer has reviewed and confirmed.
+
+    Body: {"recipient", "subject", "body", "force": bool}. `force` resends
+    even though a successful send is already on record -- refused by default
+    (see notifications.send_rejection_email), so an accidental duplicate
+    click needs a deliberate second confirmation from the caller, not just a
+    retried request.
+    """
+    result = notifications.send_rejection_email(
+        run_id, actor=principal.username,
+        recipient=(payload or {}).get("recipient"),
+        subject=(payload or {}).get("subject"),
+        body=(payload or {}).get("body"),
+        force=bool((payload or {}).get("force")))
+    if not result.get("ok"):
+        err = result.get("error", "")
+        if err == "unknown run":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+        if err == "duplicate":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail={"error": "a rejection email has already been sent "
+                                                 "for this invoice; pass force=true to resend",
+                                       "previous": result.get("previous")})
+        if "REJECTED" in err:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
+        if "email address" in err or "empty" in err:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=err)
+        # Everything else is the outbound send itself failing (no connection,
+        # no send scope, Gmail refused the request). The failed attempt is
+        # already recorded by notifications.send_rejection_email; this is a
+        # 502 because the request to THIS API was fine and the upstream mail
+        # provider was not.
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=err)
+    return result
+
+
+# --------------------------------------------------------------------------
+# Audit report export -- a downloadable PDF or CSV about one run
+#
+# `invoice:read`, and that is not a widening: everything in the report is a
+# field the run/activity/email endpoints this scope already guards would
+# return one call at a time. This just assembles them into one document.
+# --------------------------------------------------------------------------
+@app.get("/api/runs/{run_id}/audit-report.pdf")
+def export_run_pdf(run_id: int,
+                   principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
+    run = storage.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    pdf_bytes = audit_export.build_pdf(run_id)
+    notifications.log_export(run_id, actor=principal.username, fmt="pdf")
+    filename = audit_export.safe_filename_stub(run) + ".pdf"
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.get("/api/runs/{run_id}/audit-report.csv")
+def export_run_csv(run_id: int,
+                   principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
+    run = storage.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    csv_text = audit_export.build_csv(run_id)
+    notifications.log_export(run_id, actor=principal.username, fmt="csv")
+    filename = audit_export.safe_filename_stub(run) + ".csv"
+    return Response(content=csv_text, media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 # --------------------------------------------------------------------------

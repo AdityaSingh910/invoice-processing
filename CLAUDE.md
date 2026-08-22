@@ -3660,6 +3660,280 @@ resolver, the extraction spy, a clock, or a deliberately-failing dependency.
 
 ---
 
+## 7j. Rejection notification & audit export (not a lettered phase)
+
+**Status: implemented, tested (29 tests in `tests/test_rejection_notifications.py`),
+verified.**
+
+**NOT A NEW PHASE IN THE A–M TRACK**, the same designation §7b.13/§7b.14 use
+for a targeted product feature built between lettered phases. It touches the
+Gmail OAuth surface (§7h) and reuses the supplier portal's rejection-reason
+table (§7g.6), but redesigns neither.
+
+### 7j.1 What it is
+
+Two capabilities, requested together and built on the same reused pieces:
+
+1. **A reviewer can email a vendor why their invoice was rejected.** Compose
+   a draft, edit it, confirm, send — never automatic.
+2. **A reviewer can download a PDF or CSV audit report for one run** — a
+   real browser download, not just an API response.
+
+```
+invoice rejection -> notifications.py -> email_outbound.py -> Gmail
+```
+
+`notifications.py` is the service layer: recipient resolution, the message
+itself, send orchestration, and what gets audited. `email_outbound.py` is
+the outbound provider abstraction — `EmailSender` / `GmailApiEmailSender`,
+the send-side mirror of `email_provider.py`'s read-side `EmailProvider` /
+`GmailApiEmailProvider`. Only Gmail is implemented, deliberately: the
+interface exists so a second provider (SMTP, SendGrid, Outlook) is a new
+class, not a redesign, but none was asked for.
+
+### 7j.2 The Gmail scope decision — the one architectural change this feature made
+
+`config.GMAIL_REFUSED_SCOPES` (§7h.2) refused `gmail.send` outright, because
+Phase G2 had no use for it. This feature does, and the change is narrow and
+explicit: **`gmail.send` moved from refused to supported** in
+`config.gmail_scopes()`. `mail.google.com`, `gmail.compose` and both settings
+scopes are still refused — none of them is needed to send a plain-text
+notice, and asking for any of them would be exactly the over-permissioning
+§7h.2 already argued against.
+
+`gmail.send` is Google's dedicated **send-only** scope: it cannot read a
+single message, list a label, or touch a setting. That is the entire
+least-privilege argument — the same one that chose `gmail.readonly` over
+`mail.google.com` for ingestion now chooses `gmail.send` over the same
+broader scope for sending.
+
+**Nothing is granted by default.** `GMAIL_OAUTH_SCOPES` still defaults to
+`gmail.readonly` alone; an operator opts in by adding `gmail.send` to that
+env var. `gmail_scopes()` refuses `gmail.send` on its own (there would be
+nothing to poll) — a read scope must be present alongside it.
+
+**Existing connections do not gain the ability to send.** Google fixes a
+token's scopes at the moment of consent; a mailbox connected before this
+feature existed has a token scoped to `gmail.readonly` only, and no code
+change here widens it. Sending is refused with a clear reason
+(`oauth_google.can_send()`, checked against the LIVE stored connection's
+granted scopes on every attempt, never assumed from configuration) until an
+administrator sets `GMAIL_OAUTH_SCOPES` to include `gmail.send` and
+**reconnects** — the same re-consent flow §7h.5 already built, walked again
+because Google requires it for a new scope. The Settings screen shows
+whichever permission was actually granted (`connection.scopes`), so an
+administrator can see whether send is live without reading a log.
+
+### 7j.3 Recipient resolution — never invented
+
+The default recipient is `email_messages.from_address` for the message this
+run's invoice arrived through (`storage.email_for_run()`, new — a one-row
+lookup by `run_id`, mirroring `find_email_by_sha256`). A manually uploaded or
+portal-submitted invoice has no such row and gets **no default** — the
+preview reports `recipient: null` and the reviewer sees "no known vendor
+email", never a guessed address built from the extracted vendor name.
+
+A reviewer may type a recipient in before sending. It is validated
+(`notifications.valid_recipient()`: shape-checked, and explicitly refused if
+it carries `\r`, `\n` or `\t`, which is how a header-injection attempt would
+arrive) but not otherwise restricted — the same `invoice:review` scope that
+already authorises accepting or rejecting an invoice authorises choosing who
+reads the explanation for one, and no narrower boundary exists to apply.
+
+### 7j.4 The rejection reasons — reused, not reinvented
+
+The email body's reasons are `portal.client_state()`'s `detail_lines` (§7g.6)
+— the exact vendor-safe sentences the supplier portal already shows a client
+about their own declined invoice, keyed by rule name through the same frozen
+`RULE_MESSAGE_KEYS` table. **No second rejection-reason vocabulary was
+built.** A rule with no entry falls through to the same generic sentence the
+portal uses; a rule name is never printed as a fallback, here exactly as
+there. Whether the invoice arrived by email, upload, or the supplier portal
+makes no difference — `audit["rules_failed"]` is a fixed vocabulary, and this
+feature reads it the same way the portal already does.
+
+### 7j.5 Duplicate-send protection — derived, not a new column
+
+Whether a rejection email was already sent is **not** a stored flag. It is
+derived from `invoice_activity` — two new event types,
+`REJECTION_EMAIL_SENT` and `REJECTION_EMAIL_FAILED`, written the same way
+every other action on a run already is (§6.1) — and "already sent" means
+"the most recent `REJECTION_EMAIL_SENT` row exists". This is the same call
+this project has made repeatedly (§3, §6.2, §7c.1, §7d.1, §7f.5, §7g.11,
+§7i.12): a fact already implied by the event log is not a fact worth a
+second place to store.
+
+A second send is refused with `409` unless the caller passes `force: true`,
+which is a **deliberate second confirmation**, not merely a retried request —
+the frontend surfaces it as "Resend rejection email" with its own warning,
+never a silent second send. A refused duplicate writes nothing; only an
+attempted send (successful or not) adds a row.
+
+### 7j.6 Compose, then confirm — never automatic
+
+`GET /api/runs/{id}/rejection-email` builds and returns a **draft**. It sends
+nothing. `POST /api/runs/{id}/rejection-email/send` is a second, explicit
+call carrying the (possibly edited) recipient/subject/body and requires
+`invoice:review` — mirroring the release-then-process split Phase G's email
+quarantine already established (§7b.10): composing is not sending, and
+nothing here collapses the two into one click that both drafts and sends.
+The frontend's "Release & process"-style convenience ("Send rejection email"
+opens an editable preview; nothing goes out until "Confirm & send") is a UI
+convenience over the same two calls, not a third endpoint.
+
+### 7j.7 What every send attempt records, and what it never does
+
+`REJECTION_EMAIL_SENT` / `REJECTION_EMAIL_FAILED` metadata: recipient,
+subject, invoice number, vendor name, the reasons the email stated, whether
+it was a forced resend, and — on success — the provider's own message id;
+on failure, the error and an error category (`oauth_google.OAuthError.code`,
+e.g. `no_send_scope`, `http_401`, `not_connected`). **Never**: an access
+token, a refresh token, a client secret, or `AUTH_SECRET` — `EmailSendError`
+and `OAuthError` already carry only a short code and a scrubbed message
+(§7h.7's `oauth_google._scrub()`), so there is nothing token-shaped for
+`notifications.py` to accidentally forward into `metadata`. Tested directly:
+a forced failure whose *message* names a token asserts the token string does
+not appear anywhere in the resulting activity row.
+
+**The run's own status is untouched by either outcome.** A failed send does
+not un-reject an invoice, and a successful one does not change it either —
+sending a notice is a communication about the decision, never the decision
+itself.
+
+### 7j.8 Audit report export — PDF and CSV, one run at a time
+
+`GET /api/runs/{id}/audit-report.pdf` and `.../audit-report.csv`, both
+`invoice:read` behind `ratelimit.rate_limit_reporting` — the same reporting
+limiter Phase K built for exactly this shape of endpoint (§7e.4), reused
+rather than a third limiter invented. **No new authorization boundary**:
+everything in the report is a field the run/activity/email endpoints that
+scope already guards would return one call at a time; this only assembles
+them into one document. A client-portal token (Phase J) reaches neither
+endpoint, proven by the same dynamic route sweep that already checks every
+other internal route (§7g.10) — the sweep enumerates `app.routes` itself, so
+these two needed no special-casing to be covered.
+
+**The PDF is built as headed sections and tables via reportlab's platypus
+layer, not a JSON dump.** `reportlab` is already a runtime dependency —
+`sample_invoices/generate_invoices.py` uses it to build the very demo
+invoices this application ingests — so this adds no new package. Sections:
+Invoice Information, Validation (every finding, levelled), Rejection
+reason(s) (the same vendor-safe sentences §7j.4 describes, for any REJECTED
+run whether or not a notice was ever sent), Email Information and Security
+(only when the run arrived by email — classification and the SPF/DKIM/DMARC
+**result words**, never the full evidence blob), Audit History (every
+`invoice_activity` row for the run, plus the originating message's
+`email_activity` rows when one exists — the same "read one run's whole
+history" `logs.py` already does for many, applied here to one), and
+Rejection Email (sent / attempted-and-failed / never sent, stated plainly).
+
+**The CSV is one row per audit-history event, invoice context repeated on
+every row** — the same denormalised shape Phase I's log exports already use.
+Every cell goes through `logs.csv_safe()` (§7d.8), imported rather than
+reimplemented, so formula injection is neutralised identically to every
+other export in this codebase.
+
+**Filenames are sanitised to `[A-Za-z0-9_-]` only**
+(`audit_export.safe_filename_stub()`), the same treatment
+`email_ingest.safe_attachment_filename()` gives an attacker-chosen attachment
+name (§7b) — an invoice number is document content, exactly as trustworthy
+as any other string a sender chose to put in a PDF, and is never trusted to
+be a safe path segment.
+
+**Every export is itself an audit event.** `notifications.log_export()`
+writes `AUDIT_REPORT_EXPORTED` to `invoice_activity` with the format,
+mirroring the existing `DOCUMENT_VIEWED`/`DOCUMENT_DOWNLOADED` precedent (§5)
+— an export is an action taken on invoice data and belongs in the same
+history opening or downloading the source document already does.
+
+### 7j.9 Frontend
+
+Two additions to the existing review workspace
+(`frontend-next/components/invoice/ReviewWorkspace.tsx`), built from existing
+primitives — no new design language:
+
+- **`RejectionNotice.tsx`** — renders only when `run.status === "REJECTED"`.
+  Shows the reasons, whether a notice was already sent (and to whom, and
+  when), and a "Send rejection email" / "Resend rejection email" button that
+  opens a `Modal` with an editable recipient/subject/body, pre-filled from
+  the server's draft. Sending shows a loading state on the confirm button and
+  a `useToast()` success/failure notice on completion — the same toast
+  pattern `ReviewBar.tsx`'s accept/reject already uses.
+- **`AuditExportButtons.tsx`** — two small ghost buttons ("PDF" / "CSV") next
+  to the verdict banner, deliberately understated next to the accept/reject
+  bar. `lib/api.ts`'s new `downloadFile()` fetches **with the bearer token**
+  and triggers a real save via a momentary `<a download>` — the token never
+  appears in a URL, the same reason the document preview and the portal's
+  document download both already fetch rather than link (§7e.5, §7g.9).
+
+One new UI primitive, `Textarea` (`components/ui/index.tsx`), appended next
+to `Input` — the composer's editable body needed a multi-line field and none
+existed yet. One new icon, `IconDownload`, appended to `icons.tsx`; `IconMail`
+(added for the Email queue screen, §7b.14) is reused rather than duplicated.
+
+**Locale.** New UI strings were added as plain English, matching how
+`ReviewBar.tsx`/`AuditTrail.tsx`/every other component in this internal
+review workspace already reads — §7i.14 item 5 already states that the
+internal reporting/review screens are not translated, and this feature does
+not change that boundary. The Phase L multilingual work-in-progress already
+in this working tree was left untouched by this feature; nothing here
+depends on it or edits it.
+
+### 7j.10 Tests
+
+`tests/test_rejection_notifications.py`, 29 tests, driven over real HTTP
+through the real app. Google is mocked at `oauth_google.api_post_json` — the
+one new function this feature adds that opens a socket, the same "mock only
+the function that talks to Google" boundary `test_gmail_oauth.py` already
+established for `_post_form`/`api_get`. Covers: reasons matching
+`portal.client_state()` exactly, multiple simultaneous rejection reasons,
+compose-without-sending, a successful send and its audit row, a failed send
+and its audit row (with the run staying REJECTED), duplicate-send refusal,
+forced resend, a missing default recipient, five hostile/invalid recipient
+shapes (including two header-injection attempts), a mailbox connected before
+this feature existed being refused a send with a clear reason (and Gmail
+never actually called), no connection at all, no secret reaching the
+activity record on either outcome, PDF/CSV export succeeding and containing
+the right sections, export authorization over HTTP, a hostile invoice number
+producing a safe filename, no secret in either export, and the client-portal
+sweep. All 106 pre-existing tests in `test_email_ingestion.py`, 110 in
+`test_email_security.py`, 144 in `test_gmail_oauth.py`, and the full
+`test_human_review.py` and `test_client_portal.py` suites pass unchanged.
+
+### 7j.11 Known limitations
+
+1. **Gmail only.** No SMTP/SendGrid/Outlook sender is implemented; the
+   interface exists for one, matching this feature's own brief not to build
+   providers nobody asked for.
+2. **Plain text only.** The composed email is `EmailMessage.set_content()` —
+   no HTML part, no attachment (the rejected invoice itself is not
+   re-attached; the vendor already has the document they sent).
+3. **One send request per HTTP call, synchronous.** A send that is slow or
+   fails mid-flight is retried once on a 401 (the same discipline
+   `GmailApiEmailProvider._api` already uses for reads) and otherwise fails
+   cleanly; there is no background retry queue.
+4. **The reviewer chooses the recipient with no per-recipient allowlist.**
+   `invoice:review` is the only boundary — the same authority that already
+   accepts or rejects the invoice being emailed about. A narrower "must match
+   the extracted vendor's domain" rule was considered and rejected: an
+   extracted vendor name/domain is document content, no more trustworthy than
+   the recipient field itself, and enforcing it would reject exactly the
+   manual-correction case (no default recipient at all) this feature has to
+   support.
+5. **No per-user or daily send quota**, unlike the portal's per-client
+   extraction budget (§7g.8) or the assistant's per-day quota (§7f.6) —
+   sending is bounded by `RATE_LIMIT_NOTIFY_PER_MINUTE` (10/minute/reviewer)
+   only. Rejection is a naturally low-volume event; a daily ceiling was not
+   judged to be load-bearing and was left out rather than added speculatively.
+6. **Rate limits are per process** (§7e.8), like every other limiter here.
+7. **The PDF's Audit History section reads every activity row for the run**
+   (and the originating message's, if any) at export time — fine at the
+   volume one run ever accumulates; there is no pagination because a single
+   invoice's history is not the multi-thousand-row case Phase I's log export
+   was built for.
+
+---
+
 ## 8. Authentication, authorization
 
 - **OAuth 2.0 resource-server pattern.** `Authorization: Bearer <JWT>`,

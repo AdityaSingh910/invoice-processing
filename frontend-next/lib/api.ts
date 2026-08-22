@@ -203,3 +203,39 @@ export async function portalDocumentUrl(invoiceId: number): Promise<string> {
   if (!res.ok) throw new ApiError(`document unavailable (HTTP ${res.status})`, res.status);
   return URL.createObjectURL(await res.blob());
 }
+
+/* --------------------------------------------------------- audit export */
+
+/**
+ * Fetch a file WITH the bearer token (same reason as `portalDocumentUrl` --
+ * a token belongs in a header, never in a URL) and hand it to the browser as
+ * an actual save, not a new tab. A momentary `<a download>` click is the only
+ * way a `fetch`ed blob becomes a real download; the server already names the
+ * file safely via `Content-Disposition`, but a caller-supplied `fallbackName`
+ * covers the rare case that header is missing.
+ */
+export async function downloadFile(path: string, fallbackName: string): Promise<void> {
+  const res = await apiFetch(path);
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail || "";
+    } catch {
+      /* not JSON; fall through to the generic message */
+    }
+    throw new ApiError(detail || `the file could not be downloaded (HTTP ${res.status})`,
+                       res.status);
+  }
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const match = /filename="?([^";]+)"?/.exec(disposition);
+  const filename = match?.[1] || fallbackName;
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

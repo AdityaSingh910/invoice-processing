@@ -268,6 +268,46 @@ def api_get(url: str, access_token: str) -> dict:
                          f"({exc.__class__.__name__})", code="malformed") from None
 
 
+def api_post_json(url: str, access_token: str, payload: dict) -> dict:
+    """An authenticated JSON POST against a Google API, returning parsed JSON.
+
+    Sibling to `api_get`: same bearer-in-header rule, same three-way error
+    split (HTTP refusal / unreachable / unreadable), same "401 is not
+    terminal" reading -- the caller refreshes and retries once, exactly as
+    `email_provider.GmailApiEmailProvider._api` already does for reads. Added
+    for `email_outbound.py`'s `messages.send` call, which is a POST with a
+    JSON body rather than a GET with a query string.
+    """
+    if not url.startswith("https://"):
+        raise OAuthError("refusing to send a token over a non-HTTPS endpoint")
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Authorization": f"Bearer {access_token}",
+                 "Content-Type": "application/json",
+                 "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=_HTTP_TIMEOUT_SECONDS) as response:
+            return json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        code = None
+        try:
+            payload_err = json.loads(exc.read().decode("utf-8") or "{}")
+            code = ((payload_err.get("error") or {}).get("status")
+                    if isinstance(payload_err.get("error"), dict) else payload_err.get("error"))
+        except Exception:
+            pass
+        raise OAuthError(f"Gmail API refused the request (HTTP {exc.code}"
+                         f"{': ' + _scrub(code) if code else ''})",
+                         code=f"http_{exc.code}", terminal=False) from None
+    except urllib.error.URLError as exc:
+        raise OAuthError(f"could not reach the Gmail API ({exc.__class__.__name__})",
+                         code="unreachable", terminal=False) from None
+    except (ValueError, TypeError) as exc:
+        raise OAuthError(f"the Gmail API returned an unreadable response "
+                         f"({exc.__class__.__name__})", code="malformed") from None
+
+
 # --------------------------------------------------------------------------
 # The authorization-code flow
 # --------------------------------------------------------------------------
@@ -410,6 +450,18 @@ def scopes_are_sufficient(scopes) -> bool:
 def can_modify(scopes) -> bool:
     """Whether the granted scopes permit marking a message read."""
     return config.GMAIL_SCOPE_MODIFY in set(scopes or [])
+
+
+def can_send(scopes) -> bool:
+    """Whether the granted scopes permit sending a message.
+
+    Checked against whatever this connection was ACTUALLY granted -- never
+    against current configuration -- because a connection made before sending
+    was enabled has a token scoped to what the consent screen showed at the
+    time. `notifications.py` calls this before every send attempt rather than
+    assuming a Gmail connection can send just because it exists.
+    """
+    return config.GMAIL_SCOPE_SEND in set(scopes or [])
 
 
 def expiry_from(payload: dict) -> str:

@@ -321,6 +321,14 @@ RATE_LIMIT_PORTAL_PER_MINUTE = int(
 RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE = int(
     os.environ.get("RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE", "5") or 5)
 
+# Rejection-notification emails per reviewer per minute. Low, like portal
+# submission: each one is a real message to a real vendor, not an ordinary
+# read, and the reviewer workflow that produces one is inherently slow (open
+# an invoice, read the reasons, write or edit a note) -- nobody legitimately
+# sends more than a handful in a minute.
+RATE_LIMIT_NOTIFY_PER_MINUTE = int(
+    os.environ.get("RATE_LIMIT_NOTIFY_PER_MINUTE", "10") or 10)
+
 # Whether X-Forwarded-For may be believed when identifying a caller. Off by
 # default: the header is client-controlled, so trusting it on a directly-exposed
 # app lets anyone reset their own rate-limit counter by inventing one. Turn it on
@@ -790,13 +798,27 @@ GMAIL_API_ROOT = "https://gmail.googleapis.com/gmail/v1/users/me"
 GMAIL_SCOPE_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
 GMAIL_SCOPE_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
 
+# `gmail.send` -- send-only, and unable to read a single message. Added as a
+# SUPPORTED (not default) scope for the rejection-notification feature: a
+# reviewer rejecting an invoice needs to tell the vendor why, and that needs
+# send authority on the connected mailbox. It is requested only when an
+# operator opts in (GMAIL_OAUTH_SCOPES=... gmail.send, alongside a read scope)
+# and reconnects -- Google fixes a token's scopes at consent time, so an
+# already-connected mailbox does not gain it silently. `can_send()` in
+# oauth_google.py re-checks the LIVE stored connection's granted scopes before
+# ever attempting to send, the same "never assume, always re-check" discipline
+# Phase K applies to a token's authority (§7e.2).
+GMAIL_SCOPE_SEND = "https://www.googleapis.com/auth/gmail.send"
+
 # Scopes refused outright, however they are configured. `mail.google.com` is
-# the IMAP scope and carries delete and send authority this application has no
-# use for; asking a customer to grant it for an invoice reader is exactly the
+# the IMAP scope and carries delete authority this application has no use for
+# even now that it can send; `gmail.compose` can create drafts this
+# application never reads back, and both settings scopes can change mailbox
+# configuration entirely outside what invoice notification needs. Asking a
+# customer to grant any of these for an invoice reader/notifier is exactly the
 # over-permissioning this module exists to avoid.
 GMAIL_REFUSED_SCOPES = (
     "https://mail.google.com/",
-    "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/gmail.settings.basic",
     "https://www.googleapis.com/auth/gmail.settings.sharing",
@@ -854,14 +876,23 @@ def gmail_scopes() -> list:
     for scope in scopes:
         if scope in GMAIL_REFUSED_SCOPES:
             raise ValueError(
-                f"{GMAIL_SCOPES_ENV} contains {scope!r}, which grants send or delete "
-                f"authority this application never uses. Supported: "
-                f"{GMAIL_SCOPE_READONLY} (default) or {GMAIL_SCOPE_MODIFY}.")
-        if scope not in (GMAIL_SCOPE_READONLY, GMAIL_SCOPE_MODIFY):
+                f"{GMAIL_SCOPES_ENV} contains {scope!r}, which grants delete or "
+                f"mailbox-configuration authority this application never uses. "
+                f"Supported: {GMAIL_SCOPE_READONLY} (default), {GMAIL_SCOPE_MODIFY}, "
+                f"and (for sending rejection notices) {GMAIL_SCOPE_SEND}.")
+        if scope not in (GMAIL_SCOPE_READONLY, GMAIL_SCOPE_MODIFY, GMAIL_SCOPE_SEND):
             raise ValueError(
                 f"{GMAIL_SCOPES_ENV} contains {scope!r}, which this integration does "
-                f"not use. Supported: {GMAIL_SCOPE_READONLY} (default) or "
-                f"{GMAIL_SCOPE_MODIFY}.")
+                f"not use. Supported: {GMAIL_SCOPE_READONLY} (default), "
+                f"{GMAIL_SCOPE_MODIFY}, and {GMAIL_SCOPE_SEND}.")
+    # A read scope is what makes a connection worth having at all -- ingestion
+    # has nothing to poll without one, even for a deployment that only wants to
+    # send. Asking for gmail.send alone is refused here, at configuration time,
+    # rather than left to fail confusingly the first time a poll runs.
+    if scopes and not ({GMAIL_SCOPE_READONLY, GMAIL_SCOPE_MODIFY} & set(scopes)):
+        raise ValueError(
+            f"{GMAIL_SCOPES_ENV} must include {GMAIL_SCOPE_READONLY} or "
+            f"{GMAIL_SCOPE_MODIFY} -- {GMAIL_SCOPE_SEND} alone has nothing to poll.")
     return scopes
 
 
@@ -938,6 +969,7 @@ def refresh_env_settings():
     global RATE_LIMIT_LOGIN_PER_USER_PER_MINUTE, RATE_LIMIT_REPORTING_PER_MINUTE
     global RATE_LIMIT_CHAT_PER_MINUTE
     global RATE_LIMIT_PORTAL_PER_MINUTE, RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE
+    global RATE_LIMIT_NOTIFY_PER_MINUTE
     global DAILY_QUOTA_PORTAL_SUBMISSIONS
     global TRUST_PROXY_HEADERS, AUTH_ISSUER, AUTH_TOKEN_TTL_MINUTES
     global SECURITY_HEADERS_ENABLED, HSTS_MAX_AGE_SECONDS, CONTENT_SECURITY_POLICY
@@ -962,6 +994,7 @@ def refresh_env_settings():
     RATE_LIMIT_CHAT_PER_MINUTE = _int("RATE_LIMIT_CHAT_PER_MINUTE", 30)
     RATE_LIMIT_PORTAL_PER_MINUTE = _int("RATE_LIMIT_PORTAL_PER_MINUTE", 60)
     RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE = _int("RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE", 5)
+    RATE_LIMIT_NOTIFY_PER_MINUTE = _int("RATE_LIMIT_NOTIFY_PER_MINUTE", 10)
     DAILY_QUOTA_PORTAL_SUBMISSIONS = _int("DAILY_QUOTA_PORTAL_SUBMISSIONS", 25)
     TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "").strip() in (
         "1", "true", "True")

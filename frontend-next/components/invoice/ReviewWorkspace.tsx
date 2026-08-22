@@ -22,6 +22,8 @@ import { VERDICT } from "./Panels";
 import { ExtractedFields, ExtractionSummary, ReasonList, ReviewerBrief } from "./Panels";
 import { MatchTable, PoBudget } from "./PoMatchPanel";
 import AuditTrail from "./AuditTrail";
+import AuditExportButtons from "./AuditExportButtons";
+import RejectionNotice from "./RejectionNotice";
 import ReviewBar from "./ReviewBar";
 import DocumentPreview from "./DocumentPreview";
 
@@ -111,6 +113,12 @@ export function ReviewWorkspaceBody({
       {/* --------------------------------------------------------- decision */}
       <div className="flex flex-col gap-4">
         <VerdictBanner run={run} />
+
+        <div className="flex items-center justify-end">
+          <AuditExportButtons runId={run.id} />
+        </div>
+
+        {run.status === "REJECTED" && <RejectionNotice runId={run.id} />}
 
         {run.audit && run.audit.automated_decision !== "APPROVED" && (
           <Panel>

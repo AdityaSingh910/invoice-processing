@@ -13,6 +13,7 @@ import type {
   InputHTMLAttributes,
   ReactNode,
   SelectHTMLAttributes,
+  TextareaHTMLAttributes,
 } from "react";
 import { IconAlert, IconChevronDown, IconEmpty, IconSearch } from "./icons";
 
@@ -239,6 +240,13 @@ const FIELD =
 
 export function Input({ className = "", ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...rest} className={`${FIELD} h-9 w-full px-3 ${className}`} />;
+}
+
+export function Textarea({
+  className = "",
+  ...rest
+}: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return <textarea {...rest} className={`${FIELD} w-full resize-y px-3 py-2 ${className}`} />;
 }
 
 export function SearchInput({ className = "", ...rest }: InputHTMLAttributes<HTMLInputElement>) {

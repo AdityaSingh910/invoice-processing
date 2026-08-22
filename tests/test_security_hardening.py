@@ -359,6 +359,7 @@ def test_the_limit_response_says_when_to_come_back(client, monkeypatch):
     "/api/analytics/reviews", "/api/analytics/vendors", "/api/analytics/email",
     "/api/analytics/users", "/api/logs", "/api/logs/facets", "/api/logs/export",
     "/api/logs/stages", "/api/logs/stages/export",
+    "/api/runs/999999/audit-report.pdf", "/api/runs/999999/audit-report.csv",
 ])
 def test_every_reporting_endpoint_is_behind_the_limiter(client, monkeypatch, path):
     """One endpoint left off the limiter is the whole control, because an

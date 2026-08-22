@@ -239,3 +239,13 @@ export const IconMail = (p: IconProps) => (
     <path d="M2.25 4.25 8 8.75l5.75-4.5" />
   </Svg>
 );
+
+/** A downward arrow into a tray -- the audit-report export buttons. Distinct
+ *  from IconLink (open in a new tab): this one is specifically "save a file
+ *  to this device". */
+export const IconDownload = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M8 1.75v7.5M8 9.25 5 6.25M8 9.25l3-3" />
+    <path d="M2.25 11v1.75a1 1 0 0 0 1 1h9.5a1 1 0 0 0 1-1V11" />
+  </Svg>
+);

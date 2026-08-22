@@ -288,6 +288,26 @@ def rate_limit_portal_submit(
     return principal
 
 
+def rate_limit_notify(
+    request: Request,
+    principal: auth.Principal = Security(auth.current_principal, scopes=["invoice:review"]),
+) -> auth.Principal:
+    """Guards sending a rejection notification email.
+
+    Scoped to `invoice:review` -- the same authority that accepts or rejects a
+    held invoice -- because emailing a vendor on the company's behalf is that
+    same kind of act, not an ordinary read. Counted per user and per IP, the
+    same pair every other limiter here uses; the ceiling
+    (`RATE_LIMIT_NOTIFY_PER_MINUTE`) is deliberately low, because each
+    successful call sends a real message to a real vendor.
+    """
+    _enforce(f"notify-ip:{client_ip(request)}", config.RATE_LIMIT_IP_PER_MINUTE,
+             "this address")
+    _enforce(f"notify-user:{principal.username}", config.RATE_LIMIT_NOTIFY_PER_MINUTE,
+             "rejection notifications")
+    return principal
+
+
 def rate_limit_oauth_callback(request: Request) -> None:
     """Guards the Google OAuth callback (Phase G2). Per IP only -- there is no
     authenticated user here, and that is not an oversight.

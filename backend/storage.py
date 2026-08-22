@@ -2025,6 +2025,27 @@ def list_email_activity(email_id: int):
     return rows
 
 
+def email_for_run(run_id: int):
+    """The message a run's invoice arrived through, or None.
+
+    A run only ever gets ONE email_messages row pointing at it -- Phase G's
+    single-run link (§7b.6) -- so the first match is the only match. A run
+    that came from a manual upload or a portal submission has no such row,
+    and this correctly returns None rather than guessing.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, from_address, from_domain, subject, classification, status
+                   FROM email_messages WHERE run_id=%s ORDER BY id ASC LIMIT 1""",
+                (run_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def find_email_by_sha256(sha256: str):
     conn = get_conn()
     try:

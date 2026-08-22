@@ -36,6 +36,7 @@ suite is green.**
 | Logs, filters & exports | Searchable, groupable, exportable history across invoices, messages and pipeline stages — **a query over the rows already on file, never a second log table** |
 | Email invoice ingestion | IMAP mailbox → cheap sender/relevance filter → security verification → the same invoice pipeline a browser upload uses |
 | Document storage | Uploaded PDFs persist after processing — metadata in Postgres, bytes behind a swappable local/S3 store |
+| Rejection notifications & export | A reviewer emails a vendor why an invoice was rejected (compose → edit → confirm → send, never automatic) and downloads a PDF/CSV audit report — see [Rejection notifications & audit export](#rejection-notifications--audit-export) |
 | Non-invoice detection | Rejects documents that contain no invoice, saying so |
 | Demo reset | One click for an admin, or `.\reset-demo.ps1` |
 | Original audit defects | **All fixed** — see [Known problems](#known-problems) |
@@ -962,6 +963,45 @@ local credential. If Google cannot be reached, the local credential is still
 deleted and the UI says so, so you can finish the job at
 [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
 
+### Rejection notifications & audit export
+
+A reviewer looking at a **rejected** invoice can email the vendor why, and
+download a report about it — both from the review screen, both reusing
+architecture that already existed rather than adding a parallel one.
+
+**Sending a rejection email** is compose-then-confirm, never automatic:
+opening "Send rejection email" fetches a draft — recipient, subject, a
+professional body listing the actual rejection reasons — which the reviewer
+can edit before an explicit "Confirm & send". The reasons are the same
+vendor-safe sentences the supplier portal already shows a client about their
+own declined invoice; nothing here reads a different, internal reason
+vocabulary. The default recipient is the address the invoice actually
+arrived from by email, when there is one — never a guessed or invented
+address, and never silently redirected. A second send is refused unless
+explicitly forced (a deliberate "Resend" click, not a retried request), and
+every attempt — sent or failed — is written into the same activity history
+every other action on the invoice already lands in.
+
+**Sending needs its own Gmail permission.** Ingestion reads with
+`gmail.readonly`; sending needs `gmail.send`, Google's dedicated send-only
+scope (it cannot read a single message). It is off by default and an
+existing mailbox connection does not gain it automatically — Google fixes a
+token's scopes at consent time — so turning this on means adding
+`gmail.send` to `GMAIL_OAUTH_SCOPES` and clicking **Reconnect** in Settings.
+Nothing about ingestion changes, and `mail.google.com` (full mailbox control)
+remains refused outright, exactly as before.
+
+**Downloading an audit report** — PDF or CSV, one click, a real file the
+browser saves — is available for any invoice a reviewer can already open.
+The PDF is a formatted report (invoice details, validation findings,
+rejection reasons, email/security summary when the invoice arrived by mail,
+the full activity history, and the rejection-email outcome if one was sent),
+not a JSON dump; the CSV is one row per audit event, the same shape the
+existing log export already uses. Both are generated from data the review
+screen already shows — no new authorization boundary, because there is
+nothing in the report a reviewer with access to the invoice could not
+already read one field at a time.
+
 ### Frontend state
 
 Everything is committed; the working tree is clean. The interface redesign and
@@ -1325,6 +1365,10 @@ POST /api/runs/{id}/review/claim   claim exclusive review ownership[invoice:revi
 POST /api/runs/{id}/review/release release a review claim          [invoice:review]
 POST /api/runs/{id}/comment      add a note without deciding       [invoice:review]
 GET  /api/runs/{id}/activity     who did what, and when, plus the current claim [invoice:read]
+GET  /api/runs/{id}/rejection-email        a draft rejection email, sends nothing [invoice:read]
+POST /api/runs/{id}/rejection-email/send   send the (edited) draft to the vendor  [invoice:review]
+GET  /api/runs/{id}/audit-report.pdf       a downloadable PDF audit report        [invoice:read]
+GET  /api/runs/{id}/audit-report.csv       a downloadable CSV audit report        [invoice:read]
 POST /api/runs/{id}/status       override any run's status         [invoice:admin]
 POST /api/admin/reset-demo       clear run history so samples replay[invoice:admin]
 POST /api/email/messages         verify an incoming message        [invoice:process]
