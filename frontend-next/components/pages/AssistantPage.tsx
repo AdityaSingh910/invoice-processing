@@ -40,7 +40,7 @@ import {
   Spinner,
   type Tone,
 } from "@/components/ui";
-import { IconAlert, IconChat, IconRefresh } from "@/components/ui/icons";
+import { IconAlert, IconArrowUp, IconChat, IconRefresh } from "@/components/ui/icons";
 
 /** How many prior turns travel with the next question. Matches the server's
  *  own MAX_HISTORY_TURNS — sending more would be trimmed there anyway, and
@@ -204,7 +204,7 @@ export default function AssistantPage() {
         <Panel flush className="flex min-h-[26rem] flex-col">
           <div
             ref={scroller}
-            className="flex-1 space-y-4 overflow-y-auto px-4 py-4"
+            className="flex-1 space-y-5 overflow-y-auto px-4 py-4"
             // A conversation is a feed: announce new answers to a screen
             // reader without stealing focus from the box being typed in.
             aria-live="polite"
@@ -242,22 +242,35 @@ export default function AssistantPage() {
               turns.map((turn) => <Turn key={turn.id} turn={turn} onRetry={retry} />)
             )}
 
+            {/* Pending answers keep the avatar column, so the reply lands where
+                the waiting indicator already was rather than jumping. */}
             {busy && (
-              <div className="flex items-center gap-2 text-[13.5px] text-faint">
-                <Spinner size={12} />
-                {t("assistant.thinking")}
+              <div className="flex items-start gap-2.5">
+                <span
+                  aria-hidden
+                  className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full border border-line bg-sunken text-muted"
+                >
+                  <IconChat size={13} />
+                </span>
+                <span className="flex items-center gap-2 rounded-2xl rounded-tl-md border border-line bg-sunken px-3.5 py-2.5 text-[13.5px] text-faint">
+                  <Spinner size={12} />
+                  {t("assistant.thinking")}
+                </span>
               </div>
             )}
           </div>
 
           <form
-            className="border-t border-line px-3 py-3"
+            className="border-t border-line p-3"
             onSubmit={(e) => {
               e.preventDefault();
               if (!tooLong) void send(draft);
             }}
           >
-            <div className="flex items-end gap-2">
+            {/* One bordered field with the control inside it, rather than a box
+                and a button sitting next to each other -- the composer reads as
+                one thing to type into. */}
+            <div className="flex items-end gap-2 rounded-2xl border border-line bg-sunken px-2 py-1.5 focus-within:border-line-strong">
               <textarea
                 ref={input}
                 rows={1}
@@ -273,11 +286,19 @@ export default function AssistantPage() {
                 }}
                 placeholder={t("assistant.placeholder")}
                 aria-label={t("assistant.placeholder")}
-                className="max-h-40 min-h-[2.25rem] flex-1 resize-y rounded-[var(--radius-md)] border border-line bg-sunken px-3 py-2 text-[14px] text-fg placeholder:text-faint focus:border-line-strong focus:outline-none"
+                className="max-h-40 min-h-[2rem] flex-1 resize-none bg-transparent px-2 py-1.5 text-[14px] text-fg placeholder:text-faint focus:outline-none"
               />
-              <Button type="submit" variant="primary" loading={busy} disabled={!draft.trim() || tooLong}>
-                {t("assistant.send")}
-              </Button>
+              <button
+                type="submit"
+                disabled={busy || !draft.trim() || tooLong}
+                aria-label={t("assistant.send")}
+                title={t("assistant.send")}
+                className="mb-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent
+                  text-accent-fg transition-opacity hover:opacity-90
+                  disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                {busy ? <Spinner size={13} /> : <IconArrowUp size={15} />}
+              </button>
             </div>
             {tooLong && (
               <p className="t-meta mt-1.5 text-bad">
@@ -292,55 +313,100 @@ export default function AssistantPage() {
   );
 }
 
+/**
+ * One exchange, as a chat turn.
+ *
+ * The question sits right, in accent, with no avatar -- you know who you are.
+ * The answer sits left behind an avatar, because the thing worth marking is
+ * that SOMETHING ELSE said it.
+ *
+ * THE PROVENANCE LABEL AND THE RECORDS STAY, and they stay OUTSIDE the bubble
+ * on purpose. A sentence a model wrote and a figure read straight out of the
+ * ledger look identical once they are both prose, and somebody deciding
+ * whether to act on an invoice has to know which they are reading (§7f.8). The
+ * bubble is the convenience; the badge and the collapsed records underneath it
+ * are the evidence, and dressing this screen up as a chat window is not a
+ * reason to drop either.
+ */
 function Turn({ turn, onRetry }: { turn: ChatTurn; onRetry: () => void }) {
   const t = useT();
 
   if (turn.role === "user") {
     return (
       <div className="flex justify-end">
-        <p className="max-w-[85%] rounded-[var(--radius-md)] bg-accent-quiet px-3 py-2 text-[14px] whitespace-pre-wrap">
+        <p
+          className="max-w-[80%] rounded-2xl rounded-br-md bg-accent px-3.5 py-2.5 text-[14px]
+            leading-relaxed whitespace-pre-wrap text-accent-fg"
+        >
           {turn.content}
         </p>
       </div>
     );
   }
 
-  if (turn.error) {
-    return (
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 shrink-0 text-bad">
-          <IconAlert size={14} />
-        </span>
-        <div className="min-w-0">
-          <p className="text-[14px] text-bad">{turn.error}</p>
-          <Button size="sm" className="mt-1.5" onClick={onRetry}>
-            {t("app.retry")}
-          </Button>
-        </div>
-      </div>
-    );
-  }
+  return (
+    <div className="flex items-start gap-2.5">
+      <span
+        aria-hidden
+        className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full border border-line bg-sunken text-muted"
+      >
+        <IconChat size={13} />
+      </span>
 
-  const reply = turn.reply;
-  const provenance = reply ? PROVENANCE[reply.answered_from] : undefined;
+      <div className="min-w-0 max-w-[85%] space-y-2">
+        {turn.error ? (
+          <>
+            <p
+              className="flex items-start gap-2 rounded-2xl rounded-tl-md border border-bad-line
+                bg-bad-quiet px-3.5 py-2.5 text-[14px] leading-relaxed text-bad"
+            >
+              <IconAlert size={14} className="mt-0.5 shrink-0" />
+              <span>{turn.error}</span>
+            </p>
+            <Button size="sm" onClick={onRetry}>
+              {t("app.retry")}
+            </Button>
+          </>
+        ) : (
+          <>
+            <p
+              className="rounded-2xl rounded-tl-md border border-line bg-sunken px-3.5 py-2.5
+                text-[14px] leading-relaxed whitespace-pre-wrap"
+            >
+              {turn.content}
+            </p>
+
+            {turn.reply?.notice && (
+              <Callout tone="warn" className="text-[13px]">
+                {turn.reply.notice}
+              </Callout>
+            )}
+
+            <TurnEvidence reply={turn.reply} />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Where the answer came from, and the records it was built out of. */
+function TurnEvidence({ reply }: { reply?: ChatReply }) {
+  const t = useT();
+  if (!reply) return null;
+
+  const provenance = PROVENANCE[reply.answered_from];
+  const hasFacts = !!reply.facts && Object.keys(reply.facts).length > 0;
 
   return (
-    <div className="max-w-[92%] space-y-2">
-      <p className="text-[14px] whitespace-pre-wrap">{turn.content}</p>
-
-      {reply?.notice && (
-        <Callout tone="warn" className="text-[13px]">
-          {reply.notice}
-        </Callout>
-      )}
-
+    <>
       <div className="flex flex-wrap items-center gap-1.5">
         {provenance && (
           <span title={provenance.hint}>
             <Badge tone={provenance.tone}>{t(provenance.labelKey)}</Badge>
           </span>
         )}
-        {reply?.sources?.map((s) => (
+        {reply.sources?.map((s) => (
           <Badge key={`${s.type}:${s.ref}`} tone="neutral">
             {s.ref}
             {s.label ? ` · ${s.label}` : ""}
@@ -348,8 +414,8 @@ function Turn({ turn, onRetry }: { turn: ChatTurn; onRetry: () => void }) {
         ))}
       </div>
 
-      {reply && reply.facts && Object.keys(reply.facts).length > 0 && (
-        <details className="rounded-[var(--radius-md)] border border-line bg-sunken">
+      {hasFacts && (
+        <details className="rounded-[var(--radius-md)] border border-line bg-surface">
           <summary className="cursor-pointer px-3 py-2 text-[13px] text-muted select-none">
             {t("assistant.records")}
           </summary>
@@ -358,6 +424,6 @@ function Turn({ turn, onRetry }: { turn: ChatTurn; onRetry: () => void }) {
           </pre>
         </details>
       )}
-    </div>
+    </>
   );
 }

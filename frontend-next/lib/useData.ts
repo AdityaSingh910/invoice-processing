@@ -14,7 +14,7 @@
  * come back 401, the failure is cached into `error`, and the 401 handler fires
  * a sign-out event at the user who just signed in.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiJson } from "./api";
 import type { Reference, RunRecord } from "./types";
 
@@ -31,45 +31,67 @@ function describe(err: unknown): string {
   return "The server could not be reached.";
 }
 
-/** Shared fetch-with-state, so the two hooks below cannot drift apart. */
+/**
+ * Shared fetch-with-state, so the hooks below cannot drift apart.
+ *
+ * THE REQUEST IS ABORTED, NOT MERELY IGNORED. The previous version set a
+ * `cancelled` flag in the effect cleanup and let the HTTP request run to
+ * completion behind it. Superseding a request therefore cost a real round trip
+ * every time -- and this application meters exactly these routes: every
+ * /api/analytics/* and /api/logs* endpoint sits behind the reporting limiter
+ * (§7e.4), which counts per user AND per IP. Changing the Analytics range four
+ * times fires 28 requests and abandons 21 of them, all of which still count.
+ * An AbortController makes an abandoned request stop being a request.
+ *
+ * ONE GATE, NOT TWO. There was also a component-lifetime `alive` ref checked
+ * alongside `cancelled` before every state write, including the one that
+ * clears `loading`. Two gates for one job, and the failure mode was ugly: any
+ * path that left `alive` false while the effect was still current stranded the
+ * panel on `loading: true` with no data and no error -- a skeleton that never
+ * resolves and never says why. `cancelled` was always the more precise of the
+ * two (it is per-effect-run, not per-component), and an aborted request needs
+ * no flag at all, so the ref is gone. Writing state after unmount has been a
+ * no-op since React 18; it was never the thing worth guarding.
+ */
 function useResource<T>(path: string, enabled: boolean, reloadKey: number): Async<T> {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // One object, so a settled request cannot land as three separate renders --
+  // and, more to the point, so `loading` and `data` can never disagree about
+  // which request they came from.
+  const [state, setState] = useState<{ data: T | null; loading: boolean; error: string | null }>({
+    data: null,
+    loading: true,
+    error: null,
+  });
   const [nonce, setNonce] = useState(0);
-  const alive = useRef(true);
-
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
 
   useEffect(() => {
     if (!enabled) return;
 
+    const controller = new AbortController();
     // Keep previous rows on screen while refetching; blanking a populated table
-    // to skeletons on every refresh is disorienting.
-    setError(null);
-    let cancelled = false;
+    // to skeletons on every refresh is disorienting. `loading` still goes true,
+    // so a caller that wants to show a quiet refreshing state can.
+    setState((s) => ({ data: s.data, loading: true, error: null }));
 
-    apiJson<T>(path)
-      .then((d) => !cancelled && alive.current && setData(d))
-      .catch((e) => !cancelled && alive.current && setError(describe(e)))
-      .finally(() => !cancelled && alive.current && setLoading(false));
+    apiJson<T>(path, { signal: controller.signal })
+      .then((d) => setState({ data: d, loading: false, error: null }))
+      .catch((e) => {
+        // An abort is this hook superseding itself, not a failure. Reporting it
+        // would put an error on screen for a request nobody is waiting for, and
+        // the run that replaced it is already responsible for settling state.
+        if (controller.signal.aborted) return;
+        setState((s) => ({ data: s.data, loading: false, error: describe(e) }));
+      });
 
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [path, enabled, reloadKey, nonce]);
 
   return {
-    data,
+    data: state.data,
     // Before it is enabled the resource is not idle — it is waiting on auth, and
     // reporting "loaded, empty" there would flash an empty state at sign-in.
-    loading: !enabled || loading,
-    error,
+    loading: !enabled || state.loading,
+    error: state.error,
     refresh: useCallback(() => setNonce((n) => n + 1), []),
   };
 }

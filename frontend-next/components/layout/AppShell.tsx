@@ -173,6 +173,51 @@ const GROUPS: {
   },
 ];
 
+/**
+ * The product mark.
+ *
+ * MODULE SCOPE, NOT INSIDE AppShell, and that is not tidiness. Declared in the
+ * component body it was a NEW function identity on every render, and React
+ * compares element types by identity -- so every render of the shell threw the
+ * previous logo subtree away and mounted a fresh one. Nothing here holds state
+ * or fetches, so the cost was wasted DOM rather than wasted requests, but the
+ * pattern is the one that turns into a refetch loop the moment somebody puts a
+ * hook inside it.
+ */
+// Shared by the always-dark rail (desktop aside, mobile drawer) and the
+// theme-reactive mobile top bar, which sits on the light canvas -- the two
+// contexts need opposite text colors, so this takes which one it is in.
+function Brand({ dark }: { dark: boolean }) {
+  return (
+  <div className="flex items-center gap-2.5">
+    <span
+      className={`grid h-8 w-8 shrink-0 place-items-center rounded-[var(--radius-md)]
+        text-[12px] font-bold tracking-[-0.02em] shadow-[var(--shadow-xs)] ${
+          dark ? "bg-rail-accent text-rail-accent-fg" : "bg-accent text-accent-fg"
+        }`}
+    >
+      AP
+    </span>
+    <div className="min-w-0 leading-tight">
+      <div
+        className={`truncate text-[14px] font-semibold tracking-[-0.015em] ${
+          dark ? "text-rail-fg" : "text-fg"
+        }`}
+      >
+        Invoice Processing
+      </div>
+      <div
+        className={`truncate text-[11.5px] tracking-[0.01em] ${
+          dark ? "text-rail-faint" : "text-faint"
+        }`}
+      >
+        Accounts payable automation
+      </div>
+    </div>
+  </div>
+  );
+}
+
 export default function AppShell({
   section,
   activeId,
@@ -287,37 +332,6 @@ export default function AppShell({
     </nav>
   );
 
-  // Shared by the always-dark rail (desktop aside, mobile drawer) and the
-  // theme-reactive mobile top bar, which sits on the light canvas -- the two
-  // contexts need opposite text colors, so this takes which one it is in.
-  const Brand = ({ dark }: { dark: boolean }) => (
-    <div className="flex items-center gap-2.5">
-      <span
-        className={`grid h-8 w-8 shrink-0 place-items-center rounded-[var(--radius-md)]
-          text-[12px] font-bold tracking-[-0.02em] shadow-[var(--shadow-xs)] ${
-            dark ? "bg-rail-accent text-rail-accent-fg" : "bg-accent text-accent-fg"
-          }`}
-      >
-        AP
-      </span>
-      <div className="min-w-0 leading-tight">
-        <div
-          className={`truncate text-[14px] font-semibold tracking-[-0.015em] ${
-            dark ? "text-rail-fg" : "text-fg"
-          }`}
-        >
-          Invoice Processing
-        </div>
-        <div
-          className={`truncate text-[11.5px] tracking-[0.01em] ${
-            dark ? "text-rail-faint" : "text-faint"
-          }`}
-        >
-          Accounts payable automation
-        </div>
-      </div>
-    </div>
-  );
 
   const roleOf = () =>
     can("invoice:admin")
