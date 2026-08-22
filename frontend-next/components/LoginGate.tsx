@@ -18,6 +18,27 @@ import { Badge, Button, Callout, Field, Input } from "@/components/ui";
 import { IconAlert, IconCheck, IconShield, IconUser } from "@/components/ui/icons";
 import LanguagePicker from "@/components/ui/LanguagePicker";
 
+/**
+ * Whether to offer the demo credentials below.
+ *
+ * These accounts exist so an evaluator can open the case study and be inside it
+ * in one click, and `data/users.json` really does ship them. They are published
+ * in this repository, which is precisely why `APP_ENV=production` refuses to
+ * start while any of them is in the user store.
+ *
+ * So on a real deployment this panel is worse than useless: the accounts are
+ * not there to sign in with, and a sign-in box that lists credentials which do
+ * not work reads as a broken product before it reads as a demo.
+ *
+ * `NEXT_PUBLIC_API_BASE_URL` is the signal, and it needs no new configuration
+ * to be correct. It is empty for exactly one arrangement -- the single process
+ * that serves this UI and the API together, which IS the local demo -- and set
+ * for any deployment where the UI is hosted apart from the API. Nothing here is
+ * a security control: the server rejects these credentials on its own, and
+ * hiding the panel only stops the app advertising sign-ins it cannot honour.
+ */
+const SHOW_DEMO_ACCOUNTS = !process.env.NEXT_PUBLIC_API_BASE_URL;
+
 const DEMO = [
   { user: "analyst", pass: "demo-analyst", role: "Process invoices" },
   { user: "reviewer", pass: "demo-reviewer", role: "Process, accept, reject" },
@@ -161,7 +182,7 @@ export default function LoginGate() {
                 id="username"
                 name="username"
                 autoComplete="username"
-                placeholder="analyst"
+                placeholder={SHOW_DEMO_ACCOUNTS ? "analyst" : ""}
                 required
                 value={username}
                 onChange={(e) => {
@@ -196,6 +217,7 @@ export default function LoginGate() {
           </form>
 
           {/* ------------------------------------------- demo access panel */}
+          {SHOW_DEMO_ACCOUNTS && (
           <div className="mt-7 rounded-[var(--radius-lg)] border border-line bg-surface">
             <div className="flex items-center justify-between border-b border-line px-3 py-2">
               <span className="t-caption">{t("login.demo")}</span>
@@ -239,6 +261,7 @@ export default function LoginGate() {
               })}
             </div>
           </div>
+          )}
         </div>
       </main>
     </div>

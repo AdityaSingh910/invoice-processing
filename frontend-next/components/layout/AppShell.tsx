@@ -14,6 +14,7 @@ import { useI18n, type MessageKey } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
 import { Button, Tooltip } from "@/components/ui";
 import LanguagePicker from "@/components/ui/LanguagePicker";
+import Modal from "@/components/ui/Modal";
 import {
   IconAnalytics,
   IconInvoice,
@@ -225,6 +226,12 @@ export default function AppShell({
   const { theme, toggleTheme } = useTheme();
   const { t } = useI18n();
   const [drawer, setDrawer] = useState(false);
+  // Signing out used to happen on the click itself. It is not destructive --
+  // nothing is lost that signing back in does not restore -- but it is one
+  // misclick away from the theme toggle right beside it, and it drops whatever
+  // was half-finished on screen. Confirming costs one keystroke; the accident
+  // costs a re-authentication and the page you were reading.
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
 
   useEffect(() => setDrawer(false), [section]);
   useEffect(() => {
@@ -376,10 +383,10 @@ export default function AppShell({
           {theme === "dark" ? <IconSun size={14} /> : <IconMoon size={14} />}
         </button>
       </Tooltip>
-      <Tooltip label="Sign out">
+      <Tooltip label={t("app.signOut")}>
         <button
-          onClick={() => signOut()}
-          aria-label="Sign out"
+          onClick={() => setConfirmSignOut(true)}
+          aria-label={t("app.signOut")}
           className="grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-sm)] text-rail-muted transition-colors hover:bg-rail-hover hover:text-rail-fg"
         >
           <IconSignOut size={14} />
@@ -388,8 +395,37 @@ export default function AppShell({
     </div>
   );
 
+  const signOutDialog = (
+    <Modal
+      open={confirmSignOut}
+      onClose={() => setConfirmSignOut(false)}
+      size="sm"
+      title={t("app.signOut.confirm.title")}
+      footer={
+        <>
+          <Button variant="secondary" size="sm" onClick={() => setConfirmSignOut(false)}>
+            {t("app.signOut.confirm.cancel")}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              setConfirmSignOut(false);
+              signOut();
+            }}
+          >
+            {t("app.signOut.confirm.action")}
+          </Button>
+        </>
+      }
+    >
+      <p className="t-body text-muted">{t("app.signOut.confirm.body")}</p>
+    </Modal>
+  );
+
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[236px_minmax(0,1fr)]">
+      {signOutDialog}
       <aside className="sticky top-0 hidden h-screen flex-col border-r border-rail-line bg-rail lg:flex">
         <div className="border-b border-rail-line px-3.5 py-3.5">
           <Brand dark />
