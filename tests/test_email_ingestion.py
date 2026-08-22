@@ -658,6 +658,186 @@ def test_an_unverifiable_message_is_quarantined_not_processed(db, trusted):
     assert stored["status"] == "QUARANTINED"
 
 
+# ==========================================================================
+# 8a. Consumer-webmail sender context (Gmail / Outlook / Yahoo support)
+#
+# A vendor is not required to have a company domain. Ordinary consumer
+# webmail legitimately carries no DKIM signature and no verifiable
+# Authentication-Results header -- that is the normal shape of personal
+# email, not a security finding. This section proves the annotation added in
+# email_ingest._annotate_unverified_sender_context():
+#   - never changes classification or status (still UNVERIFIED/QUARANTINED)
+#   - never fires for FAILED, SUSPICIOUS or VERIFIED
+#   - never admits a message just because it is on the trusted-sender list
+#   - clearly distinguishes "known/consumer sender" from "unknown company"
+# ==========================================================================
+def test_a_gmail_sender_with_missing_authentication_gets_a_consumer_sender_note(db):
+    """Requirement: consumer webmail is supported -- not silently blocked and
+    not treated as suspicious merely for lacking evidence it can never carry."""
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
+                    trusted_senders=[])
+    assert result["status"] == "QUARANTINED"
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["classification"] == "UNVERIFIED"    # unchanged: still unprovable
+    assert stored["status"] == "QUARANTINED"            # unchanged: still held for a human
+    text = " ".join(stored["reasons"])
+    assert "consumer/free-mail" in text
+    assert "not itself a security finding" in text
+    assert stored["audit"]["sender_context"]["sender_type"] == "PERSONAL"
+    assert stored["audit"]["sender_context"]["trust_status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("address", [
+    "someone@outlook.com", "someone@yahoo.com", "someone@hotmail.com",
+])
+def test_other_consumer_providers_get_the_same_treatment_as_gmail(db, address):
+    """Not a Gmail special case -- the domain policy file already lists these,
+    and the annotation reads that policy, not a hard-coded provider name."""
+    result = ingest(invoice_email(from_header=f"Supplier <{address}>"), trusted_senders=[])
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["classification"] == "UNVERIFIED"
+    assert stored["status"] == "QUARANTINED"
+    assert "consumer/free-mail" in " ".join(stored["reasons"])
+
+
+def test_an_authenticated_trusted_domain_sender_is_still_admitted_unchanged(db, trusted, dkim):
+    """Regression guard for requirement 1: nothing about this feature may
+    touch the VERIFIED -> ADMITTED path a real business domain already had."""
+    result = ingest(dkim(invoice_email()), trusted_senders=trusted)
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["classification"] == "VERIFIED"
+    assert stored["status"] == "ADMITTED"
+    assert "sender_context" not in stored["audit"]
+    assert result["status"] == "PROCESSED"
+
+
+def test_an_unauthenticated_unknown_corporate_sender_gets_no_consumer_note(db):
+    """The differentiation this feature rests on: an unknown COMPANY domain is
+    not a consumer address and must never be described as one. Byte-identical
+    to the pre-existing UNVERIFIED reason text -- proves the annotation is
+    additive, not a rewrite of the default case."""
+    result = ingest(invoice_email(from_header="AP <ap@never-heard-of-them.test>"),
+                    trusted_senders=[])
+    assert result["status"] == "QUARANTINED"
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["classification"] == "UNVERIFIED"
+    text = " ".join(stored["reasons"])
+    assert "consumer/free-mail" not in text
+    assert "trusted-sender list" not in text
+    assert "sender_context" not in stored["audit"]
+    assert "not a failed check" in text          # the original Phase F sentence, untouched
+
+
+def test_a_structurally_spoofed_gmail_sender_is_still_failed(db):
+    """Requirement 5: a genuine spoof must never be softened by sender type,
+    consumer or otherwise."""
+    raw = invoice_email(from_header="Billing <billing@gmail.com>",
+                        extra_headers=["From: Billing <billing@attacker.test>"])
+    result = ingest(raw, trusted_senders=[])
+    assert result["status"] == "QUARANTINED"
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["classification"] == "FAILED"
+    assert "sender_context" not in stored["audit"]
+    assert any("From headers" in r for r in stored["reasons"])
+
+
+def test_a_broken_signature_is_still_failed_on_a_consumer_looking_domain(db, monkeypatch):
+    """Requirement 5/10, the 'strong security failure' case: a signature that
+    does NOT verify is a real, serious finding and must stay FAILED even for
+    a domain the policy file treats as personal -- being 'consumer-like' must
+    never soften a cryptographic failure. Uses a synthetic domain (not a real
+    provider) with a genuine, self-generated keypair -- the same real-crypto
+    technique the rest of this suite already uses, never a fabricated header."""
+    import email_security
+    from test_email_security import _sign
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    monkeypatch.setenv(config.EMAIL_PERSONAL_DOMAINS_ENV, "webmail-test.example")
+    email_triage.reload_domain_policy()
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    der = key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    txt = "v=DKIM1; k=rsa; p=" + base64.b64encode(der).decode()
+    resolver = email_security.StaticDnsTxtResolver({"s1._domainkey.webmail-test.example": txt})
+    monkeypatch.setattr(email_security, "resolver_from_config", lambda: resolver)
+
+    raw = _sign(invoice_email(from_header="Billing <billing@webmail-test.example>"),
+               key, domain="webmail-test.example", break_signature=True)
+    result = ingest(raw, trusted_senders=[
+        {"sender": "webmail-test.example", "kind": "domain",
+         "vendor_name": "Webmail Vendor", "status": "trusted"}])
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["classification"] == "FAILED"
+    assert stored["dkim_result"] == "fail"
+    assert "sender_context" not in stored["audit"]
+    email_triage.reload_domain_policy()
+
+
+def test_a_trusted_gmail_address_with_missing_evidence_is_still_quarantined_not_admitted(db):
+    """Requirement 6, stated as a test: trust alone -- without cryptographic
+    proof -- never admits a message, not even for an address explicitly on
+    the allowlist. This is what 'do not blindly allowlist gmail.com' means in
+    practice: opting a SPECIFIC address in changes the wording a reviewer
+    sees, never the admission bar."""
+    trusted_gmail = [{"sender": "supplier@gmail.com", "kind": "address",
+                      "vendor_name": "Static Supplies Co", "status": "trusted"}]
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
+                    trusted_senders=trusted_gmail)
+    assert result["status"] == "QUARANTINED"            # NOT admitted just for being listed
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["classification"] == "UNVERIFIED"
+    assert stored["status"] == "QUARANTINED"
+    text = " ".join(stored["reasons"])
+    assert "trusted-sender list" in text
+    assert "Static Supplies Co" in text
+    assert "consumer/free-mail" not in text              # the stronger, trust-specific note wins
+    assert stored["audit"]["sender_context"]["trust_status"] == "TRUSTED"
+
+
+def test_the_sender_context_note_never_touches_a_non_unverified_verdict(db):
+    """Pure gate test: FAILED/SUSPICIOUS/VERIFIED records must come back
+    byte-identical, however consumer-like the sender looks. This is the
+    property that keeps the annotation from ever blurring a security finding
+    with an authorisation opinion."""
+    triage = {"sender": {"sender_type": "PERSONAL", "trust_status": "TRUSTED",
+                         "from_address": "supplier@gmail.com",
+                         "from_domain": "gmail.com", "vendor_name": "Someone"}}
+    for classification in ("FAILED", "SUSPICIOUS", "VERIFIED"):
+        record = {"classification": classification, "reasons": ["original"],
+                  "audit": {"classification": classification}}
+        annotated = email_ingest._annotate_unverified_sender_context(record, triage)
+        assert annotated == record
+
+
+def test_a_gmail_vendor_invoice_completes_the_full_chain_after_release(db):
+    """Requirement 9, exercised end to end in one script: Gmail sender ->
+    ingestion -> security classification (UNVERIFIED, annotated) -> human
+    release -> attachment extraction -> invoice processing -> an invoice
+    record findable the way Review Queue / Invoices find any other run."""
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>",
+                                  subject="Invoice INV-9001"),
+                    trusted_senders=[])
+    assert result["status"] == "QUARANTINED"
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["classification"] == "UNVERIFIED"
+    assert "consumer/free-mail" in " ".join(stored["reasons"])
+    assert result["held_attachments"] == 1, "the invoice PDF must survive the quarantine"
+
+    storage.set_email_status(result["email_id"], "RELEASED", actor="reviewer",
+                             note="called the vendor, confirmed the invoice")
+    processed = email_ingest.process_message_attachments(result["email_id"], actor="reviewer")
+    assert processed["ok"] is True
+    assert processed["processed_attachments"] == 1
+
+    run_id = processed["runs"][0]
+    run = storage.get_run(run_id)
+    assert run is not None
+    assert run["status"] in ("APPROVED", "NEEDS_REVIEW", "REJECTED")
+    assert any(r["id"] == run_id for r in storage.list_runs()), \
+        "the run must be findable the same way the Review Queue / Invoices screens find it"
+
+
 def test_phase_f_results_are_preserved_on_the_ingested_record(db, trusted, dkim):
     result = ingest(dkim(invoice_email()), trusted_senders=trusted)
     stored = storage.get_email_message(result["email_id"])

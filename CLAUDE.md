@@ -1157,6 +1157,108 @@ beside the other comment, so the corrections landed where the lines were being
 changed anyway rather than as a separate tidying commit. There is now a real
 Phase J (§7g) and it is the client portal, not ingestion.
 
+### 7b.13 Consumer-webmail sender context (post-Phase-G2 patch, not a new phase)
+
+**Status: implemented, tested (11 new tests in `test_email_ingestion.py`),
+verified.**
+
+**NOT A NEW PHASE.** This is a targeted patch to how a message that Phase F
+already classified `UNVERIFIED` is *explained*, found while testing the Gmail
+connection (§7h) with a real Gmail-to-Gmail message: the invoice was correctly
+collected and the PDF preserved, but the quarantine record gave a reviewer no
+way to tell "an ordinary vendor invoicing from personal webmail" apart from "a
+total stranger" without reading raw `triage_json`. Nothing about admission,
+authentication, or the classification vocabulary changed.
+
+**The problem, precisely.** `email_security.classify()` (Phase F) has no
+notion of `email_triage`'s sender/trust axes (§7b.2) by design — the two
+modules are deliberately decoupled, so that Phase F's cryptography can never
+be steered by Phase G's heuristic. That means a message from a vendor already
+on the trusted-sender list and a message from a total stranger land in the
+identical `UNVERIFIED` bucket with identical reason text whenever no
+cryptographic evidence exists — which is **always** true for ordinary
+consumer webmail (Gmail, Outlook, Yahoo, ...): those providers do not
+DKIM-sign or stamp `Authentication-Results` the way a vendor's own business
+MTA does. That is not a gap in the crypto — it is the normal, expected shape
+of personal email — but the stored record could not say so.
+
+**The fix lives in `backend/email_ingest.py`, not `backend/email_security.py`,
+and that boundary is the whole design.** Phase F must stay ignorant of triage;
+Phase G's orchestrator already legitimately combines both (it already derives
+`ingest_status` from Phase F's `status`). `_annotate_unverified_sender_context()`
+runs immediately after `classify()` returns, inside `ingest_message()`, and is
+gated so narrowly that it is provably inert everywhere except the one case it
+targets:
+
+```
+if record["classification"] != "UNVERIFIED": return record unchanged
+```
+
+Only when nothing could be checked does it look at `triage["sender"]` and
+append **one** sentence to `reasons` plus a small `audit["sender_context"]`
+block (`sender_type`, `trust_status`, `vendor_name`, the sentence itself):
+
+- sender is on the trusted-sender list (any kind, any domain — including a
+  specific consumer address someone explicitly opted in) →
+  *"the sender is on the trusted-sender list ...; authentication evidence is
+  simply unavailable for this particular message, which is common for
+  personal/webmail accounts — this is not a security finding, review the
+  attached document before releasing"*
+- sender's domain is on `personal_domains` (`data/email_domain_policy.json`)
+  and not otherwise trusted →
+  *"... is a consumer/free-mail provider; that is common for small vendors and
+  is not itself a security finding — review the attached document before
+  releasing"*
+- otherwise (an unknown **company** domain, or nothing usable) → nothing is
+  added; the record is byte-identical to what Phase F alone produced before
+  this patch existed.
+
+**What explicitly did NOT change, and why each one is safe:**
+
+| Preserved | Why |
+|---|---|
+| `classification` (`VERIFIED`/`FAILED`/`SUSPICIOUS`/`UNVERIFIED`) | The function returns the record **unmodified** for every classification except `UNVERIFIED` — proved directly by `test_the_sender_context_note_never_touches_a_non_unverified_verdict`, which feeds it a `PERSONAL`+`TRUSTED` sender against all three other verdicts and asserts byte-identical output. |
+| `status` (`ADMITTED` iff `VERIFIED`) | Never touched by this function at all — an `UNVERIFIED` message is `QUARANTINED` before the annotation runs and `QUARANTINED` after. `test_a_trusted_gmail_address_with_missing_evidence_is_still_quarantined_not_admitted` pins this: an address **explicitly on the allowlist**, with no cryptographic evidence, is still held. Trust was never proof, and this patch does not make it proof. |
+| Structural From-header spoofing, DKIM/DMARC/SPF failure → `FAILED` | Untouched — the gate excludes every non-`UNVERIFIED` verdict, so a real spoof or a signature that does not verify is exactly as serious for a Gmail-looking sender as for anyone else. `test_a_structurally_spoofed_gmail_sender_is_still_failed` and `test_a_broken_signature_is_still_failed_on_a_consumer_looking_domain` (real RFC 6376 signing + a deliberately broken signature, same technique §7a already uses) both pin `FAILED` with no `sender_context` attached. |
+| No blind domain trust | `personal_domains` only changes *wording*, never the admission bar (see the table row above). The only thing that can ever change *whether* a message is admitted is the existing Phase F allowlist (`trusted_email_senders.json`), matched per-address or per-domain exactly as before — nothing here adds gmail.com, outlook.com, or any consumer brand to any trust list. |
+| The human release path | Unchanged. Every message this touches was already `QUARANTINED` and stays `QUARANTINED`; `/release` and `/discard` are the only way it ever proceeds (§7a.9). |
+| The unknown-company case | `test_an_unauthenticated_unknown_corporate_sender_gets_no_consumer_note` asserts the reason text for an unrecognised **business** domain is exactly what it was before this patch — the annotation must never fire outside the two cases it names. |
+
+**End to end, proved by one test.** `test_a_gmail_vendor_invoice_completes_the_full_chain_after_release`
+drives the whole chain: Gmail sender → ingestion → Phase F classification
+(`UNVERIFIED`, now annotated) → `storage.set_email_status(..., "RELEASED")` →
+`email_ingest.process_message_attachments()` → a run created through the same
+`run_pipeline()` every other door uses → the run findable in
+`storage.list_runs()`, the same query the Review Queue and Invoices screens
+already read.
+
+**No schema change.** `sender_type`/`trust_status` were already their own
+columns on `email_messages` (§4, populated by Phase G since the original
+`claim_incoming_message()`); this patch only changes what `reasons_json` and
+`auth_json` (via `audit["sender_context"]`) contain for the one case that was
+previously unhelpful. `list_email_messages()` (the summary view) was not
+changed — the detail endpoint (`GET /api/email/messages/{id}`) already returns
+the full record via `SELECT *`, so the new sentence and the new `audit` key are
+already visible there with no API change.
+
+**No frontend change.** There is still no dedicated quarantine-queue UI
+(§7b.12 item 5 / §7a.10 item 6) — this is purely a backend/audit change,
+consumed today through the API or the existing Settings ingestion counters,
+neither of which needed editing.
+
+**Tests.** 11 new test cases in `tests/test_email_ingestion.py`, section
+"8a. Consumer-webmail sender context": a Gmail sender with missing evidence
+(and the same for Outlook/Yahoo, parametrised), an authenticated trusted-domain
+sender proving the `VERIFIED`/`ADMITTED` path is untouched, an unknown-company
+sender proving the annotation does not over-fire, a structurally spoofed
+sender, a broken DKIM signature on a personal-policy domain, a trusted consumer
+address that still cannot be admitted without evidence, a pure gate test
+against all three non-`UNVERIFIED` verdicts, and the full release-to-run chain.
+None of the pre-existing 95 tests in that file, nor any of the 110 in
+`test_email_security.py`, needed to change — this patch is additive by
+construction, and the full suite for both files (216 tests) passes unchanged
+alongside the 11 new ones.
+
 ## 7c. KPIs & analytics (Phase H)
 
 **Status: implemented, tested (119 tests), verified.**
@@ -3665,7 +3767,7 @@ matter more than they did when every caller was an employee (§7g.12).
 
 ## 10. Testing
 
-**1,398 tests, 27 files.** Both Groq and Gemini mocked at the HTTP transport
+**1,409 tests, 27 files.** Both Groq and Gemini mocked at the HTTP transport
 boundary — the suite needs no API key, no network, no quota, only a reachable
 PostgreSQL (`DATABASE_URL`). `test_samples.py` is the deliberate exception:
 it honours a live key and exercises the real routes end-to-end.
@@ -3687,7 +3789,7 @@ signature verified, an actual signature actually verified.
 | `test_security_hardening.py` | 81 | Phase K: account deactivation and the live re-check (revocation, demotion, scope intersection), per-account login limiting, the reporting/export limiter across all thirteen endpoints, HTTP security headers incl. the SSE path and the production-only HSTS, CORS read per request, .env-bound settings, plus the boundaries the audit re-verified — no hash or secret in any response, no path or traceback in an error, storage-key traversal, hostile filter values, and the email quarantine gate |
 | `test_logs.py` | 204 | Phase I: retrieval and context joins, total ordering under identical timestamps, every filter and every combination, the reused date window, LIKE-metacharacter escaping, grouping and its per-person authorization, the two streams, event detail, the per-run stage view (order, unmeasured-is-null, refused filters, malformed blobs), both CSV exports (list-parity, formula neutralisation, truncation, no-leak greps), HTTP authorization, read-only-ness, and the one new index |
 | `test_analytics.py` | 119 | Phase H: every KPI against known rows, the null-not-zero rule, task-success vs automation-rate divergence, per-stage timing and bottleneck ordering, both review latencies, date windows and UTC boundaries, trends with gaps, malformed/wrong-shaped JSON, the ledger-agreement anti-drift test, the email funnel, per-person authorization from both sides, read-only-ness, and no-leak greps |
-| `test_email_ingestion.py` | 95 | Phase G: sender/relevance triage, the no-LLM-for-junk guarantee (an extraction spy), provider failure, idempotency under 8 threads, attachment validation & path traversal, multi-invoice emails, the Phase F gate, quarantine→release→process, authorization, backwards compatibility |
+| `test_email_ingestion.py` | 106 | Phase G: sender/relevance triage, the no-LLM-for-junk guarantee (an extraction spy), provider failure, idempotency under 8 threads, attachment validation & path traversal, multi-invoice emails, the Phase F gate, quarantine→release→process, authorization, backwards compatibility; plus (§7b.13) 11 tests for consumer-webmail sender context — Gmail/Outlook/Yahoo missing-evidence annotation, the authenticated-trusted-domain path proven untouched, an unknown-company sender proven undecorated, a structural spoof and a broken signature both still FAILED, a trusted consumer address still refused admission without evidence, a pure non-UNVERIFIED gate test, and the full Gmail release-to-run chain |
 | `test_email_security.py` | 110 | Phase F: real DKIM verification (all four canonicalisations, tampered signature/body, revoked key), DMARC alignment, discarded/forged Authentication-Results, spoofed From, conflicting signals, unavailable-vs-failed, S/MIME + PGP detection, malformed/hostile headers, quarantine gate, 10-thread ruling race, authorization, backwards compatibility |
 | `test_api_security.py` | 59 | authn, authz, rate limits, secrets, input, errors |
 | `test_review_collaboration.py` | 48 | Phase D (claiming, 10-thread claim race, stale-claim recovery, activity, HTTP auth) + Phase E (decision-atomicity races, unknown-run-release, HTTP duplicate submission) |

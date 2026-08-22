@@ -179,6 +179,80 @@ def _metadata_only(attachments):
     return [{k: v for k, v in a.items() if k != "data"} for a in attachments]
 
 
+def _annotate_unverified_sender_context(record: dict, triage: dict) -> dict:
+    """Say WHO an unverifiable sender appears to be, without re-judging them.
+
+    WHY THIS EXISTS. `email_security.classify()` correctly has no notion of
+    triage's sender/trust axes (see email_triage.py's own docstring: trust is
+    decided there, not in Phase F), so it cannot tell "a known vendor's
+    webmail account, unauthenticated" apart from "a total stranger,
+    unauthenticated" -- both are simply UNVERIFIED, with identical reason
+    text. That is correct cryptographically (neither can be proven) and
+    unhelpful operationally: a message from ordinary consumer webmail
+    (Gmail, Outlook, Yahoo, ...) legitimately carries no DKIM signature or
+    Authentication-Results header this deployment can ever verify -- that is
+    the normal shape of personal email, not a security finding -- and a
+    reviewer working the quarantine queue deserves to see that distinction
+    without opening the raw triage JSON.
+
+    WHAT THIS DOES NOT DO, BY CONSTRUCTION.
+
+    * Never changes `classification` or `status`. The gate below is the only
+      thing that decides whether this function does anything at all, and it
+      only ever adds to `reasons` / `audit` -- it cannot remove or overwrite
+      anything Phase F already found.
+    * Never fires for FAILED, SUSPICIOUS or VERIFIED. Those three verdicts
+      are already unambiguous about what was found (a real signature that
+      did not verify, an authenticated-but-unlisted sender, a passing
+      aligned signature) and combining triage context with any of them would
+      blur a security finding with an authorisation opinion -- exactly the
+      mixing Phase F and Phase G were built to keep apart.
+    * Never admits a message. Every message this touches is already
+      QUARANTINED before this function runs and is QUARANTINED after it
+      returns -- the human release path (§7a's `/release` endpoint) is the
+      only way an UNVERIFIED message ever proceeds, unchanged by this.
+    * Never trusts a domain by being popular. Being on `personal_domains`
+      (data/email_domain_policy.json) only changes the WORDING of an
+      already-quarantined record. Only an explicit, per-address or
+      per-domain entry in `trusted_email_senders.json` -- the same allowlist
+      Phase F already required for VERIFIED -- can make the sentence say
+      "known vendor" instead of "consumer/free-mail provider", and even then
+      the message stays QUARANTINED because trust alone was never proof.
+    """
+    if record.get("classification") != "UNVERIFIED":
+        return record
+    sender = (triage or {}).get("sender") or {}
+    trust_status = sender.get("trust_status")
+    sender_type = sender.get("sender_type")
+    note = None
+    if trust_status == "TRUSTED":
+        vendor = sender.get("vendor_name")
+        note = (
+            f"the sender ({sender.get('from_address') or 'unknown'}) is on the "
+            "trusted-sender list" + (f" for {vendor}" if vendor else "") +
+            "; authentication evidence is simply unavailable for this particular "
+            "message, which is common for personal/webmail accounts -- this is "
+            "not a security finding, review the attached document before releasing")
+    elif sender_type == "PERSONAL":
+        note = (
+            f"{sender.get('from_domain') or 'this address'} is a consumer/free-mail "
+            "provider; that is common for small vendors and is not itself a "
+            "security finding -- review the attached document before releasing")
+    if note is None:
+        return record
+    record = dict(record)
+    record["reasons"] = list(record.get("reasons") or []) + [note]
+    audit = dict(record.get("audit") or {})
+    audit["sender_context"] = {
+        "sender_type": sender_type,
+        "trust_status": trust_status,
+        "vendor_name": sender.get("vendor_name"),
+        "note": note,
+    }
+    record["audit"] = audit
+    return record
+
+
 # --------------------------------------------------------------------------
 # Ingesting one message
 # --------------------------------------------------------------------------
@@ -289,6 +363,12 @@ def ingest_message(incoming, submitted_by: str = None, trusted_senders=None,
         return _record_failure(provider, message_id, submitted_by,
                                f"security verification failed: {exc.__class__.__name__}",
                                incoming, triage=triage)
+
+    # Purely additive context for a reviewer -- see the function's own
+    # docstring for exactly what it will and will not do. Applied before
+    # storage so an UNVERIFIED record is written once, fully annotated,
+    # rather than requiring a second UPDATE.
+    record = _annotate_unverified_sender_context(record, triage)
 
     ingest_status = "RECEIVED" if record["status"] == "ADMITTED" else "QUARANTINED"
     claim = storage.claim_incoming_message(

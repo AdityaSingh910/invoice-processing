@@ -828,6 +828,24 @@ every vendor was unknown once. And a free-mail address is not automatically
 refused — a small supplier really does invoice from Gmail, so `PERSONAL` plus a
 PDF still goes through the whole pipeline.
 
+**A vendor is not required to have a company domain, and the quarantine record
+says so.** Ordinary consumer webmail (Gmail, Outlook, Yahoo, ...) never carries
+a DKIM signature or a verifiable `Authentication-Results` header this
+deployment can check — that is simply how personal email works, not a security
+finding — so a message from one is classified `UNVERIFIED` exactly like a
+message from a total stranger. What changed is what the *held* record says
+about it: if the sender is on the trusted-sender list, or its domain is one the
+policy file marks as consumer webmail, the stored reason now says so in plain
+language ("...common for personal/webmail accounts, review the attached
+document before releasing") instead of leaving a reviewer to guess. **Being a
+known or consumer-looking sender never admits a message** — it still has to be
+released by a person exactly as before, and gmail.com/outlook.com/yahoo.com are
+never trusted as *domains*; only a specific address or domain someone
+explicitly put on the allowlist changes what the reviewer reads, never whether
+the message was cryptographically provable. A structural spoof or a signature
+that fails to verify is still classified `FAILED`, unconditionally, whatever
+the sender's address looks like.
+
 **It does not over-filter.** Doubt resolves upward: a false "irrelevant" costs
 a missed invoice somebody has to chase, a false "possible" costs one LLM call.
 Anything stopped is recorded, kept, and readable afterwards with the reasons —
