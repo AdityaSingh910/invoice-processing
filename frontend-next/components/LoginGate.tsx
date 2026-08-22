@@ -3,9 +3,12 @@
 /**
  * Sign-in.
  *
- * Split layout: product identity and a plain statement of what the process does
- * on the left, the authentication card on the right. The left panel is built
- * from the system's real rule names and pipeline stages — it is a description
+ * A masthead carrying the product and the language picker, a two-column body —
+ * a plain statement of what the process does on the left, the authentication
+ * card on the right — and a footer strip naming the three properties the API
+ * actually has. The left panel is built from the system's real pipeline: the
+ * five moves in the flow rail are the nine stages compressed to their decisive
+ * points, and the three pillars are what those stages do. It is a description
  * of this software, not decoration, and it contains no invented figures.
  *
  * The API rejects unauthenticated calls regardless of what this screen does; it
@@ -57,18 +60,28 @@ const DEMO = [
   },
 ];
 
-/** The nine stages, named as the pipeline names them. */
-const PIPELINE = [
-  "Ingest",
-  "Extract text",
-  "Extract fields",
-  "Validate",
-  "Vendor check",
-  "PO match",
-  "Duplicate check",
-  "Tolerance check",
-  "Decision",
-];
+/**
+ * The pipeline as a reader meets it, not as the code enumerates it.
+ *
+ * Nine stages is the truth, and it is what the Process screen shows. On a
+ * sign-in screen it was a wall of nine chips nobody reads. These five are those
+ * nine at their decisive points -- no move here is invented, and none of the
+ * nine is contradicted.
+ */
+const FLOW = [
+  "login.flow.invoice",
+  "login.flow.ai",
+  "login.flow.validate",
+  "login.flow.po",
+  "login.flow.decision",
+] as const;
+
+/** What those stages are FOR, in one word each. */
+const PILLARS = [
+  "login.pillar.extraction",
+  "login.pillar.validation",
+  "login.pillar.decision",
+] as const;
 
 export default function LoginGate() {
   const { signIn, notice } = useAuth();
@@ -94,176 +107,181 @@ export default function LoginGate() {
   }
 
   return (
-    <div className="grid min-h-screen lg:grid-cols-[1.05fr_minmax(420px,0.95fr)]">
-      {/* ------------------------------------------------- product identity */}
-      <aside className="relative hidden flex-col justify-between border-r border-line bg-surface p-10 lg:flex">
+    <div className="flex min-h-screen flex-col bg-canvas">
+      {/* ---------------------------------------------------------- masthead */}
+      {/* The picker moved up here from above the form. It is the one control
+          someone who cannot read the page needs to find first, and a masthead
+          is where a reader looks for it. There is still no token at this point,
+          so it falls back to the locale list this bundle carries rather than
+          the server's. */}
+      <header className="flex items-center justify-between gap-4 border-b border-line px-5 py-3 sm:px-8">
         <div className="flex items-center gap-2.5">
           <span className="grid h-7 w-7 place-items-center rounded-[var(--radius-md)] bg-accent text-[11px] font-bold text-accent-fg">
             AP
           </span>
           <span className="text-[13px] font-semibold tracking-[-0.01em]">Invoice Processing</span>
         </div>
+        <LanguagePicker />
+      </header>
 
-        <div className="max-w-[440px]">
-          <h1 className="t-display">
-            The AI reads.
-            <br />
-            The rules decide.
-          </h1>
-          <p className="mt-4 text-[14px] leading-relaxed text-secondary">
-            Vendor invoices are read by a language model, then judged by
-            deterministic Python. No model ever touches a dollar comparison, so
-            the same invoice produces the same verdict every time — and the
-            reasoning is on record.
-          </p>
+      <main className="flex flex-1 items-center justify-center px-5 py-10 sm:px-8">
+        <div className="grid w-full max-w-[1080px] items-center gap-12 lg:grid-cols-[1.05fr_minmax(360px,0.85fr)] lg:gap-16">
+          {/* --------------------------------------------- product statement */}
+          <section className="hidden lg:block">
+            <p className="t-caption">{t("login.eyebrow")}</p>
 
-          {/* The nine stages, as a compact rail. Static: this is what the
-              pipeline is, not a live readout. */}
-          <div className="mt-9">
-            <p className="t-caption mb-3">Nine checks, every invoice</p>
-            <ol className="flex flex-wrap gap-1.5">
-              {PIPELINE.map((stage, i) => (
-                <li
-                  key={stage}
-                  className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-line bg-sunken px-2 py-1"
-                >
-                  <span className="tnum text-[10px] text-faint">{i + 1}</span>
-                  <span className="text-[11.5px] text-secondary">{stage}</span>
+            <h1 className="t-display mt-3">
+              {t("login.headline.reads")}
+              <br />
+              {t("login.headline.decides")}
+            </h1>
+
+            <p className="mt-4 max-w-[420px] text-[14px] leading-relaxed text-secondary">
+              {t("login.tagline")}
+            </p>
+
+            {/* Static: this is what the pipeline IS, not a live readout. */}
+            <ol className="mt-9 flex flex-wrap items-center gap-2">
+              {FLOW.map((key, i) => (
+                <li key={key} className="flex items-center gap-2">
+                  {i > 0 && (
+                    <span aria-hidden className="text-faint">
+                      &rarr;
+                    </span>
+                  )}
+                  <span className="rounded-[var(--radius-sm)] border border-line bg-surface px-2.5 py-1 text-[12px] text-secondary">
+                    {t(key)}
+                  </span>
                 </li>
               ))}
             </ol>
-          </div>
 
-          <div className="mt-9 flex flex-wrap gap-2">
-            <Badge tone="ok" dot>
-              Approved
-            </Badge>
-            <Badge tone="warn" dot>
-              Needs review
-            </Badge>
-            <Badge tone="bad" dot>
-              Rejected
-            </Badge>
-          </div>
-        </div>
-
-        <p className="t-meta flex items-center gap-1.5">
-          <IconShield size={13} />
-          OAuth 2.0 bearer tokens, scoped per user, rate limited
-        </p>
-      </aside>
-
-      {/* --------------------------------------------------- authentication */}
-      <main className="flex items-center justify-center p-6">
-        <div className="w-full max-w-[380px]">
-          <div className="mb-6 lg:hidden">
-            <div className="flex items-center gap-2.5">
-              <span className="grid h-7 w-7 place-items-center rounded-[var(--radius-md)] bg-accent text-[11px] font-bold text-accent-fg">
-                AP
-              </span>
-              <span className="text-[13px] font-semibold">Invoice Processing</span>
+            <div className="mt-10 grid max-w-[440px] grid-cols-3 gap-6">
+              {PILLARS.map((key) => (
+                <div key={key}>
+                  <p className="text-[12.5px] font-semibold">{t(key)}</p>
+                  <span className="mt-2 block border-t border-line-strong" />
+                </div>
+              ))}
             </div>
-          </div>
+          </section>
 
-          {/* The picker sits ABOVE the form on purpose: it is the one control
-              on this page that someone who cannot read the page needs to find
-              first, and there is no token yet, so it falls back to the list
-              this bundle carries. */}
-          <div className="mb-3 flex justify-end">
-            <LanguagePicker />
-          </div>
+          {/* ----------------------------------------------- authentication */}
+          <div className="mx-auto w-full max-w-[380px]">
+            <div className="rounded-[var(--radius-lg)] border border-line bg-surface p-6 shadow-[var(--shadow-sm)]">
+              <h2 className="t-page">{t("login.title")}</h2>
+              <p className="t-meta mt-1">{t("login.scopedNote")}</p>
 
-          <h2 className="t-page">{t("login.title")}</h2>
-          <p className="t-meta mt-1">{t("login.scopedNote")}</p>
-
-          <form onSubmit={submit} autoComplete="on" className="mt-6 flex flex-col gap-4">
-            <Field label={t("login.username")} htmlFor="username">
-              <Input
-                id="username"
-                name="username"
-                autoComplete="username"
-                placeholder={SHOW_DEMO_ACCOUNTS ? "analyst" : ""}
-                required
-                value={username}
-                onChange={(e) => {
-                  setUsername(e.currentTarget.value);
-                  setSelected(null);
-                }}
-              />
-            </Field>
-
-            <Field label={t("login.password")} htmlFor="password">
-              <Input
-                id="password"
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                placeholder="••••••••"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.currentTarget.value)}
-              />
-            </Field>
-
-            {(error || notice) && (
-              <Callout tone="bad" icon={<IconAlert size={13} />}>
-                {error || notice}
-              </Callout>
-            )}
-
-            <Button type="submit" variant="primary" className="h-9 w-full" loading={busy}>
-              {busy ? t("login.working") : t("login.submit")}
-            </Button>
-          </form>
-
-          {/* ------------------------------------------- demo access panel */}
-          {SHOW_DEMO_ACCOUNTS && (
-          <div className="mt-7 rounded-[var(--radius-lg)] border border-line bg-surface">
-            <div className="flex items-center justify-between border-b border-line px-3 py-2">
-              <span className="t-caption">{t("login.demo")}</span>
-              <Badge tone="accent">Evaluation</Badge>
-            </div>
-            <div className="p-1">
-              {DEMO.map((d) => {
-                const active = selected === d.user;
-                return (
-                  <button
-                    key={d.user}
-                    type="button"
-                    onClick={() => {
-                      setUsername(d.user);
-                      setPassword(d.pass);
-                      setSelected(d.user);
-                      setError(null);
+              <form onSubmit={submit} autoComplete="on" className="mt-6 flex flex-col gap-4">
+                <Field label={t("login.username")} htmlFor="username">
+                  <Input
+                    id="username"
+                    name="username"
+                    autoComplete="username"
+                    placeholder={SHOW_DEMO_ACCOUNTS ? "analyst" : ""}
+                    required
+                    value={username}
+                    onChange={(e) => {
+                      setUsername(e.currentTarget.value);
+                      setSelected(null);
                     }}
-                    className={`flex w-full items-center gap-2.5 rounded-[var(--radius-md)] px-2.5 py-2
-                      text-left transition-colors ${active ? "bg-hover" : "hover:bg-hover"}`}
-                  >
-                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-sunken text-faint">
-                      <IconUser size={12} />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
-                        {d.user}
-                        {d.external && <Badge tone="accent">{t("login.role.supplier")}</Badge>}
-                      </span>
-                      <span className="t-meta block text-[11px]">{d.role}</span>
-                    </span>
-                    {active ? (
-                      <span className="text-ok">
-                        <IconCheck size={14} />
-                      </span>
-                    ) : (
-                      <span className="t-meta text-[11px]">{t("login.use")}</span>
-                    )}
-                  </button>
-                );
-              })}
+                  />
+                </Field>
+
+                <Field label={t("login.password")} htmlFor="password">
+                  <Input
+                    id="password"
+                    name="password"
+                    type="password"
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.currentTarget.value)}
+                  />
+                </Field>
+
+                {(error || notice) && (
+                  <Callout tone="bad" icon={<IconAlert size={13} />}>
+                    {error || notice}
+                  </Callout>
+                )}
+
+                <Button type="submit" variant="primary" className="h-9 w-full" loading={busy}>
+                  {busy ? t("login.working") : t("login.submit")}
+                </Button>
+              </form>
             </div>
+
+            {/* ------------------------------------------- demo access panel */}
+            {SHOW_DEMO_ACCOUNTS && (
+              <div className="mt-5 rounded-[var(--radius-lg)] border border-line bg-surface">
+                <div className="flex items-center justify-between border-b border-line px-3 py-2">
+                  <span className="t-caption">{t("login.demo")}</span>
+                  <Badge tone="accent">Evaluation</Badge>
+                </div>
+                <div className="p-1">
+                  {DEMO.map((d) => {
+                    const active = selected === d.user;
+                    return (
+                      <button
+                        key={d.user}
+                        type="button"
+                        onClick={() => {
+                          setUsername(d.user);
+                          setPassword(d.pass);
+                          setSelected(d.user);
+                          setError(null);
+                        }}
+                        className={`flex w-full items-center gap-2.5 rounded-[var(--radius-md)] px-2.5 py-2
+                          text-left transition-colors ${active ? "bg-hover" : "hover:bg-hover"}`}
+                      >
+                        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-sunken text-faint">
+                          <IconUser size={12} />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
+                            {d.user}
+                            {d.external && <Badge tone="accent">{t("login.role.supplier")}</Badge>}
+                          </span>
+                          <span className="t-meta block text-[11px]">{d.role}</span>
+                        </span>
+                        {active ? (
+                          <span className="text-ok">
+                            <IconCheck size={14} />
+                          </span>
+                        ) : (
+                          <span className="t-meta text-[11px]">{t("login.use")}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
-          )}
         </div>
       </main>
+
+      {/* ------------------------------------------------------------ footer */}
+      {/* Three claims this API can actually be held to -- OAuth 2.0 bearer
+          tokens, per-user scopes re-checked against the live account on every
+          request, and an audit trail written as the rules evaluate. Named,
+          not illustrated. */}
+      <footer className="border-t border-line px-5 py-4 sm:px-8">
+        <p className="t-meta flex flex-wrap items-center justify-center gap-2">
+          <IconShield size={13} />
+          <span>{t("login.footer.secure")}</span>
+          <span aria-hidden className="text-faint">
+            &middot;
+          </span>
+          <span>{t("login.footer.roleBased")}</span>
+          <span aria-hidden className="text-faint">
+            &middot;
+          </span>
+          <span>{t("login.footer.explainable")}</span>
+        </p>
+      </footer>
     </div>
   );
 }
