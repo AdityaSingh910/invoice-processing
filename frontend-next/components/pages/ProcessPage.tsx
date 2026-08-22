@@ -206,13 +206,37 @@ export default function ProcessPage({
           </div>
         ) : (
           <>
-            {/* Two columns of roughly equal weight on top — what you are giving
-                the process, and what the process will do with it — then the
-                sample library full width beneath. Stacking the library inside
-                the left column instead made that column roughly three times
-                the height of the right one, and left most of the page empty. */}
+            {/* Two columns on top — the invoice on the left, what the process
+                will do with it on the right — then the sample library full
+                width beneath. Stacking the library inside the left column
+                instead made that column roughly three times the height of the
+                right one, and left most of the page empty. */}
             <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
               <div className="flex flex-col gap-5">
+                {/* ---------------------------------------------------- document */}
+                {/* THE PREVIEW SITS ON THE LEFT BECAUSE THAT IS WHERE IT ENDS UP.
+                    ReviewWorkspaceBody -- which renders the result here, and is
+                    also the Invoices and Review-queue detail view -- puts the
+                    source document in the left column. Previewing on the right
+                    beforehand meant pressing "Run the process" threw the document
+                    across the page, in the one moment the reader is watching it.
+                    Kept at the TOP of this column so the panel does not move at
+                    all: the upload card below it is what disappears. */}
+                {file && (
+                  <Panel flush className="overflow-hidden">
+                    <div className="flex items-center gap-2 border-b border-line bg-sunken px-3 py-2">
+                      <IconFile size={12} className="shrink-0 text-faint" />
+                      <span className="t-caption">Document</span>
+                      <span className="min-w-0 flex-1 truncate text-right text-[11px] text-faint">
+                        {file.name}
+                      </span>
+                    </div>
+                    <div className="h-[320px]">
+                      <DocumentPreview file={file} filename={file.name} />
+                    </div>
+                  </Panel>
+                )}
+
                 {/* ------------------------------------------------------ upload */}
                 <Panel>
                   <PanelHeader
@@ -310,23 +334,8 @@ export default function ProcessPage({
                 </Panel>
               </div>
 
-              {/* ----------------------------------------------- document + plan */}
+              {/* ------------------------------------------------------ plan */}
               <div className="flex flex-col gap-5">
-                {file && (
-                  <Panel flush className="overflow-hidden">
-                    <div className="flex items-center gap-2 border-b border-line bg-sunken px-3 py-2">
-                      <IconFile size={12} className="shrink-0 text-faint" />
-                      <span className="t-caption">Document</span>
-                      <span className="min-w-0 flex-1 truncate text-right text-[11px] text-faint">
-                        {file.name}
-                      </span>
-                    </div>
-                    <div className="h-[320px]">
-                      <DocumentPreview file={file} filename={file.name} />
-                    </div>
-                  </Panel>
-                )}
-
                 <Panel flush>
                   <PanelHeader
                     bordered
