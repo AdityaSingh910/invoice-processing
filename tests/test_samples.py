@@ -390,6 +390,24 @@ def _check_line_item_mismatch(result):
 
 
 
+def _check_concurrency_a(result):
+    # First of a pair that together claim $8,000 of a $7,000 order. Alone it is
+    # an ordinary partial invoice -- which is the point: each is individually
+    # valid, so only the ledger can tell them apart.
+    before, after = po_balances(result)
+    assert (before, after) == (7000.00, 3000.00)
+    assert result["po_match"]["is_partial"] is True
+
+
+def _check_concurrency_b(result):
+    # Second of the pair. Run sequentially it meets a $3,000 balance and is held;
+    # run simultaneously, the row lock in save_run_checked() decides which of the
+    # two gets here, and the other one is this.
+    before, _ = po_balances(result)
+    assert before == 3000.00
+    assert result["po_match"]["within_tolerance"] is False
+
+
 EXTRA_CHECKS = {
     "01_happy_path_acme.pdf": _check_happy_path,
     "02_split_po_globex_a.pdf": _check_split_a,
@@ -403,6 +421,8 @@ EXTRA_CHECKS = {
     "09_currency_number_collision_lexcorp.pdf": _check_currency_collision,
     "10_prompt_injection_cyberdyne.pdf": _check_prompt_injection,
     "11_line_item_mismatch_acme_tech.pdf": _check_line_item_mismatch,
+    "12_concurrency_race_keyboard_a.pdf": _check_concurrency_a,
+    "13_concurrency_race_keyboard_b.pdf": _check_concurrency_b,
 }
 
 

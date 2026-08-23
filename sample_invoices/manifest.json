@@ -71,5 +71,17 @@
     "note": "INR 500,000 against PO-EDGE-001, which authorises exactly INR 500,000 -- so the PO matches, the balance covers it and the variance is zero. Underneath the total the order changed: the PO bought 10 laptops at 50,000, the invoice bills 8 at 62,500. A total-only comparison cannot see this, which is why the line-item rule exists. Held, not rejected: a short delivery at a revised price is a conversation, not fraud.",
     "expect": "NEEDS_REVIEW",
     "order": 12
+  },
+  "12_concurrency_race_keyboard_a.pdf": {
+    "label": "Concurrency race — 1 of 2",
+    "note": "$4,000 against an untouched PO-7000-CONC; leaves $3,000",
+    "expect": "APPROVED",
+    "order": 13
+  },
+  "13_concurrency_race_keyboard_b.pdf": {
+    "label": "Concurrency race — 2 of 2",
+    "note": "The same $4,000 claim against $3,000 left. Send both at once from two sessions and only one can win",
+    "expect": "NEEDS_REVIEW",
+    "order": 14
   }
 }
