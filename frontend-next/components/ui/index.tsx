@@ -17,7 +17,7 @@ import type {
 } from "react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { IconAlert, IconCheck, IconChevronDown, IconEmpty, IconSearch, IconX } from "./icons";
+import { IconAlert, IconChevronDown, IconEmpty, IconSearch } from "./icons";
 
 /* ------------------------------------------------------------------ button */
 
@@ -170,28 +170,20 @@ const STATUS_WORD: Record<string, string> = {
 };
 
 /**
- * A verdict is not an ordinary label, so it no longer looks like one.
+ * A verdict is not an ordinary label, so it does not look like one.
  *
  * This used to be a `Badge` with a colour dot -- the same soft chip shape every
  * tag and count on the screen uses, with the outcome carried by six pixels of
- * colour beside the word. Two problems with that: a status read as the same
- * KIND of thing as the tags around it, and the only part that distinguished
- * APPROVED from REJECTED at a glance was hue, which is exactly what a
- * red/green colour vision deficiency and a greyscale print both take away.
+ * colour beside the word. A status then read as the same KIND of thing as the
+ * tags around it.
  *
- * It is now a bordered pill carrying the verdict's own glyph -- a tick for
- * approved, an alert for something waiting on a person, a cross for a hard
- * stop. The shape says "this is an outcome", the glyph says WHICH outcome
- * without relying on colour, and the word still spells it out in full. The
- * tone tokens are unchanged, so it stays legible in both themes and agrees
- * with every other coloured surface in the app.
+ * It is a bordered pill now: the shape says "this is an outcome", the tone
+ * says which one, and the word spells it out in full. No dot and no glyph --
+ * a tick beside the word "Approved" and a cross beside "Rejected" say nothing
+ * the word has not already said, and at this size they read as clutter rather
+ * than as reinforcement. The tone tokens are the app's own, so it stays
+ * legible in both themes and agrees with every other coloured surface.
  */
-const STATUS_GLYPH: Partial<Record<Tone, ReactNode>> = {
-  ok: <IconCheck size={10} strokeWidth={2.5} />,
-  warn: <IconAlert size={11} strokeWidth={2} />,
-  bad: <IconX size={10} strokeWidth={2.5} />,
-};
-
 const STATUS_PILL: Record<Tone, string> = {
   ok: "border-ok-line bg-ok-quiet text-ok",
   warn: "border-warn-line bg-warn-quiet text-warn",
@@ -208,19 +200,13 @@ export function StatusBadge({
   className?: string;
 }) {
   if (!status) return null;
-  const tone = toneFor(status);
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-[2px]
-        text-[11.5px] leading-[16px] font-semibold whitespace-nowrap ${STATUS_PILL[tone]} ${className}`}
+      className={`inline-flex items-center rounded-full border px-2.5 py-[2px]
+        text-[11.5px] leading-[16px] font-semibold whitespace-nowrap ${
+          STATUS_PILL[toneFor(status)]
+        } ${className}`}
     >
-      {/* A tone with no glyph of its own -- a purchase order that is open or
-          closed, a status the server added after this table was written --
-          keeps the dot rather than borrowing a tick or a cross it has not
-          earned. */}
-      <span className="grid shrink-0 place-items-center">
-        {STATUS_GLYPH[tone] ?? <span className={`h-1.5 w-1.5 rounded-full ${DOT[tone]}`} />}
-      </span>
       {STATUS_WORD[status] ?? String(status).replace(/_/g, " ").toLowerCase()}
     </span>
   );
