@@ -13,7 +13,7 @@
  * chrome already exists) and inside `ReviewWorkspace`, the full-screen overlay
  * opened from the invoice register.
  */
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { amount } from "@/lib/format";
 import type { Audit, Extracted, PoMatch, Reason, Stage } from "@/lib/types";
 import { Button, Panel, PanelHeader, StatusBadge } from "@/components/ui";
@@ -26,6 +26,8 @@ import AuditExportButtons from "./AuditExportButtons";
 import RejectionNotice from "./RejectionNotice";
 import ReviewBar from "./ReviewBar";
 import DocumentPreview from "./DocumentPreview";
+import type { ResolvedDocument } from "./DocumentPreview";
+import DocumentDownloadButton from "./DocumentDownloadButton";
 
 export interface RunLike {
   id: number;
@@ -89,6 +91,10 @@ export function ReviewWorkspaceBody({
   const pm = run.po_match;
   const hasPo = !!pm?.po_number;
 
+  // What the preview actually resolved, so the Download control offers the
+  // bytes on screen instead of a link that might 404.
+  const [doc, setDoc] = useState<ResolvedDocument>({ source: "none", url: null });
+
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] xl:items-start">
       {/* --------------------------------------------------------- document */}
@@ -103,9 +109,15 @@ export function ReviewWorkspaceBody({
             >
               {run.filename}
             </span>
+            <DocumentDownloadButton doc={doc} runId={run.id} filename={run.filename} />
           </div>
           <div className="h-[70vh] min-h-[420px] xl:h-[calc(100vh-180px)]">
-            <DocumentPreview file={file} filename={run.filename} />
+            <DocumentPreview
+              file={file}
+              filename={run.filename}
+              runId={run.id}
+              onResolved={setDoc}
+            />
           </div>
         </Panel>
       </div>
