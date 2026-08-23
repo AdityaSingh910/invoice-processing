@@ -509,25 +509,29 @@ export default function AnalyticsPage() {
         </div>
 
         {/* ------------------------------------------------------ data quality */}
-        {o && (o.data_quality.malformed_total > 0 || o.volume.runs > 0) && (
+        {/* THE PROVENANCE LINE IS GONE -- "Computed from N runs · Last 30 days
+            in UTC" -- removed on request. What it said is still on screen: the
+            range is the selected segment at the top, and the run count is the
+            "of N" beside every count in Decision overview.
+
+            THE WARNING IS NOT GONE, and that is deliberate rather than an
+            oversight in carrying out the removal. `malformed_total` counts rows
+            whose stored JSON could not be parsed, so they contributed to NO
+            figure on this page. A reader comparing two numbers that quietly
+            omit the same rows is being misled by silence, and this is the only
+            place that condition surfaces. It renders nothing at all in the
+            ordinary case -- which is every case where the data is intact, and
+            so every case the footer was actually being seen in. */}
+        {o && o.data_quality.malformed_total > 0 && (
           <Panel>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="t-meta text-[12.5px]">
-                Computed from {formatCount(o.data_quality.runs_scanned)} runs
-                {o.data_quality.runs_with_timing !== o.data_quality.runs_scanned && (
-                  <> · {formatCount(o.data_quality.runs_with_timing)} carried stage timings</>
-                )}
-                {" · "}
-                {o.range.label} in {o.range.timezone}
+                Some rows could not be read and are in none of the figures above.
               </p>
-              {o.data_quality.malformed_total > 0 && (
-                // Surfaced rather than swallowed: a reader comparing two
-                // figures deserves to know some rows contributed to neither.
-                <Badge tone="warn">
-                  {formatCount(o.data_quality.malformed_total)} unreadable record
-                  {o.data_quality.malformed_total === 1 ? "" : "s"} skipped
-                </Badge>
-              )}
+              <Badge tone="warn">
+                {formatCount(o.data_quality.malformed_total)} unreadable record
+                {o.data_quality.malformed_total === 1 ? "" : "s"} skipped
+              </Badge>
             </div>
           </Panel>
         )}
