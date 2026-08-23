@@ -202,6 +202,7 @@ export default function ProcessPage({
               }}
               file={file}
               onReviewed={onRan}
+              showPipeline
             />
           </div>
         ) : (

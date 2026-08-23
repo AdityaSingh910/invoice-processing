@@ -14,14 +14,15 @@
  * opened from the invoice register.
  */
 import { useEffect, useState } from "react";
-import { amount } from "@/lib/format";
+import { amount, STAGE_ORDER } from "@/lib/format";
 import type { Audit, Extracted, PoMatch, Reason, Stage } from "@/lib/types";
-import { Button, Panel, PanelHeader, StatusBadge } from "@/components/ui";
+import { Badge, Button, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { IconChevronLeft, IconChevronRight, IconFile, IconX } from "@/components/ui/icons";
 import { VERDICT } from "./Panels";
 import { ExtractedFields, ExtractionSummary, ReasonList, ReviewerBrief } from "./Panels";
 import { MatchTable, PoBudget } from "./PoMatchPanel";
 import AuditTrail from "./AuditTrail";
+import StageList from "./StageList";
 import AuditExportButtons from "./AuditExportButtons";
 import RejectionNotice from "./RejectionNotice";
 import ReviewBar from "./ReviewBar";
@@ -82,11 +83,25 @@ export function ReviewWorkspaceBody({
   run,
   file,
   onReviewed,
+  showPipeline = false,
 }: {
   run: RunLike;
   /** The in-memory File, when this is the run just processed in this tab. */
   file?: File | null;
   onReviewed?: () => void;
+  /**
+   * Keep the stage list on screen after the run finishes.
+   *
+   * Set by the Process page, where the reader has just watched those nine
+   * stages arrive one at a time -- and where, until this existed, the moment
+   * the verdict landed this view replaced the pipeline panel and the whole
+   * account of how the answer was reached disappeared from the screen.
+   *
+   * Off everywhere else, which today means the register's overlay: someone
+   * opening an invoice from a list did not watch it run, and the audit trail
+   * below is the better answer to "how was this decided" for them.
+   */
+  showPipeline?: boolean;
 }) {
   const pm = run.po_match;
   const hasPo = !!pm?.po_number;
@@ -140,6 +155,30 @@ export function ReviewWorkspaceBody({
             />
             <div className="mt-3.5">
               <ReviewerBrief audit={run.audit} extracted={run.extracted} />
+            </div>
+          </Panel>
+        )}
+
+        {/* The nine stages, exactly as they streamed. Placed after the verdict
+            and whatever has to be acted on, and before the detail panels: it
+            answers "what did it actually do", which is a different question
+            from the audit trail's "what was the decision computed from". */}
+        {showPipeline && (
+          <Panel>
+            <PanelHeader
+              title="Pipeline"
+              description="Every stage this invoice went through, with what each one found."
+              actions={
+                /* The count against the pipeline's own length, the way the
+                   live panel reads it -- a run that stopped early says so,
+                   rather than reporting "7 of 7" and sounding complete. */
+                <Badge tone="neutral">
+                  {run.stages.length} of {STAGE_ORDER.length}
+                </Badge>
+              }
+            />
+            <div className="mt-3.5">
+              <StageList stages={run.stages} running={false} />
             </div>
           </Panel>
         )}
