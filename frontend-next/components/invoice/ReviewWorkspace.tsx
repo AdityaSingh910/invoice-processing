@@ -145,24 +145,16 @@ export function ReviewWorkspaceBody({
           <AuditExportButtons runId={run.id} />
         </div>
 
-        {run.status === "REJECTED" && <RejectionNotice runId={run.id} />}
+        {/* The nine stages, exactly as they streamed, directly under the
+            verdict -- above the rejection notice and the reviewer's brief
+            rather than below them.
 
-        {run.audit && run.audit.automated_decision !== "APPROVED" && (
-          <Panel>
-            <PanelHeader
-              title="Why this needs attention"
-              description="What to check, and where to look, before you decide."
-            />
-            <div className="mt-3.5">
-              <ReviewerBrief audit={run.audit} extracted={run.extracted} />
-            </div>
-          </Panel>
-        )}
-
-        {/* The nine stages, exactly as they streamed. Placed after the verdict
-            and whatever has to be acted on, and before the detail panels: it
-            answers "what did it actually do", which is a different question
-            from the audit trail's "what was the decision computed from". */}
+            The reader has just watched these arrive and the verdict land on
+            top of them, so this is where they look next, whichever way the run
+            went. It answers "what did it actually do", which is a different
+            question from the audit trail's "what was the decision computed
+            from"; the detail of WHY a rejected invoice was rejected follows
+            immediately after. */}
         {showPipeline && (
           <Panel>
             <PanelHeader
@@ -179,6 +171,20 @@ export function ReviewWorkspaceBody({
             />
             <div className="mt-3.5">
               <StageList stages={run.stages} running={false} />
+            </div>
+          </Panel>
+        )}
+
+        {run.status === "REJECTED" && <RejectionNotice runId={run.id} />}
+
+        {run.audit && run.audit.automated_decision !== "APPROVED" && (
+          <Panel>
+            <PanelHeader
+              title="Why this needs attention"
+              description="What to check, and where to look, before you decide."
+            />
+            <div className="mt-3.5">
+              <ReviewerBrief audit={run.audit} extracted={run.extracted} />
             </div>
           </Panel>
         )}
