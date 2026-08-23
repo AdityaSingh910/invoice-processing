@@ -1201,6 +1201,76 @@ def init_db(reset_runs: bool = False):
                 """CREATE INDEX IF NOT EXISTS idx_oauth_pending_expires
                    ON oauth_pending_authorizations(expires_at)""")
 
+            # ------------------------------------------------------------------
+            # PROCESSING JOBS -- an upload that is being worked on right now.
+            #
+            # WHY THIS IS STORED RATHER THAN DERIVED, breaking a run this
+            # project has kept eight times (the PO ledger, the review claim,
+            # every KPI, the log, the assistant's transcript, the portal's
+            # client view, the locale, the user store): a job IN FLIGHT is the
+            # one state no existing row implies. `runs` is written once, at
+            # the DECISION stage, by save_run_checked -- so between the moment
+            # a PDF is accepted and the moment a verdict exists there is
+            # nothing on file at all, and "is this invoice still being read?"
+            # has no answer to derive from. That gap is exactly what made a
+            # browser refresh look like the upload had never happened.
+            #
+            # It is a SEPARATE table rather than a `PROCESSING` value in
+            # runs.status, deliberately. runs.status is the LEDGER: PO
+            # consumption joins to status='APPROVED', the review queue selects
+            # on NEEDS_REVIEW, analytics groups by it, the portal translates
+            # it, and rules.decide()'s three-value hierarchy is the whole
+            # decision model. Introducing a fourth, transient value into that
+            # column would put an in-flight upload in front of every one of
+            # those readers. A job is not a decision; it is the work that
+            # produces one, and it stops existing as soon as the run does.
+            # ------------------------------------------------------------------
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS processing_jobs (
+                    id SERIAL PRIMARY KEY,
+                    job_id TEXT NOT NULL UNIQUE,
+                    idempotency_key TEXT,
+                    filename TEXT,
+                    size_bytes INTEGER,
+                    status TEXT NOT NULL,
+                    source TEXT,
+                    submitted_by TEXT,
+                    client_id TEXT,
+                    run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+                    run_status TEXT,
+                    stages_json TEXT,
+                    result_json TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT,
+                    processing_started_at TEXT,
+                    processing_completed_at TEXT
+                )"""
+            )
+            # THE DUPLICATE-JOB GUARD, and it is the database's rather than
+            # Python's -- the same call Phase G made for email idempotency
+            # (§7b.5). A check-then-insert would let two requests that raced
+            # each other both pass the check before either wrote.
+            #
+            # PARTIAL, covering only the two live states, and that is what
+            # keeps it from breaking the duplicate RULE. Once a job settles,
+            # its key is free again, so re-uploading the same PDF tomorrow
+            # creates a real second job and is rejected by rules.duplicate_check
+            # exactly as it always was. What this refuses is a SECOND job for
+            # an upload already in flight: a double-clicked button, a retried
+            # fetch, a re-render firing the same submit twice.
+            cur.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_idempotency
+                   ON processing_jobs(idempotency_key)
+                   WHERE idempotency_key IS NOT NULL
+                     AND status IN ('queued', 'processing')""")
+            # "What is still running?" on startup and on every poll of the
+            # job list; "what did I just upload?" for one person's own screen.
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON processing_jobs(status)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at "
+                        "ON processing_jobs(created_at)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_run_id ON processing_jobs(run_id)")
+
             # Read heavily by find_duplicate() (invoice_number equality) and by every
             # ledger query that filters on status -- neither existed as an index under
             # SQLite because a single-file database at this volume never needed one;
@@ -1271,6 +1341,7 @@ def init_db(reset_runs: bool = False):
             )
 
             if reset_runs:
+                cur.execute("DELETE FROM processing_jobs")
                 cur.execute("DELETE FROM run_allocations")
                 cur.execute("DELETE FROM runs")
 
@@ -2043,6 +2114,223 @@ def get_run(run_id):
         conn.close()
     hydrated["current_claim"] = get_active_claim(run_id)
     return hydrated
+
+
+# --------------------------------------------------------------------------
+# Processing jobs
+#
+# The state of an upload that has been accepted but has not yet produced a run.
+# Everything here is a plain row read at request time; the database is the only
+# source of truth about whether an invoice is still being processed, which is
+# what lets a browser close and come back to the right answer.
+# --------------------------------------------------------------------------
+JOB_QUEUED = "queued"
+JOB_PROCESSING = "processing"
+JOB_COMPLETED = "completed"
+JOB_FAILED = "failed"
+JOB_ACTIVE = (JOB_QUEUED, JOB_PROCESSING)
+
+
+def _hydrate_job(row: dict) -> dict:
+    """A job row as the API returns it: JSON columns parsed, nothing invented.
+
+    `stages` is a list rather than None when nothing has been recorded yet -- a
+    job that has just been queued has genuinely run no stages, and an empty list
+    says that where a null would make every caller guard for it.
+    """
+    d = dict(row)
+    for col, key, empty in (("stages_json", "stages", []),
+                            ("result_json", "result", None)):
+        raw = d.pop(col, None)
+        try:
+            d[key] = json.loads(raw) if raw else empty
+        except (ValueError, TypeError):
+            d[key] = empty
+    d.pop("id", None)
+    d.pop("idempotency_key", None)   # an internal dedupe key, never a response field
+    return d
+
+
+def create_processing_job(job_id: str, filename: str, size_bytes: int,
+                          idempotency_key: str = None, submitted_by: str = None,
+                          source: str = "MANUAL_UPLOAD", client_id: str = None):
+    """Record an accepted upload as queued work. Returns (job, duplicate).
+
+    `duplicate` is True when an identical upload is ALREADY queued or running,
+    in which case the job returned is that existing one and no second job is
+    created. The caller hands the same job id back to the client, so a retried
+    or double-fired submission converges on one piece of work rather than
+    starting a second read of the same PDF.
+
+    The refusal is the partial unique index, not a check here -- two requests
+    racing each other would both pass a check before either wrote. The loser of
+    the insert reads the winner's row back and reports it.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO processing_jobs
+                   (job_id, idempotency_key, filename, size_bytes, status, source,
+                    submitted_by, client_id, stages_json, created_at, updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT DO NOTHING
+                   RETURNING *""",
+                (job_id, idempotency_key, filename, size_bytes, JOB_QUEUED, source,
+                 submitted_by, client_id, json.dumps([]), now, now))
+            row = cur.fetchone()
+            if row is not None:
+                return _hydrate_job(dict(row)), False
+
+            # Somebody else holds the active key. Read theirs.
+            cur.execute(
+                """SELECT * FROM processing_jobs
+                   WHERE idempotency_key=%s AND status IN %s
+                   ORDER BY id DESC LIMIT 1""",
+                (idempotency_key, JOB_ACTIVE))
+            existing = cur.fetchone()
+            existing = dict(existing) if existing is not None else None
+    if existing is None:
+        # ON CONFLICT fired on something other than the active-key index -- in
+        # practice a job_id collision, which a UUID4 does not produce.
+        raise RuntimeError("the processing job could not be recorded")
+    return _hydrate_job(existing), True
+
+
+def claim_processing_job(job_id: str) -> bool:
+    """Move a job from queued to processing, once. True if this caller won it.
+
+    Locked with SELECT ... FOR UPDATE on the job row -- the one pattern this
+    codebase uses everywhere two callers can reach the same row. A worker that
+    loses the race does no work, so a job cannot be read twice even if it were
+    somehow handed to two workers.
+    """
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM processing_jobs WHERE job_id=%s FOR UPDATE",
+                        (job_id,))
+            row = cur.fetchone()
+            if row is None or row["status"] != JOB_QUEUED:
+                return False
+            now = datetime.now(timezone.utc).isoformat()
+            cur.execute(
+                """UPDATE processing_jobs
+                   SET status=%s, processing_started_at=%s, updated_at=%s
+                   WHERE job_id=%s""",
+                (JOB_PROCESSING, now, now, job_id))
+            return True
+
+
+def record_job_stages(job_id: str, stages: list):
+    """Store the stages recorded so far, so a reconnecting browser can show the
+    progress it would have watched. Progress only -- it decides nothing, and a
+    failure to write it must not stop the pipeline."""
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE processing_jobs SET stages_json=%s, updated_at=%s WHERE job_id=%s",
+                (json.dumps(stages), datetime.now(timezone.utc).isoformat(), job_id))
+
+
+def complete_processing_job(job_id: str, run_id: int, run_status: str,
+                            result: dict = None, stages: list = None):
+    """Mark a job finished and point it at the run it produced."""
+    now = datetime.now(timezone.utc).isoformat()
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE processing_jobs
+                   SET status=%s, run_id=%s, run_status=%s, result_json=%s,
+                       stages_json=COALESCE(%s, stages_json), error_message=NULL,
+                       processing_completed_at=%s, updated_at=%s
+                   WHERE job_id=%s""",
+                (JOB_COMPLETED, run_id, run_status,
+                 json.dumps(result) if result is not None else None,
+                 json.dumps(stages) if stages is not None else None,
+                 now, now, job_id))
+
+
+def fail_processing_job(job_id: str, error_message: str, stages: list = None):
+    """Mark a job failed, with a message a person can act on.
+
+    A failed job stays failed. Nothing re-queues it, so returning to the page
+    reports the failure rather than quietly starting the work again.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE processing_jobs
+                   SET status=%s, error_message=%s,
+                       stages_json=COALESCE(%s, stages_json),
+                       processing_completed_at=%s, updated_at=%s
+                   WHERE job_id=%s""",
+                (JOB_FAILED, (error_message or "")[:1000],
+                 json.dumps(stages) if stages is not None else None,
+                 now, now, job_id))
+
+
+def get_processing_job(job_id: str):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM processing_jobs WHERE job_id=%s", (job_id,))
+            row = cur.fetchone()
+            return _hydrate_job(dict(row)) if row else None
+    finally:
+        conn.close()
+
+
+def list_processing_jobs(submitted_by: str = None, active_only: bool = False,
+                         limit: int = 25):
+    """Recent jobs, newest first. `submitted_by` narrows to one person's own.
+
+    This is what a reloaded page reads to discover that something it started is
+    still running. There is no client-side record of an upload in flight, and
+    deliberately so -- the browser is the thing that just went away.
+    """
+    where, params = [], []
+    if submitted_by is not None:
+        where.append("submitted_by=%s")
+        params.append(submitted_by)
+    if active_only:
+        where.append("status IN %s")
+        params.append(JOB_ACTIVE)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM processing_jobs" + clause +
+                        " ORDER BY id DESC LIMIT %s", (*params, limit))
+            return [_hydrate_job(dict(r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def abandon_stale_jobs(message: str) -> int:
+    """Fail every job left queued or running by a process that is gone.
+
+    Called once at startup. The worker pool lives in this process, so a job
+    still marked `processing` when the process starts cannot be running: the
+    container was redeployed or restarted under it. Left alone it would report
+    "processing" to a reader for ever, which is a worse answer than a failure
+    they can act on -- and the honest one is that nobody is working on it.
+
+    This is correct because uvicorn runs with one worker here (the Dockerfile
+    says so, and §7k.7 explains why). A multi-worker deployment would need it
+    scoped to a worker identity; that is recorded as a limitation rather than
+    pretended away.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with write_txn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE processing_jobs
+                   SET status=%s, error_message=%s, processing_completed_at=%s,
+                       updated_at=%s
+                   WHERE status IN %s""",
+                (JOB_FAILED, message, now, now, JOB_ACTIVE))
+            return cur.rowcount
 
 
 # --------------------------------------------------------------------------
@@ -2968,6 +3256,13 @@ def clear_run_history():
             cur.execute("DELETE FROM documents")
             cur.execute("DELETE FROM review_claims")
             cur.execute("DELETE FROM invoice_activity")
+            # A processing job is a record OF a run being produced -- it
+            # exists to answer "is this upload still being read?" and the
+            # answer stops mattering the moment the run it produced is gone.
+            # Nothing here is reference data and nothing is a security
+            # finding, so unlike email_messages it is deleted rather than
+            # unlinked.
+            cur.execute("DELETE FROM processing_jobs")
             # Phase F: an email security record is NOT run history. It records
             # what could be proven about a sender, which stays true whether or
             # not the invoice it carried is still on file -- and deleting a

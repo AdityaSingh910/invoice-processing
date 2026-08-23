@@ -1525,7 +1525,13 @@ def test_the_new_indexes_exist_and_the_schema_gained_no_table(db):
                       # WHOLE set is that a table nobody mentioned shows up
                       # here, and that only keeps working while the expected
                       # set is maintained.
-                      "email_oauth_connections", "oauth_pending_authorizations"}
+                      "email_oauth_connections", "oauth_pending_authorizations",
+                      # Background invoice processing. Listed for the same
+                      # reason: a job in flight is the one state no existing
+                      # row implies, so it is the one thing here that had to
+                      # be stored -- and comparing the WHOLE set only keeps
+                      # working while the expected set is maintained.
+                      "processing_jobs"}
     # In particular, nothing that looks like a stored rollup.
     assert not any("analytic" in t or "metric" in t or "kpi" in t for t in tables)
 

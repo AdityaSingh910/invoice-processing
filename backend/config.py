@@ -498,6 +498,36 @@ def db_pool_max() -> int:
 
 
 # --------------------------------------------------------------------------
+# Background invoice processing
+#
+# Reading an invoice takes seconds -- an LLM call, sometimes OCR -- and it used
+# to happen inside the HTTP response that streamed it, which meant the browser
+# going away took the work with it. It now runs on a small worker pool that
+# outlives the request, and these two settings bound it.
+# --------------------------------------------------------------------------
+JOB_WORKERS_ENV = "INVOICE_JOB_WORKERS"
+
+
+def job_workers() -> int:
+    """How many invoices this process reads at once.
+
+    Read at call time, like every other setting here, and a missing or
+    unparseable value falls back to the default rather than raising -- every
+    value it can take is a throughput choice, not a correctness one. Concurrent
+    invoices are independent whatever this is: it changes how many wait, never
+    what any of them decides.
+    """
+    raw = os.environ.get(JOB_WORKERS_ENV, "").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 4
+    # One is a valid, serial deployment. Past a couple of dozen the limit is
+    # the provider's rate limit and the database pool, not this number.
+    return value if 1 <= value <= 32 else 4
+
+
+# --------------------------------------------------------------------------
 # Document storage (Phase C)
 #
 # The uploaded PDF itself, kept after processing so a run can still be opened

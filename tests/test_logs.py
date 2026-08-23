@@ -1311,6 +1311,10 @@ def test_phase_i_adds_one_index_and_no_table(db):
         # -- that nothing with "log" in its name was added -- is directly above
         # and is unchanged.
         "email_oauth_connections", "oauth_pending_authorizations",
+        # Background invoice processing. The assertion that matters to THIS
+        # test -- that nothing with "log" in its name was added -- is above
+        # and is unchanged.
+        "processing_jobs",
     }
 
 

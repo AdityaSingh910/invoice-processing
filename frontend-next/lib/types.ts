@@ -199,6 +199,43 @@ export interface RunResult {
   created_at?: string;
 }
 
+/**
+ * A unit of background processing: one uploaded PDF being read.
+ *
+ * THIS IS THE THING THAT SURVIVES A REFRESH. The pipeline no longer runs
+ * inside the upload response, so the browser holds nothing that the work
+ * depends on -- the row does, and this is that row. `POST /api/runs` returns
+ * one immediately and `GET /api/jobs/{job_id}` answers what became of it,
+ * whether or not the page that started it still exists.
+ *
+ * `status` here is the JOB's state and is deliberately NOT a Verdict. What the
+ * rules decided is `run_status`, and it only exists once there is a run.
+ */
+export interface ProcessingJob {
+  job_id: string;
+  filename: string;
+  size_bytes: number | null;
+  status: "queued" | "processing" | "completed" | "failed";
+  source: string | null;
+  submitted_by: string | null;
+  client_id: string | null;
+  /** The run this job produced. Null until it finishes, and on failure. */
+  run_id: number | null;
+  /** The verdict the rules reached, once there is one. */
+  run_status: Verdict | null;
+  /** The stages recorded so far -- what the live view would have shown. */
+  stages: Stage[];
+  result: RunResult | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string | null;
+  processing_started_at: string | null;
+  processing_completed_at: string | null;
+  /** Only on the POST response: this upload was already being processed, and
+   *  the job returned is that existing one rather than a second copy. */
+  duplicate?: boolean;
+}
+
 /** A stored run from GET /api/runs. */
 export interface RunRecord {
   id: number;

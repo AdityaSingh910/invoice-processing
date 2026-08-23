@@ -5,6 +5,7 @@ import json
 import time
 import os
 import sys
+import uuid
 from dataclasses import asdict
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -27,6 +28,7 @@ import doclang
 import documents
 import i18n
 import email_ingest
+import jobs
 import email_outbound
 import email_security
 import extraction
@@ -268,6 +270,23 @@ def _startup():
     # A no-op unless APP_ENV says this is production.
     auth.enforce_production_config()
     storage.init_db()
+    # A job still marked queued or running belongs to a process that no longer
+    # exists -- the worker pool lives in THIS one, so nothing is working on it.
+    # Failing it with a message beats reporting "processing" to a reader for
+    # ever, and it is done before the first request is served so nobody can
+    # read the stale state in between.
+    try:
+        abandoned = storage.abandon_stale_jobs(
+            "Processing was interrupted because the server restarted. "
+            "The invoice was not recorded; upload it again.")
+        if abandoned:
+            print("[startup] " + str(abandoned) + " interrupted processing job(s) "
+                  "were closed out as failed", file=sys.stderr)
+    except Exception as exc:
+        # Never fatal. A database that cannot be written here is a problem the
+        # very next request will report far better than a failed startup does.
+        print("[startup] stale processing jobs could not be reconciled: "
+              + exc.__class__.__name__, file=sys.stderr)
     if config.is_production():
         print(f"[startup] {config.APP_ENV_VAR}={config.app_env()} — production "
               f"configuration checks passed.", file=sys.stderr)
@@ -296,6 +315,10 @@ def _startup():
 @app.on_event("shutdown")
 def _shutdown():
     email_ingest.stop_poller()
+    # Stop taking new invoices and let the ones being read finish. An invoice
+    # abandoned half-way through would leave a job stuck in `processing` until
+    # the next startup reconciled it, and finishing takes seconds.
+    jobs.shutdown(wait=True)
 
 
 def sse(event_type, payload):
@@ -817,6 +840,117 @@ async def _guarded_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str):
         print(f"[error] pipeline failed on {filename!r}: {exc.__class__.__name__}",
               file=sys.stderr)
         yield sse("error", {"error": "Processing failed. The run was not completed."})
+
+
+# --------------------------------------------------------------------------
+# Background processing: upload, then ask
+#
+# WHY THIS ENDPOINT EXISTS BESIDE /api/runs/stream
+#
+# The streaming endpoint above drives the pipeline from inside its own
+# response body. That is fine while somebody is reading it and fatal the
+# moment they are not: Starlette's StreamingResponse runs the body generator
+# and a disconnect listener in one task group and cancels the group when
+# `http.disconnect` arrives (starlette/responses.py, StreamingResponse.__call__).
+# A browser refresh aborts the fetch, the group is cancelled, and the pipeline
+# is cancelled with it -- part-way through, before the DECISION stage that is
+# the only place a run is ever written. Nothing was persisted, so there was
+# nothing for the reloaded page to find.
+#
+# This endpoint separates the two halves. The request does the part that must
+# happen while the caller is still here -- authorize, read the bytes, check
+# they are a PDF, write a durable job row -- and returns a job id. The reading
+# and judging happen on `jobs`'s worker pool, which holds no reference to the
+# request and does not care what the browser does next.
+#
+# THE STREAMING ENDPOINT IS LEFT EXACTLY AS IT WAS. It is a working API for a
+# caller that does hold the connection open, and it is what the test suite
+# drives; removing it would be a breaking change this fix does not need to
+# make.
+# --------------------------------------------------------------------------
+@app.post("/api/runs", status_code=status.HTTP_202_ACCEPTED)
+async def create_run_job(
+    file: UploadFile = File(...),
+    principal: auth.Principal = Depends(ratelimit.rate_limit_processing),
+):
+    """Accept an invoice for processing and return the job that will read it.
+
+    202, not 200: the invoice has been accepted and nothing has been decided
+    about it yet. The caller polls `GET /api/jobs/{job_id}` for the outcome.
+    """
+    pdf_bytes = await _read_capped(file)
+    _validate_pdf(pdf_bytes)
+    filename = _safe_filename(file.filename)
+
+    # THE DEDUPE KEY IS THE CONTENT, NOT A TOKEN THE CLIENT CHOOSES, so a
+    # client that forgets to send one is still protected -- which is the whole
+    # population of accidental resubmissions this is for (a double-clicked
+    # button, a re-render firing submit twice, a fetch retried after a network
+    # blip). It is scoped to the submitter and the door as well as the bytes,
+    # because two different people uploading the same PDF are two uploads.
+    #
+    # It is only unique while a job is LIVE (see the partial index in
+    # storage.init_db), which is what keeps this from quietly replacing the
+    # duplicate RULE: uploading the same invoice again once the first has
+    # settled creates a real second run and is rejected by
+    # rules.duplicate_check exactly as it always was.
+    key = hashlib.sha256(
+        pdf_bytes + b"|" + (principal.username or "").encode("utf-8")
+        + b"|MANUAL_UPLOAD").hexdigest()
+
+    job_id = uuid.uuid4().hex
+    job, duplicate = storage.create_processing_job(
+        job_id=job_id, filename=filename, size_bytes=len(pdf_bytes),
+        idempotency_key=key, submitted_by=principal.username,
+        source="MANUAL_UPLOAD")
+
+    # Only the job that was actually created is submitted. A duplicate returns
+    # the job already doing the work, so the second caller watches the first
+    # one's progress instead of starting a second read of the same PDF.
+    if not duplicate:
+        jobs.submit(job["job_id"], filename, pdf_bytes,
+                    uploaded_by=principal.username, source="MANUAL_UPLOAD")
+
+    return {**job, "duplicate": duplicate}
+
+
+@app.get("/api/jobs")
+def list_jobs(
+    active: bool = Query(False, description="Only jobs that are queued or running"),
+    mine: bool = Query(False, description="Only jobs this caller submitted"),
+    principal: auth.Principal = Security(auth.current_principal,
+                                         scopes=["invoice:read"]),
+):
+    """Recent processing jobs, newest first.
+
+    `invoice:read`, and that is not a widening: a job carries a filename, a
+    status and -- once it finishes -- the run it produced, all of which that
+    scope already reads through `/api/runs`. It is not narrowed per user for
+    the same reason nothing else here is (there is no per-user invoice
+    ownership; this is a shared AP queue), but `?mine=1` is offered because
+    "did the upload I started survive my reload?" is a question about your own
+    work.
+    """
+    return storage.list_processing_jobs(
+        submitted_by=principal.username if mine else None,
+        active_only=active)
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str,
+            principal: auth.Principal = Security(auth.current_principal,
+                                                 scopes=["invoice:read"])):
+    """One job: its status, the stages recorded so far, and its result.
+
+    THIS IS WHAT MAKES A REFRESH SURVIVABLE. The browser holds nothing; the
+    row does. A page that comes back asks this and is told the truth --
+    still running, finished (with the run it produced), or failed (with why).
+    """
+    job = storage.get_processing_job(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Job not found")
+    return job
 
 
 @app.get("/api/runs")

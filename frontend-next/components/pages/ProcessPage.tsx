@@ -7,11 +7,29 @@
  * run starts, the phase stepper and the evidence take over. Rendering empty
  * result panels beside an upload box is the single thing that makes an internal
  * tool feel unfinished.
+ *
+ * THE RUN NO LONGER LIVES IN THIS COMPONENT.
+ *
+ * It used to: `streamRun` read the pipeline out of a response body, so the
+ * pipeline only advanced while this page's fetch was alive. Refreshing aborted
+ * the fetch, the server cancelled the response task and the pipeline with it,
+ * and -- because a run is only written at the DECISION stage -- nothing was
+ * persisted at all. The upload had not failed; it had stopped existing.
+ *
+ * Now the upload hands the file over and gets a JOB ID back. The server reads
+ * the invoice on its own worker and writes what it finds. This screen holds no
+ * part of the work: it asks `GET /api/jobs/{id}` how things are going, which is
+ * a question it can ask again after a reload, in another tab, or tomorrow.
+ *
+ * The job id is remembered in sessionStorage, and that is NOT state the work
+ * depends on -- it is a bookmark. Losing it (a new tab, a cleared session) is
+ * survivable: this screen then asks the server for anything of yours still
+ * running, which is the same question by another route.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiFetch, apiJson, streamRun } from "@/lib/api";
+import { ApiError, apiFetch, apiJson, fetchActiveJobs, fetchJob, startRun } from "@/lib/api";
 import { STAGE_ORDER } from "@/lib/format";
-import type { RunRecord, RunResult, SampleInvoice, Stage } from "@/lib/types";
+import type { ProcessingJob, RunRecord, RunResult, SampleInvoice, Stage } from "@/lib/types";
 import type { Async } from "@/lib/useData";
 import { PageBody, PageHeader } from "@/components/layout/AppShell";
 import { Badge, Button, Callout, Panel, PanelHeader, Skeleton, StatusBadge } from "@/components/ui";
@@ -23,6 +41,36 @@ import DocumentPreview from "@/components/invoice/DocumentPreview";
 import ResetDemoButton from "@/components/ResetDemoButton";
 
 const MAX_MB = 10;
+
+/** How often to ask the server how the invoice is going. A second is well
+ *  inside the pace of the pipeline's own stages and costs one small read. */
+const POLL_MS = 1000;
+
+/**
+ * Which job THIS TAB is watching.
+ *
+ * sessionStorage rather than localStorage, for the same reason the bearer
+ * token lives there: it dies with the tab. It holds an id and nothing else --
+ * the state of the work is the server's, always re-read, never cached here.
+ */
+const JOB_KEY = "ip.process.job";
+
+function rememberJob(id: string | null) {
+  try {
+    if (id) sessionStorage.setItem(JOB_KEY, id);
+    else sessionStorage.removeItem(JOB_KEY);
+  } catch {
+    /* private mode: the bookmark is lost, the job is not */
+  }
+}
+
+function rememberedJob(): string | null {
+  try {
+    return sessionStorage.getItem(JOB_KEY);
+  } catch {
+    return null;
+  }
+}
 
 export default function ProcessPage({
   runs,
@@ -41,12 +89,145 @@ export default function ProcessPage({
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  // The job this screen is watching. Everything shown about a run is derived
+  // from what the server says about this id.
+  const [jobId, setJobId] = useState<string | null>(null);
+  // Settled once, not once per poll: the register refresh and the toast are
+  // both one-shot.
+  const settled = useRef<Set<string>>(new Set());
+  // Jobs THIS TAB started. Only these are toasted -- a reload that lands on a
+  // job finishing in the background should still refresh the register (the run
+  // is real and belongs in it), but announcing a verdict for work the reader
+  // did not just watch reads as a notification from nowhere.
+  const startedHere = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     apiJson<SampleInvoice[]>("/api/sample-invoices")
       .then(setSamples)
       .catch(() => setSamples([]));
   }, []);
+
+  /**
+   * PICK THE WORK BACK UP AFTER A RELOAD.
+   *
+   * Two routes, in order, because they answer different situations:
+   *   1. this tab was already watching a job -- restore exactly that one,
+   *      finished or not, so a refresh mid-run is invisible and a refresh
+   *      after the verdict still shows the verdict;
+   *   2. nothing remembered (a new tab, a reopened browser) -- ask the server
+   *      whether anything of mine is STILL RUNNING, and adopt the newest.
+   *
+   * Only the second is narrowed to active jobs. Adopting a finished job in a
+   * fresh tab would ambush someone with a result they did not just produce;
+   * adopting a running one tells them something they need to know.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const remembered = rememberedJob();
+    if (remembered) {
+      // Adopted, not announced. It is deliberately NOT marked settled here:
+      // a job restored while still running must still refresh the register
+      // when it finishes, or a reader who refreshed mid-run would be left
+      // with a stale Invoices table until they went and reloaded it.
+      setJobId(remembered);
+      setRunning(true);          // corrected by the first poll a moment later
+      return;
+    }
+
+    fetchActiveJobs()
+      .then((list) => {
+        if (cancelled || list.length === 0) return;
+        rememberJob(list[0].job_id);
+        setJobId(list[0].job_id);
+        setRunning(true);
+      })
+      .catch(() => {
+        /* nothing to restore is the ordinary case, not an error worth showing */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * Follow one job until it settles.
+   *
+   * Polling, not a socket: the answer is a row in Postgres, one small read a
+   * second while an invoice is being read and none at all afterwards. It also
+   * degrades the way the rest of this application does -- a request that fails
+   * is retried on the next tick rather than ending the run, because the run is
+   * not here to end.
+   */
+  useEffect(() => {
+    if (!jobId) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const settle = (job: ProcessingJob) => {
+      if (settled.current.has(job.job_id)) return;
+      settled.current.add(job.job_id);
+      const r = job.result;
+      if (job.status === "completed" && r && startedHere.current.has(job.job_id)) {
+        toast.push({
+          tone: r.status === "APPROVED" ? "ok" : r.status === "REJECTED" ? "bad" : "warn",
+          title: `${r.filename} — ${r.status.replace(/_/g, " ").toLowerCase()}`,
+          detail: `Nine checks completed. Run #${r.run_id}.`,
+        });
+      }
+      // Refresh the shared run/reference data either way: a completed run
+      // belongs in the register, and a failed one changes nothing but costs
+      // one read to confirm.
+      onRan?.();
+    };
+
+    const tick = async () => {
+      try {
+        const job = await fetchJob(jobId);
+        if (stopped) return;
+        setStages(job.stages || []);
+        const live = job.status === "queued" || job.status === "processing";
+        setRunning(live);
+        if (job.status === "completed" && job.result) {
+          setResult(job.result);
+          setError(null);
+        } else if (job.status === "failed") {
+          setResult(null);
+          setError(
+            job.error_message ||
+              "Processing failed. The invoice was not recorded — try uploading it again."
+          );
+        }
+        if (!live) {
+          settle(job);
+          return;                       // settled: stop polling
+        }
+      } catch (e) {
+        if (stopped) return;
+        // The job is genuinely gone -- the run history was cleared, or this is
+        // a stale bookmark. Forget it rather than polling a 404 for ever.
+        if (e instanceof ApiError && e.status === 404) {
+          rememberJob(null);
+          setJobId(null);
+          setRunning(false);
+          return;
+        }
+        // Anything else is this reader's connection, not the invoice: the work
+        // is on the server and carries on regardless, so try again.
+      }
+      timer = setTimeout(tick, POLL_MS);
+    };
+
+    void tick();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+    // `toast` and `onRan` are intentionally not dependencies: re-running this
+    // effect would restart the poll loop for a job already being followed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]);
 
   const choose = useCallback((f: File) => {
     // Checked here only to fail fast with a readable message; the server
@@ -75,6 +256,18 @@ export default function ProcessPage({
     setPicked(s.filename);
   }
 
+  /**
+   * Hand the invoice over. This function no longer waits for the verdict.
+   *
+   * All it does is start the work and remember which job it is -- the polling
+   * effect above does the rest. Which is the whole fix: there is nothing here
+   * for a refresh to interrupt, because the reading is not happening here.
+   *
+   * A resubmission of a file already being read comes back as the SAME job
+   * (`duplicate: true`, decided by the server against a live-job index), so a
+   * double-click or a retry joins the work in progress instead of starting a
+   * second read of the same PDF.
+   */
   async function run() {
     if (!file) return;
     setRunning(true);
@@ -82,27 +275,13 @@ export default function ProcessPage({
     setStages([]);
     setResult(null);
     try {
-      let final: RunResult | null = null;
-      await streamRun(file, (evt) => {
-        if (evt.type === "stage") setStages((p) => [...p, evt.stage]);
-        else if (evt.type === "final") {
-          final = evt.result;
-          setResult(evt.result);
-        } else if (evt.type === "error") setError(evt.error);
-      });
-      if (final) {
-        const r = final as RunResult;
-        toast.push({
-          tone: r.status === "APPROVED" ? "ok" : r.status === "REJECTED" ? "bad" : "warn",
-          title: `${r.filename} — ${r.status.replace(/_/g, " ").toLowerCase()}`,
-          detail: `Nine checks completed. Run #${r.run_id}.`,
-        });
-      }
-      onRan?.();
+      const job = await startRun(file);
+      startedHere.current.add(job.job_id);
+      rememberJob(job.job_id);
+      setJobId(job.job_id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "The run could not be completed.");
-    } finally {
       setRunning(false);
+      setError(e instanceof Error ? e.message : "The invoice could not be accepted.");
     }
   }
 
@@ -112,6 +291,11 @@ export default function ProcessPage({
     setStages([]);
     setResult(null);
     setError(null);
+    // Stop following the job and drop the bookmark. The job itself is
+    // untouched -- it is finished, and its run is in the register.
+    rememberJob(null);
+    setJobId(null);
+    setRunning(false);
   }
 
   const processed = new Set((runs?.data ?? []).map((r) => r.filename));

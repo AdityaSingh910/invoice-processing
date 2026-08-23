@@ -31,7 +31,7 @@
  * read here or anywhere else on this side of the boundary.
  */
 import { storedLocale } from "./i18n";
-import type { Identity, PortalSubmission, RunEvent } from "./types";
+import type { Identity, PortalSubmission, ProcessingJob, RunEvent } from "./types";
 
 export const TOKEN_KEY = "ip.token";
 
@@ -181,6 +181,12 @@ export async function loadIdentity(): Promise<Identity> {
 /**
  * Drive the pipeline and surface each stage as it lands.
  *
+ * NO LONGER USED BY THIS UI. The Process screen went to `startRun` + `fetchJob`
+ * below, because the pipeline running inside this response body is exactly why
+ * a refresh used to kill it. Kept because `POST /api/runs/stream` is unchanged
+ * and remains a working API for a caller that does hold the connection open --
+ * removing it would be a breaking change the refresh fix does not need to make.
+ *
  * This is a POST carrying a file, so it cannot use EventSource; the SSE frames
  * are read off the fetch body stream by hand. Frames are separated by a blank
  * line and may be split across chunk boundaries, so the tail of the buffer is
@@ -220,6 +226,61 @@ export async function streamRun(
       }
     }
   }
+}
+
+/* ------------------------------------------------- background processing */
+
+/**
+ * Hand an invoice to the server and get back the job that will read it.
+ *
+ * WHY THIS REPLACED `streamRun` ON THIS SCREEN.
+ *
+ * `streamRun` reads the pipeline out of a response body, which means the
+ * pipeline only advances while this fetch is alive. Refreshing the page aborts
+ * the fetch; the server cancels the response task and the pipeline with it,
+ * part-way through, before the one point at which a run is written. The upload
+ * did not fail -- it stopped existing, which is why nothing was there after
+ * the reload.
+ *
+ * This call returns as soon as the file has been accepted and recorded. The
+ * reading happens on the server, in its own worker, and `fetchJob` below asks
+ * how it is going. Nothing on this side keeps it alive, so nothing on this
+ * side can kill it.
+ *
+ * DELIBERATELY NOT ABORTABLE. Every other request in this app carries an
+ * AbortSignal so a superseded one stops being a request; this one must not,
+ * because aborting it is precisely the bug. It is a short POST either way.
+ */
+export async function startRun(file: File): Promise<ProcessingJob> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await apiFetch("/api/runs", { method: "POST", body: fd });
+  if (!res.ok) {
+    // The server's own message is worth showing: a rate-limit refusal or a
+    // rejected file type tells the uploader something they can act on.
+    let detail = "";
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail || "";
+    } catch {
+      /* a non-JSON body is not worth a second failure */
+    }
+    throw new ApiError(detail || `the invoice could not be accepted (HTTP ${res.status})`,
+                       res.status);
+  }
+  return (await res.json()) as ProcessingJob;
+}
+
+/** One job's current state, straight from the database. */
+export async function fetchJob(jobId: string, signal?: AbortSignal): Promise<ProcessingJob> {
+  return apiJson<ProcessingJob>(`/api/jobs/${encodeURIComponent(jobId)}`, { signal });
+}
+
+/** This user's uploads that are still queued or running.
+ *
+ *  What a page asks on mount when it has no memory of its own -- a new tab, or
+ *  one reopened after the browser was closed. */
+export async function fetchActiveJobs(signal?: AbortSignal): Promise<ProcessingJob[]> {
+  return apiJson<ProcessingJob[]>("/api/jobs?active=1&mine=1", { signal });
 }
 
 /* ------------------------------------------------------- client portal (J) */
