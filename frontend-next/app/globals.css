@@ -479,6 +479,14 @@
   table.dt > tbody > tr.interactive:focus-visible > td:first-child {
     box-shadow: inset 2px 0 0 var(--accent);
   }
+  /* A header the page asked to right-align. The rule above sets text-align on
+     every th through a descendant selector, which beats a utility class in the
+     same layer, so `<TH align="right">` did nothing and the column heading sat
+     at the left edge of a column of right-aligned figures. */
+  table.dt > thead > tr > th[data-align="right"] {
+    text-align: right;
+  }
+
   table.dt .num {
     font-variant-numeric: tabular-nums;
     font-family: var(--font-mono), ui-monospace, monospace;

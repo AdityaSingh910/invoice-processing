@@ -17,7 +17,6 @@ import {
   compactMoney,
   compactMoneyIsRounded,
   poUsage,
-  topExceptionReasons,
   totals,
 } from "@/lib/metrics";
 import type { Reference, RunRecord } from "@/lib/types";
@@ -25,7 +24,6 @@ import type { Async } from "@/lib/useData";
 import type { Navigate } from "@/components/layout/AppShell";
 import { PageBody, PageHeader } from "@/components/layout/AppShell";
 import {
-  Badge,
   Button,
   DataTable,
   EmptyState,
@@ -41,7 +39,6 @@ import {
   Tooltip,
 } from "@/components/ui";
 import {
-  IconCheck,
   IconInvoice,
   IconRefresh,
   IconUpload,
@@ -49,7 +46,8 @@ import {
 import { LegendItem, SERIES, VolumeChart } from "@/components/charts";
 import ResetDemoButton from "@/components/ResetDemoButton";
 
-/** Rows in each of the two lists on the middle row. */
+/** Rows in the activity feed. Five two-line rows sit about level with the six
+ *  rows of the budget table beside them. */
 const FEED_ROWS = 5;
 
 /** How many purchase orders the landing screen shows before deferring to the
@@ -94,23 +92,6 @@ export default function OverviewPage({
   const t = useMemo(() => totals(rows), [rows]);
   const days = useMemo(() => byDay(rows), [rows]);
   const valueIsRounded = compactMoneyIsRounded(t.valueProcessed);
-  /* Five causes and five events, so the two panels beside each other come out
-     roughly the same height -- a ranked cause is one line and a feed row is
-     two, so equal COUNTS would not have been equal panels. Both lists defer to
-     a fuller screen anyway: the ranking to Invoices, the feed to View all. */
-  const reasons = useMemo(() => topExceptionReasons(rows, FEED_ROWS), [rows]);
-  /**
-   * Purchase orders, most consumed first, and only the first few.
-   *
-   * The reference order is the order they were raised in, which is no order at
-   * all on a landing screen: nine rows of "0%" pushed the panel past every
-   * other thing on the page, and the one order actually running out of budget
-   * was wherever it happened to fall. Sort is stable, so a database where
-   * nothing has been billed yet still lists them exactly as it always did.
-   *
-   * The rest are one click away -- "View all" in the panel header goes to the
-   * Reference screen, which is the full register and always was.
-   */
   const pos = useMemo(
     () =>
       [...poUsage(rows, reference.data?.purchase_orders ?? [])].sort((a, b) => b.pct - a.pct),
@@ -276,81 +257,87 @@ export default function OverviewPage({
           </Panel>
         </div>
 
-        {/* ------------------------------------------------------- the two lists
-            Both panels answer "what happened" -- why the process stopped, and
-            what it last did -- so they sit on one row as a matched pair. They
-            used to be on two different rows, each paired with something of a
-            very different shape, which left the taller one dragging a column
-            of empty panel beside it.
+        {/* ------------------------------------------------------- budgets + feed
+            What the money is committed against, and what the process last did.
 
-            They stretch to a common height rather than each taking its own:
-            one list is ranked causes and the other is a feed, so they are
-            never the same length, and left to themselves the shorter one
-            floats with a ragged hole beside it. Level bottom edges read as a
-            row; two different heights read as a mistake.
+            "Why invoices stop" opened this row and was removed at the owner's
+            request. These two are a fair pair now in a way they were not
+            before: the table is capped at six rows and the feed at five, so a
+            six-row table and five two-line feed rows come out about level and
+            finish on the same line.
 
-            They pair at xl, not lg. At 1024 two columns leave each list about
-            300px, and a feed row carries a vendor, an invoice number, an
-            amount, a status and a time -- so the vendor, the only part a
-            person scans for, truncated to "U...". Below 1280 they stack and
-            each gets the full width. */}
-        <div className="grid gap-4 xl:grid-cols-2">
+            They pair at xl, not lg. Below 1280 each column is around 300px --
+            the table's five columns of figures scroll sideways, and a feed row
+            carrying a vendor, an invoice number, an amount, a status and a
+            time truncates the vendor to "U...", which is the one part of the
+            row anyone scans. Below that they stack and each gets full width. */}
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
           <Panel flush>
             <PanelHeader
               bordered
-              title="Why invoices stop"
-              description="Ranked by how often the rule bites"
+              title="Purchase order budgets"
+              description={
+                pos.length > PO_ROWS
+                  ? `The ${PO_ROWS} most consumed of ${pos.length}. Only approved invoices consume budget.`
+                  : "Only approved invoices consume budget"
+              }
+              actions={
+                <Button size="xs" variant="ghost" onClick={() => onNavigate("reference")}>
+                  View all
+                </Button>
+              }
             />
-            {loading ? (
+            {reference.loading && !reference.data ? (
               <div className="flex flex-col gap-3 p-4">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <Skeleton key={i} className="h-8 w-full" />
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} className="h-7 w-full" />
                 ))}
               </div>
-            ) : reasons.length === 0 ? (
-              <EmptyState
-                compact
-                icon={<IconCheck size={16} />}
-                title="No rules have failed"
-                description="Nothing has been held or rejected yet."
-              />
             ) : (
-              <ul className="divide-line">
-                {reasons.map((r, i) => {
-                  // Ranked by frequency, and coloured by whether the rule is a
-                  // hard stop (rejects) or a hold (needs a person).
-                  const blocking = /duplicate|vendor not approved/i.test(r.reason);
-                  const pct = (r.count / reasons[0].count) * 100;
-                  return (
-                    <li key={r.reason}>
-                      <button
-                        onClick={() => onNavigate("invoices")}
-                        title={r.reason}
-                        // The magnitude bar is drawn BEHIND the row, not under
-                        // the label. A hairline beneath text reads as an
-                        // underline, and a column of them made this ranked
-                        // list look like a list of hyperlinks.
-                        className="rank-row flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-hover"
-                      >
-                        <span
-                          aria-hidden
-                          className="rank-fill"
-                          style={{
-                            width: `${pct}%`,
-                            background: blocking ? "var(--bad-vivid)" : "var(--warn-vivid)",
-                          }}
-                        />
-                        <span className="tnum w-3 shrink-0 text-[12px] text-faint">{i + 1}</span>
-                        <span className="min-w-0 flex-1 truncate text-[13.5px]">{r.reason}</span>
-                        <span className="tnum shrink-0 text-[14px] font-semibold">{r.count}</span>
-                        <Badge tone={blocking ? "bad" : "warn"} className="shrink-0">
-                          {blocking ? "Blocks" : "Holds"}
-                        </Badge>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+              <DataTable minWidth={520}>
+                <thead>
+                  <tr>
+                    <TH>PO</TH>
+                    <TH>Vendor</TH>
+                    <TH align="right">Consumed</TH>
+                    <TH align="right">Remaining</TH>
+                    <TH className="w-[132px]">Utilisation</TH>
+                  </tr>
+                </thead>
+                <tbody>
+                  {posShown.map(({ po, consumed, remaining, pct, over }) => {
+                    const tone = over ? "bad" : pct >= 99.5 ? "warn" : "ok";
+                    return (
+                      <tr key={po.po_number}>
+                        <TD className="tnum text-[13.5px] font-medium">{po.po_number}</TD>
+                        <TD className="max-w-[150px] truncate text-[13.5px] text-muted">
+                          {po.vendor}
+                        </TD>
+                        <TD align="right" className="text-[13.5px] text-muted">
+                          {money(consumed)}
+                        </TD>
+                        <TD align="right" className="text-[13.5px] font-semibold">
+                          {money(remaining)}
+                        </TD>
+                        <TD>
+                          <div className="flex items-center gap-2">
+                            <Meter
+                              value={consumed}
+                              max={po.amount}
+                              tone={tone}
+                              height={4}
+                              ariaLabel={`${pct.toFixed(0)}% consumed`}
+                            />
+                            <span className="tnum w-8 shrink-0 text-right text-[12px] text-faint">
+                              {pct.toFixed(0)}%
+                            </span>
+                          </div>
+                        </TD>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </DataTable>
             )}
           </Panel>
 
@@ -431,79 +418,6 @@ export default function OverviewPage({
           </Panel>
         </div>
 
-        {/* ------------------------------------------------------------- budgets
-            Full width. It is a five-column table and it was squeezed into a
-            1.2fr column -- narrow enough to scroll sideways on a laptop, while
-            the shorter panel beside it ran out of rows and left a tall block
-            of nothing. */}
-          <Panel flush>
-            <PanelHeader
-              bordered
-              title="Purchase order budgets"
-              description={
-                pos.length > PO_ROWS
-                  ? `The ${PO_ROWS} most consumed of ${pos.length}. Only approved invoices consume budget.`
-                  : "Only approved invoices consume budget"
-              }
-              actions={
-                <Button size="xs" variant="ghost" onClick={() => onNavigate("reference")}>
-                  View all
-                </Button>
-              }
-            />
-            {reference.loading && !reference.data ? (
-              <div className="flex flex-col gap-3 p-4">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Skeleton key={i} className="h-7 w-full" />
-                ))}
-              </div>
-            ) : (
-              <DataTable minWidth={520}>
-                <thead>
-                  <tr>
-                    <TH>PO</TH>
-                    <TH>Vendor</TH>
-                    <TH align="right">Consumed</TH>
-                    <TH align="right">Remaining</TH>
-                    <TH className="w-[132px]">Utilisation</TH>
-                  </tr>
-                </thead>
-                <tbody>
-                  {posShown.map(({ po, consumed, remaining, pct, over }) => {
-                    const tone = over ? "bad" : pct >= 99.5 ? "warn" : "ok";
-                    return (
-                      <tr key={po.po_number}>
-                        <TD className="tnum text-[13.5px] font-medium">{po.po_number}</TD>
-                        <TD className="max-w-[150px] truncate text-[13.5px] text-muted">
-                          {po.vendor}
-                        </TD>
-                        <TD align="right" className="text-[13.5px] text-muted">
-                          {money(consumed)}
-                        </TD>
-                        <TD align="right" className="text-[13.5px] font-semibold">
-                          {money(remaining)}
-                        </TD>
-                        <TD>
-                          <div className="flex items-center gap-2">
-                            <Meter
-                              value={consumed}
-                              max={po.amount}
-                              tone={tone}
-                              height={4}
-                              ariaLabel={`${pct.toFixed(0)}% consumed`}
-                            />
-                            <span className="tnum w-8 shrink-0 text-right text-[12px] text-faint">
-                              {pct.toFixed(0)}%
-                            </span>
-                          </div>
-                        </TD>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </DataTable>
-            )}
-          </Panel>
       </PageBody>
     </>
   );

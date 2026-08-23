@@ -680,8 +680,15 @@ export function TH({
   ...rest
 }: React.ThHTMLAttributes<HTMLTableCellElement> & { align?: "left" | "right" }) {
   return (
+    /* `data-align` rather than the utility class alone: the table stylesheet
+       styles headers through a descendant selector (`table.dt > thead > tr >
+       th`), which lives in the same cascade layer as Tailwind's utilities and
+       out-specifies them -- so `text-right` here was silently overruled and
+       every right-aligned header in the product sat left of the figures under
+       it. globals.css matches this attribute at a specificity that wins. */
     <th
       scope="col"
+      data-align={align}
       {...rest}
       className={`${align === "right" ? "text-right" : "text-left"} ${className}`}
     >
