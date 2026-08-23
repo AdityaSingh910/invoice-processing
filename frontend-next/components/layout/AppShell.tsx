@@ -13,7 +13,6 @@ import { useAuth } from "@/lib/auth";
 import { useI18n, type MessageKey } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
 import { Button, Tooltip } from "@/components/ui";
-import LanguagePicker from "@/components/ui/LanguagePicker";
 import Modal from "@/components/ui/Modal";
 import {
   IconAnalytics,
@@ -86,8 +85,8 @@ export function navIdFor(
  * The navigation, as MESSAGE KEYS rather than as words (Phase L).
  *
  * The table is otherwise unchanged: same rows, same order, same scopes, same
- * destinations. `labelKey`/`hintKey` are looked up at render in the reader's
- * own language, so adding a language never means touching this structure --
+ * destinations. `labelKey` is looked up at render in the reader's own
+ * language, so adding a language never means touching this structure --
  * and a row cannot go missing in one language and not another, because the
  * rows are not per-language at all.
  */
@@ -97,9 +96,6 @@ const GROUPS: {
     id: NavId;
     key: Section;
     labelKey: MessageKey;
-    /** One line under the label on the wide rail — what the section is for,
-     *  in the words an AP clerk would use. */
-    hintKey: MessageKey;
     icon: (p: { size?: number }) => React.ReactElement;
     scope?: string;
     exceptionsOnly?: boolean;
@@ -110,21 +106,19 @@ const GROUPS: {
   {
     labelKey: "nav.group.operations",
     items: [
-      { id: "overview", key: "overview", labelKey: "nav.overview", hintKey: "nav.overview.hint", icon: IconOverview },
+      { id: "overview", key: "overview", labelKey: "nav.overview", icon: IconOverview },
       {
         id: "process",
         key: "process",
         labelKey: "nav.process",
-        hintKey: "nav.process.hint",
         icon: IconUpload,
         scope: "invoice:process",
       },
-      { id: "invoices", key: "invoices", labelKey: "nav.invoices", hintKey: "nav.invoices.hint", icon: IconInvoice },
+      { id: "invoices", key: "invoices", labelKey: "nav.invoices", icon: IconInvoice },
       {
         id: "review-queue",
         key: "invoices",
         labelKey: "nav.review",
-        hintKey: "nav.review.hint",
         icon: IconShield,
         exceptionsOnly: true,
         badge: true,
@@ -138,14 +132,12 @@ const GROUPS: {
         id: "analytics",
         key: "analytics",
         labelKey: "nav.analytics",
-        hintKey: "nav.analytics.hint",
         icon: IconAnalytics,
       },
       {
         id: "assistant",
         key: "assistant",
         labelKey: "nav.assistant",
-        hintKey: "nav.assistant.hint",
         icon: IconChat,
       },
     ],
@@ -157,7 +149,6 @@ const GROUPS: {
         id: "purchase-orders",
         key: "reference",
         labelKey: "nav.orders",
-        hintKey: "nav.orders.hint",
         icon: IconLedger,
         referenceTab: "orders",
       },
@@ -165,7 +156,6 @@ const GROUPS: {
         id: "approved-vendors",
         key: "reference",
         labelKey: "nav.vendors",
-        hintKey: "nav.vendors.hint",
         icon: IconShield,
         referenceTab: "vendors",
       },
@@ -281,7 +271,7 @@ export default function AppShell({
                     // tints. Two different treatments, so "where I am" never
                     // has to be told apart from "where the pointer is".
                     className={`group relative flex items-center gap-2.5 rounded-[var(--radius-md)]
-                      py-[7px] pr-2 pl-3 text-left transition-colors ${
+                      py-2 pr-2 pl-3 text-left transition-colors ${
                         active
                           ? "bg-rail-active text-rail-fg"
                           : "text-rail-muted hover:bg-rail-hover hover:text-rail-fg"
@@ -302,15 +292,12 @@ export default function AppShell({
                       <Icon size={15} />
                     </span>
 
-                    <span className="min-w-0 flex-1 leading-tight">
-                      <span
-                        className={`block truncate text-[13.5px] ${active ? "font-semibold" : "font-medium"}`}
-                      >
-                        {t(item.labelKey)}
-                      </span>
-                      <span className="block truncate text-[11.5px] text-rail-faint">
-                        {t(item.hintKey)}
-                      </span>
+                    <span
+                      className={`min-w-0 flex-1 truncate text-[13.5px] leading-tight ${
+                        active ? "font-semibold" : "font-medium"
+                      }`}
+                    >
+                      {t(item.labelKey)}
                     </span>
 
                     {item.badge && !!badge && (
@@ -351,9 +338,6 @@ export default function AppShell({
         <div className="truncate text-[13px] font-semibold text-rail-fg">{user.username}</div>
         <div className="truncate text-[11.5px] text-rail-faint">{roleOf()}</div>
       </div>
-      {/* Offered the list the SERVER said it can answer in, so nobody is shown
-          a language the backend would then answer in English. */}
-      <LanguagePicker options={user?.languages} compact />
       <Tooltip label={theme === "dark" ? t("app.theme.toLight") : t("app.theme.toDark")}>
         <button
           onClick={toggleTheme}

@@ -29,7 +29,6 @@ import { useRef, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { useT } from "@/lib/i18n";
 import { IconAlert, IconCheck, IconUser } from "@/components/ui/icons";
-import LanguagePicker from "@/components/ui/LanguagePicker";
 
 /**
  * Whether to offer the demo credentials below.
@@ -295,9 +294,6 @@ export default function LoginGate() {
             </span>
             <span className="text-[14px] font-semibold tracking-[-0.01em]">Invoice Processing</span>
           </div>
-          {/* There is no token yet, so the picker falls back to the locale list
-              this bundle carries rather than the server's. */}
-          <LanguagePicker />
         </header>
 
         <main className="flex flex-1 items-center justify-center px-5 py-10 sm:px-8">

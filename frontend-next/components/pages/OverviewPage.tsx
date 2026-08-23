@@ -15,6 +15,7 @@ import { amount, money, whenCompact } from "@/lib/format";
 import {
   byDay,
   compactMoney,
+  compactMoneyIsRounded,
   formatDuration,
   formatPercent,
   poUsage,
@@ -91,6 +92,7 @@ export default function OverviewPage({
   const rows = useMemo(() => runs.data ?? [], [runs.data]);
   const t = useMemo(() => totals(rows), [rows]);
   const days = useMemo(() => byDay(rows), [rows]);
+  const valueIsRounded = compactMoneyIsRounded(t.valueProcessed);
   const reasons = useMemo(() => topExceptionReasons(rows), [rows]);
   const pos = useMemo(
     () => poUsage(rows, reference.data?.purchase_orders ?? []),
@@ -241,11 +243,26 @@ export default function OverviewPage({
                 spark={days.map((d) => d.approved)}
                 sparkTone="var(--ok-vivid)"
               />
+              {/* The tile is shortened to fit, so it says so rather than
+                  presenting a rounded figure as the total: $17,991.00 drawn
+                  as "$18.0k" is off by nine dollars, and the only way to
+                  find that out was to add the invoices up by hand. The exact
+                  figure is in the tooltip beside it.
+
+                  The hint names the OTHER approximation too. This sum adds
+                  `total` across runs whatever currency each invoice is in
+                  (lib/metrics.ts `totals()`), so a USD invoice and an AUD one
+                  land in the same number — a volume indicator, not a
+                  bookkeeping total. The Analytics screen does not repeat it;
+                  the server reports value in a bucket per currency. */}
               <Stat
                 label="Value processed"
-                value={compactMoney(t.valueProcessed)}
+                value={`${valueIsRounded ? "≈" : ""}${compactMoney(t.valueProcessed)}`}
                 caption={`${money(t.valueApproved)} approved`}
                 icon={<IconInvoice size={12} />}
+                hint={`Shortened to fit. The exact figure is ${money(
+                  t.valueProcessed
+                )}. It adds invoice totals together across currencies, so read it as processed volume rather than as a bookkeeping total.`}
                 spark={days.map((d) => d.total)}
               />
               <Stat

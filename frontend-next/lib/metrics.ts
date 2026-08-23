@@ -236,6 +236,21 @@ export function compactMoney(v: number): string {
   return `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
+/**
+ * Whether compactMoney() had to round, so a tile can SAY it is approximate
+ * rather than presenting $17,991.00 as "$18.0k" and letting the reader
+ * discover the gap by adding the invoices up themselves.
+ *
+ * Derived by reversing the same arithmetic compactMoney does, so the two
+ * cannot disagree about which figures survive the shortening intact.
+ */
+export function compactMoneyIsRounded(v: number): boolean {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return Number((v / 1_000_000).toFixed(1)) * 1_000_000 !== v;
+  if (abs >= 10_000) return Number((v / 1000).toFixed(1)) * 1000 !== v;
+  return Math.round(v) !== v;
+}
+
 /* ------------------------------------------------------------- analytics
  * Phase H presentation helpers.
  *
