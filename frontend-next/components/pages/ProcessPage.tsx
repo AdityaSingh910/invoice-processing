@@ -243,58 +243,71 @@ export default function ProcessPage({
                     title="Invoice file"
                     description="A vendor invoice as a PDF, up to 10 MB."
                   />
-                  <div
-                    onClick={() => !running && input.current?.click()}
-                    onKeyDown={(e) =>
-                      (e.key === "Enter" || e.key === " ") && !running && input.current?.click()
-                    }
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      setDragging(true);
-                    }}
-                    onDragLeave={() => setDragging(false)}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      setDragging(false);
-                      if (e.dataTransfer.files[0]) choose(e.dataTransfer.files[0]);
-                    }}
-                    role="button"
-                    tabIndex={running ? -1 : 0}
-                    aria-label="Choose a PDF invoice"
-                    aria-disabled={running}
-                    className={`mt-4 flex cursor-pointer flex-col items-center gap-2 rounded-[var(--radius-md)]
-                    border border-dashed px-6 py-9 text-center transition-colors ${
-                      dragging
-                        ? "border-accent bg-accent-quiet"
-                        : "border-line-strong bg-sunken hover:border-accent hover:bg-hover"
-                    } ${running ? "pointer-events-none opacity-50" : ""}`}
-                  >
-                    <span
-                      className={`grid h-10 w-10 place-items-center rounded-full border transition-colors ${
+                  {/* THE DROPZONE IS FOR CHOOSING A FILE, SO IT GOES ONCE ONE
+                      IS CHOSEN. Leaving it up asked the reader to drop a PDF
+                      underneath a panel already previewing the PDF they had
+                      just dropped, and put a 140px target between the file and
+                      the button that acts on it. What stays is the file, with
+                      its size and a way to remove it, and the button. Removing
+                      the file brings this back. */}
+                  {!file && (
+                    <div
+                      onClick={() => !running && input.current?.click()}
+                      onKeyDown={(e) =>
+                        (e.key === "Enter" || e.key === " ") && !running && input.current?.click()
+                      }
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setDragging(true);
+                      }}
+                      onDragLeave={() => setDragging(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setDragging(false);
+                        if (e.dataTransfer.files[0]) choose(e.dataTransfer.files[0]);
+                      }}
+                      role="button"
+                      tabIndex={running ? -1 : 0}
+                      aria-label="Choose a PDF invoice"
+                      aria-disabled={running}
+                      className={`mt-4 flex cursor-pointer flex-col items-center gap-2 rounded-[var(--radius-md)]
+                      border border-dashed px-6 py-9 text-center transition-colors ${
                         dragging
-                          ? "border-accent-line bg-surface text-accent"
-                          : "border-line bg-surface text-muted"
-                      }`}
+                          ? "border-accent bg-accent-quiet"
+                          : "border-line-strong bg-sunken hover:border-accent hover:bg-hover"
+                      } ${running ? "pointer-events-none opacity-50" : ""}`}
                     >
-                      <IconUpload size={16} />
-                    </span>
-                    <span className="text-[14px] font-semibold">
-                      {dragging ? "Drop to load the invoice" : "Drop a PDF here, or browse"}
-                    </span>
-                    <span className="t-meta text-[12.5px]">
-                      Read by a language model, judged by deterministic rules
-                    </span>
-                    <input
-                      ref={input}
-                      type="file"
-                      accept="application/pdf"
-                      hidden
-                      onChange={(e) => e.target.files?.[0] && choose(e.target.files[0])}
-                    />
-                  </div>
+                      <span
+                        className={`grid h-10 w-10 place-items-center rounded-full border transition-colors ${
+                          dragging
+                            ? "border-accent-line bg-surface text-accent"
+                            : "border-line bg-surface text-muted"
+                        }`}
+                      >
+                        <IconUpload size={16} />
+                      </span>
+                      <span className="text-[14px] font-semibold">
+                        {dragging ? "Drop to load the invoice" : "Drop a PDF here, or browse"}
+                      </span>
+                      <span className="t-meta text-[12.5px]">
+                        Read by a language model, judged by deterministic rules
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Outside the dropzone, so it is still mounted once the
+                      dropzone is gone -- everything that opens the file picker
+                      goes through this one input. */}
+                  <input
+                    ref={input}
+                    type="file"
+                    accept="application/pdf"
+                    hidden
+                    onChange={(e) => e.target.files?.[0] && choose(e.target.files[0])}
+                  />
 
                   {file && (
-                    <div className="rise mt-3 flex items-center gap-2.5 rounded-[var(--radius-md)] border border-line bg-sunken px-3 py-2">
+                    <div className="rise mt-4 flex items-center gap-2.5 rounded-[var(--radius-md)] border border-line bg-sunken px-3 py-2">
                       <span className="grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-sm)] bg-surface text-muted">
                         <IconFile size={13} />
                       </span>
