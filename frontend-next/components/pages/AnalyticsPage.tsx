@@ -171,50 +171,48 @@ export default function AnalyticsPage() {
         {loading ? (
           <Skeleton className="h-[124px]" />
         ) : !o ? null : (
-          <Panel flush>
-            <div className="grid grid-cols-1 divide-line sm:grid-cols-2 sm:divide-x lg:grid-cols-5 [&>*+*]:border-t sm:[&>*+*]:border-t-0 lg:[&>*]:border-t-0">
-              <KpiCell
-                label="Automation rate"
-                kpi={o.kpis.automation_rate}
-                caption={`${formatCount(o.volume.automated)} of ${formatCount(o.volume.runs)} decided by rules`}
-                icon={<IconCheck size={12} />}
-                tone="ok"
-              />
-              <KpiCell
-                label="Task success"
-                kpi={o.kpis.task_success_ratio}
-                caption={`${formatCount(o.volume.overridden)} overridden`}
-                icon={<IconShield size={12} />}
-              />
-              <KpiCell
-                label="Processing success"
-                kpi={o.kpis.processing_success_rate}
-                caption={`${formatCount(o.volume.extraction_failures)} unreadable`}
-                icon={<IconInvoice size={12} />}
-                tone={o.volume.extraction_failures > 0 ? "bad" : undefined}
-              />
-              <KpiCell
-                label="Human review rate"
-                kpi={o.kpis.human_review_rate}
-                caption={`${formatCount(o.backlog.awaiting_review)} still awaiting`}
-                icon={<IconAlert size={12} />}
-                tone={o.backlog.awaiting_review > 0 ? "warn" : undefined}
-              />
-              <KpiCell
-                label="Avg run time"
-                literal={formatDuration(processing.data?.run_time_ms.average ?? null)}
-                caption={
-                  processing.data
-                    ? `median ${formatDuration(processing.data.run_time_ms.median)} · ${formatCount(
-                        processing.data.run_time_ms.samples
-                      )} timed`
-                    : "loading"
-                }
-                hint="Mean of the summed per-stage timings the pipeline recorded. Runs with no timings are excluded rather than counted as zero."
-                icon={<IconClock size={12} />}
-              />
-            </div>
-          </Panel>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            <KpiCell
+              label="Automation rate"
+              kpi={o.kpis.automation_rate}
+              caption={`${formatCount(o.volume.automated)} of ${formatCount(o.volume.runs)} decided by rules`}
+              icon={<IconCheck size={12} />}
+              tone="ok"
+            />
+            <KpiCell
+              label="Task success"
+              kpi={o.kpis.task_success_ratio}
+              caption={`${formatCount(o.volume.overridden)} overridden`}
+              icon={<IconShield size={12} />}
+            />
+            <KpiCell
+              label="Processing success"
+              kpi={o.kpis.processing_success_rate}
+              caption={`${formatCount(o.volume.extraction_failures)} unreadable`}
+              icon={<IconInvoice size={12} />}
+              tone={o.volume.extraction_failures > 0 ? "bad" : undefined}
+            />
+            <KpiCell
+              label="Human review rate"
+              kpi={o.kpis.human_review_rate}
+              caption={`${formatCount(o.backlog.awaiting_review)} still awaiting`}
+              icon={<IconAlert size={12} />}
+              tone={o.backlog.awaiting_review > 0 ? "warn" : undefined}
+            />
+            <KpiCell
+              label="Avg run time"
+              literal={formatDuration(processing.data?.run_time_ms.average ?? null)}
+              caption={
+                processing.data
+                  ? `median ${formatDuration(processing.data.run_time_ms.median)} · ${formatCount(
+                      processing.data.run_time_ms.samples
+                    )} timed`
+                  : "loading"
+              }
+              hint="Mean of the summed per-stage timings the pipeline recorded. Runs with no timings are excluded rather than counted as zero."
+              icon={<IconClock size={12} />}
+            />
+          </div>
         )}
 
         {/* ------------------------------------------------- volume + decisions */}
@@ -827,7 +825,7 @@ function KpiCell({
     tone === "ok" ? "text-ok" : tone === "bad" ? "text-bad" : tone === "warn" ? "text-warn" : "text-faint";
 
   return (
-    <div className="flex flex-col justify-between p-4">
+    <Panel className="flex h-full flex-col justify-between">
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5">
           <span className={toneClass}>{icon}</span>
@@ -863,7 +861,7 @@ function KpiCell({
           )}
         </p>
       </div>
-    </div>
+    </Panel>
   );
 }
 

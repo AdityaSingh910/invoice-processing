@@ -95,33 +95,32 @@ export default function ReferencePage({
           </Panel>
         ) : (
           <>
-            {/* A single summary strip rather than a row of tiles: three related
-                figures about one ledger belong together. */}
+            {/* Three related figures about one ledger, read left to right as
+                one strip — spaced apart so each reads as its own measurement
+                rather than a segment of a single bar. */}
             {!loading && (
-              <Panel flush>
-                <div className="grid grid-cols-1 divide-line sm:grid-cols-3 sm:divide-x sm:divide-y-0">
-                  <Summary
-                    label="Total authorised"
-                    value={money(authorised)}
-                    caption={`Across ${usage.length} purchase orders`}
-                  />
-                  <Summary
-                    label="Committed"
-                    value={money(committed)}
-                    caption={
-                      authorised > 0
-                        ? `${((committed / authorised) * 100).toFixed(0)}% of budget`
-                        : undefined
-                    }
-                  />
-                  <Summary
-                    label="Available"
-                    value={money(authorised - committed)}
-                    caption="Still open to invoice against"
-                    tone="ok"
-                  />
-                </div>
-              </Panel>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <Summary
+                  label="Total authorised"
+                  value={money(authorised)}
+                  caption={`Across ${usage.length} purchase orders`}
+                />
+                <Summary
+                  label="Committed"
+                  value={money(committed)}
+                  caption={
+                    authorised > 0
+                      ? `${((committed / authorised) * 100).toFixed(0)}% of budget`
+                      : undefined
+                  }
+                />
+                <Summary
+                  label="Available"
+                  value={money(authorised - committed)}
+                  caption="Still open to invoice against"
+                  tone="ok"
+                />
+              </div>
             )}
 
             <Segmented<Tab>
@@ -293,7 +292,7 @@ function Summary({
   tone?: "ok";
 }) {
   return (
-    <div className="p-4">
+    <Panel className="h-full">
       <p className="t-caption">{label}</p>
       <p
         className="t-metric-sm tnum mt-1.5"
@@ -302,6 +301,6 @@ function Summary({
         {value}
       </p>
       <p className="t-meta mt-1 text-[12px]">{caption ?? "\u00A0"}</p>
-    </div>
+    </Panel>
   );
 }

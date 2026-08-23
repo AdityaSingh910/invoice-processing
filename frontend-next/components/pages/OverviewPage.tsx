@@ -171,9 +171,9 @@ export default function OverviewPage({
       <PageBody>
         {/* ---------------------------------------------------------- hero + strip
             The exception queue is the only figure here that means work, so it
-            gets its own panel and an action. The rest are reporting and share
-            one divided strip — four separate floating boxes give equal weight
-            to metrics that are not equally important. */}
+            gets its own panel and an action. The reporting figures sit beside
+            it as their own cards, spaced rather than butted together, so each
+            one reads as a separate measurement instead of a segmented bar. */}
         <div className="grid gap-4 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)]">
           {loading ? (
             <Skeleton className="h-[132px]" />
@@ -230,51 +230,49 @@ export default function OverviewPage({
           {loading ? (
             <Skeleton className="h-[132px]" />
           ) : (
-            <Panel flush>
-              <div className="grid grid-cols-1 divide-line sm:grid-cols-2 sm:divide-x lg:grid-cols-4 [&>*+*]:border-t sm:[&>*+*]:border-t-0 lg:[&>*]:border-t-0">
-                <Stat
-                  label="Straight through"
-                  value={formatPercent(t.straightThroughRate)}
-                  caption={`${t.approved} of ${t.runs} untouched`}
-                  icon={<IconArrowUp size={12} />}
-                  tone="ok"
-                  hint="Share of all invoices the rules approved on their own. Runs a person accepted are excluded — a success, but not automation."
-                  spark={days.map((d) => d.approved)}
-                  sparkTone="var(--ok-vivid)"
-                />
-                <Stat
-                  label="Value processed"
-                  value={compactMoney(t.valueProcessed)}
-                  caption={`${money(t.valueApproved)} approved`}
-                  icon={<IconInvoice size={12} />}
-                  spark={days.map((d) => d.total)}
-                />
-                <Stat
-                  label="Average run time"
-                  value={formatDuration(t.avgProcessingMs)}
-                  caption="Extraction through decision"
-                  icon={<IconClock size={12} />}
-                  hint="Mean of the summed stage timings the pipeline recorded per run."
-                />
-                {/* Completes the outcome picture: the hero above counts what
-                    is HELD, "Straight through" counts what cleared, and this
-                    counts what a hard rule stopped outright. Without it the
-                    strip reported two of the three verdicts the process can
-                    reach. */}
-                <Stat
-                  label="Rejected outright"
-                  value={String(t.rejected)}
-                  caption={
-                    t.runs > 0 ? `${formatPercent(t.rejected / t.runs)} of volume` : "None yet"
-                  }
-                  icon={<IconX size={12} />}
-                  tone={t.rejected > 0 ? "bad" : undefined}
-                  hint="Invoices a hard rule stopped — a duplicate, an unapproved vendor, a document that is not an invoice, or a currency-code error. These never reach a reviewer."
-                  spark={days.map((d) => d.rejected)}
-                  sparkTone="var(--bad-vivid)"
-                />
-              </div>
-            </Panel>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <Stat
+                label="Straight through"
+                value={formatPercent(t.straightThroughRate)}
+                caption={`${t.approved} of ${t.runs} untouched`}
+                icon={<IconArrowUp size={12} />}
+                tone="ok"
+                hint="Share of all invoices the rules approved on their own. Runs a person accepted are excluded — a success, but not automation."
+                spark={days.map((d) => d.approved)}
+                sparkTone="var(--ok-vivid)"
+              />
+              <Stat
+                label="Value processed"
+                value={compactMoney(t.valueProcessed)}
+                caption={`${money(t.valueApproved)} approved`}
+                icon={<IconInvoice size={12} />}
+                spark={days.map((d) => d.total)}
+              />
+              <Stat
+                label="Average run time"
+                value={formatDuration(t.avgProcessingMs)}
+                caption="Extraction through decision"
+                icon={<IconClock size={12} />}
+                hint="Mean of the summed stage timings the pipeline recorded per run."
+              />
+              {/* Completes the outcome picture: the hero above counts what
+                  is HELD, "Straight through" counts what cleared, and this
+                  counts what a hard rule stopped outright. Without it the
+                  strip reported two of the three verdicts the process can
+                  reach. */}
+              <Stat
+                label="Rejected outright"
+                value={String(t.rejected)}
+                caption={
+                  t.runs > 0 ? `${formatPercent(t.rejected / t.runs)} of volume` : "None yet"
+                }
+                icon={<IconX size={12} />}
+                tone={t.rejected > 0 ? "bad" : undefined}
+                hint="Invoices a hard rule stopped — a duplicate, an unapproved vendor, a document that is not an invoice, or a currency-code error. These never reach a reviewer."
+                spark={days.map((d) => d.rejected)}
+                sparkTone="var(--bad-vivid)"
+              />
+            </div>
           )}
         </div>
 
@@ -505,7 +503,7 @@ export default function OverviewPage({
   );
 }
 
-/** One cell of the reporting strip. */
+/** One card of the reporting strip. */
 function Stat({
   label,
   value,
@@ -526,7 +524,7 @@ function Stat({
   sparkTone?: string;
 }) {
   return (
-    <div className="flex flex-col justify-between p-4">
+    <Panel className="flex h-full flex-col justify-between">
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5">
           <span className={tone === "ok" ? "text-ok" : tone === "bad" ? "text-bad" : "text-faint"}>
@@ -561,6 +559,6 @@ function Stat({
           </div>
         )}
       </div>
-    </div>
+    </Panel>
   );
 }
