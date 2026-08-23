@@ -298,7 +298,6 @@ export default function LoginGate() {
             <div className="w-full">
               <div className="rounded-2xl border border-white/[0.09] bg-white/[0.045] p-6 shadow-[0_28px_70px_-24px_rgba(0,0,0,0.9)] backdrop-blur-xl sm:p-7">
                 <h2 className="text-[21px] font-semibold tracking-[-0.02em]">{t("login.title")}</h2>
-                <p className="mt-1 text-[12.5px] text-white/45">{t("login.scopedNote")}</p>
 
                 <form onSubmit={submit} autoComplete="on" className="mt-6 flex flex-col gap-4">
                   <div>

@@ -215,7 +215,6 @@ const EN = {
   "portal.invoices.receivedOn": "Received",
   "portal.invoices.docLabel": "Invoice document",
   "app.awaitingReview": "awaiting review",
-  "login.scopedNote": "Access is scoped to your account's permissions.",
   "login.use": "Use",
   "login.failed": "Sign-in failed.",
 } as const;
@@ -373,7 +372,6 @@ const ES: Catalogue = {
   "portal.invoices.receivedOn": "Recibida el",
   "portal.invoices.docLabel": "Documento de la factura",
   "app.awaitingReview": "pendientes de revisión",
-  "login.scopedNote": "El acceso se limita a los permisos de su cuenta.",
   "login.use": "Usar",
   "login.failed": "Error al iniciar sesión.",
 };
@@ -527,7 +525,6 @@ const FR: Catalogue = {
   "portal.invoices.receivedOn": "Reçue le",
   "portal.invoices.docLabel": "Document de la facture",
   "app.awaitingReview": "en attente de vérification",
-  "login.scopedNote": "L'accès est limité aux autorisations de votre compte.",
   "login.use": "Utiliser",
   "login.failed": "Échec de la connexion.",
 };
@@ -681,7 +678,6 @@ const DE: Catalogue = {
   "portal.invoices.receivedOn": "Eingegangen am",
   "portal.invoices.docLabel": "Rechnungsdokument",
   "app.awaitingReview": "warten auf Prüfung",
-  "login.scopedNote": "Der Zugriff richtet sich nach den Berechtigungen Ihres Kontos.",
   "login.use": "Verwenden",
   "login.failed": "Anmeldung fehlgeschlagen.",
 };
@@ -835,7 +831,6 @@ const PT: Catalogue = {
   "portal.invoices.receivedOn": "Recebida a",
   "portal.invoices.docLabel": "Documento da fatura",
   "app.awaitingReview": "pendentes de verificação",
-  "login.scopedNote": "O acesso é limitado às permissões da sua conta.",
   "login.use": "Usar",
   "login.failed": "Falha ao iniciar sessão.",
 };
@@ -989,7 +984,6 @@ const IT: Catalogue = {
   "portal.invoices.receivedOn": "Ricevuta il",
   "portal.invoices.docLabel": "Documento della fattura",
   "app.awaitingReview": "in attesa di verifica",
-  "login.scopedNote": "L'accesso è limitato ai permessi del suo account.",
   "login.use": "Usa",
   "login.failed": "Accesso non riuscito.",
 };
@@ -1143,7 +1137,6 @@ const NL: Catalogue = {
   "portal.invoices.receivedOn": "Ontvangen op",
   "portal.invoices.docLabel": "Factuurdocument",
   "app.awaitingReview": "wachten op controle",
-  "login.scopedNote": "Toegang is beperkt tot de rechten van uw account.",
   "login.use": "Gebruiken",
   "login.failed": "Aanmelden mislukt.",
 };
