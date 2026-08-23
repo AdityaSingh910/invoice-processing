@@ -379,6 +379,99 @@ def retrieve_review_queue(entities, principal) -> dict:
     }
 
 
+# --------------------------------------------------------------------------
+# The LISTING retrievers
+#
+# Every other retriever here is a lookup by name or an aggregate: `vendor`
+# wants a vendor, `purchase_order` wants a PO number, `invoice` wants an
+# invoice reference. So "list all vendors" had no home at all -- it was not a
+# phrasing the router missed, it was a capability that did not exist, and the
+# assistant answered it by saying this application holds no vendor-approval
+# information while "Approved vendors" sat in the navigation beside it.
+#
+# These read exactly what the Reference and Invoices screens already show, for
+# a caller who already holds `invoice:read`, so they open nothing new. They are
+# capped at MAX_ROWS for the reason §7f.6 gives: a sentence cannot summarise two
+# hundred invoices, and the cap is stated in the payload so the model can say
+# it is showing the first twenty rather than implying it is showing all of them.
+# --------------------------------------------------------------------------
+
+def _listing(rows: list, total: int) -> dict:
+    """The shape every listing shares: what was shown, out of how many.
+
+    `showing`/`total` are separate on purpose. A list of twenty out of two
+    hundred and a list of twenty out of twenty are different answers, and a
+    payload that could not tell them apart would let a truthful model say
+    "here are the vendors" when it had been handed a fifth of them.
+    """
+    return {
+        "showing": len(rows),
+        "total": total,
+        "truncated": total > len(rows),
+        "note": (f"Showing the first {len(rows)} of {total}."
+                 if total > len(rows) else None),
+    }
+
+
+def retrieve_vendor_list(entities, principal) -> dict:
+    """Every vendor on the approved list -- the Approved vendors screen."""
+    vendors = storage.list_vendors()
+    rows = [{"vendor_name": v.get("vendor_name"),
+             "vendor_id": v.get("vendor_id"),
+             "status": v.get("status")}
+            for v in vendors[:MAX_ROWS]]
+    return dict(_listing(rows, len(vendors)), vendors=rows)
+
+
+def retrieve_purchase_order_list(entities, principal) -> dict:
+    """Every purchase order and where its budget stands.
+
+    Budget positions come from `analytics.purchase_orders()`, which derives all
+    of them in one pass over the allocation ledger. Calling
+    `storage.remaining_for_po()` per row would have been a query per PO -- the
+    N+1 §7g.10 already caught once in the portal -- and would also have been a
+    SECOND expression of the ledger rule, which §7c.8 exists to prevent.
+    """
+    window = analytics.resolve_window(entities.get("range") or "all")
+    orders = sorted(analytics.purchase_orders(window),
+                    key=lambda o: o.get("po_number") or "")
+    rows = [{"po_number": o.get("po_number"),
+             "vendor": o.get("vendor"),
+             "amount": o.get("amount"),
+             "currency": o.get("currency"),
+             "status": o.get("status"),
+             "consumed_by_approved_invoices": o.get("consumed"),
+             "remaining": o.get("remaining")}
+            for o in orders[:MAX_ROWS]]
+    return dict(_listing(rows, len(orders)),
+                purchase_orders=rows,
+                note_on_remaining=("Remaining is derived from approved invoices "
+                                   "at read time, not a stored counter."))
+
+
+def retrieve_invoice_list(entities, principal) -> dict:
+    """The most recent invoices -- the Invoices register.
+
+    Newest first, which is what `storage.list_runs()` already returns and what
+    a person asking "show me the invoices" means. A caller who wants a
+    particular one asks for it by number and gets `retrieve_invoice` instead.
+    """
+    runs = storage.list_runs(limit=MAX_ROWS + 1)
+    rows = [_run_summary(r) for r in runs[:MAX_ROWS]]
+    # list_runs caps at its own limit, so "total" here is only ever "at least
+    # this many". Asking for one more row than we show is how we learn whether
+    # there IS one more, without counting the whole table.
+    more = len(runs) > MAX_ROWS
+    return {
+        "showing": len(rows),
+        "at_least": len(rows) + (1 if more else 0),
+        "truncated": more,
+        "note": (f"Showing the {len(rows)} most recent invoices; there are more."
+                 if more else None),
+        "invoices": rows,
+    }
+
+
 def retrieve_vendor(entities, principal) -> dict:
     """A vendor's recent invoices and their approval standing."""
     name = entities.get("vendor")
@@ -525,6 +618,7 @@ def retrieve_capabilities(entities, principal) -> dict:
     return {
         "can_answer": [
             "the status of a named invoice, and why the rules decided that",
+            "a list of the invoices, the vendors, or the purchase orders",
             "what is waiting for human review, and who is holding it",
             "a vendor's recent invoices and approval standing",
             "a purchase order's remaining balance",
@@ -600,6 +694,18 @@ INTENTS = [
                 r"reviewed|claimed)|audit trail|timeline)\b", re.I),
      retrieve_activity, "invoice:read"),
 
+    # THE LISTING FORM SITS DIRECTLY ABOVE THE LOOKUP FORM FOR THE SAME NOUN.
+    # "list all purchase orders" contains "purchase order" and would otherwise
+    # be answered by the lookup below with `{found: false}`. A question naming
+    # a specific PO never reaches here at all -- `resolve_intent` short-circuits
+    # on the extracted reference before this loop runs -- so putting the listing
+    # first cannot cost a lookup.
+    ("list_purchase_orders",
+     re.compile(r"\b(?:list|show|display|see|view|all|every|our|which|what)\b"
+                r"[^?]{0,30}?\b(?:purchase orders|pos)\b|"
+                r"\bpurchase order list\b", re.I),
+     retrieve_purchase_order_list, "invoice:read"),
+
     ("purchase_order",
      re.compile(r"\bPO[-_ ]?\d|\bpurchase order\b|\bbudget\b|\bremaining\b|"
                 r"\bbalance\b", re.I),
@@ -622,14 +728,35 @@ INTENTS = [
      retrieve_reviews, "invoice:read"),
 
     ("processing",
-     re.compile(r"\b(stage|slowest|bottleneck|extraction|route|ocr|pipeline|"
+     re.compile(r"\b(stages?|slowest|bottlenecks?|extraction|routes?|ocr|pipeline|"
                 r"how long .{0,20}(process|take)|quota|budget spent)\b", re.I),
      retrieve_processing, "invoice:read"),
 
+    ("list_vendors",
+     re.compile(r"\b(?:list|show|display|see|view|all|every|our|which|what|who)\b"
+                r"[^?]{0,30}?\b(?:vendors|suppliers)\b|"
+                r"\bvendor list\b", re.I),
+     retrieve_vendor_list, "invoice:read"),
+
+    # The PLURAL was missing here and that was the original bug: `\bvendor\b`
+    # does not match "vendors", so every plural phrasing fell through to
+    # `overview` and was answered with headline figures. Safe to widen now
+    # that the listing intent above claims the listing phrasings.
     ("vendor",
-     re.compile(r"\bvendor\b|\bsupplier\b|\bwho (do we|are we) (buy|paying)\b|"
+     re.compile(r"\bvendors?\b|\bsuppliers?\b|\bwho (do we|are we) (buy|paying)\b|"
                 r"\bapproved vendor", re.I),
      retrieve_vendor, "invoice:read"),
+
+    # Deliberately NO "what"/"which" here, unlike the two listings above.
+    # `review_queue` already sits above this and claims "what invoices are
+    # waiting for review" on the word "waiting" -- but relying on ordering
+    # alone to protect an existing suggestion chip is thinner than simply not
+    # competing for the phrasing, so this one asks for a listing verb.
+    ("list_invoices",
+     re.compile(r"\b(?:list|show|display|see|view|all|every|our|recent)\b"
+                r"[^?]{0,30}?\binvoices\b|"
+                r"\binvoice (?:list|register)\b", re.I),
+     retrieve_invoice_list, "invoice:read"),
 
     ("invoice",
      re.compile(r"\b(INV[-_ ]?[A-Z0-9]|invoice\s*#?\s*\d|status of|"
@@ -780,6 +907,16 @@ def build_sources(facts: dict) -> list:
     for item in (facts.get("on_the_approved_vendor_list") or []):
         if isinstance(item, dict):
             add("vendor", item.get("vendor_name"), item.get("status"))
+    # The listing retrievers return their rows under their own plural keys, and
+    # a citation has to name the records that were actually read whichever
+    # retriever read them -- otherwise a listed vendor is on screen with
+    # nothing under `sources` saying where it came from.
+    for item in (facts.get("vendors") or []):
+        if isinstance(item, dict):
+            add("vendor", item.get("vendor_name"), item.get("status"))
+    for item in (facts.get("purchase_orders") or []):
+        if isinstance(item, dict):
+            add("purchase_order", item.get("po_number"), item.get("vendor"))
     if facts.get("range"):
         rng = facts["range"]
         add("analytics_range", rng.get("key") if isinstance(rng, dict) else rng)
@@ -996,6 +1133,45 @@ def _structured_answer(intent: str, facts: dict, locale: str = None) -> str:
             lines.append(f"- {item.get('invoice_number')} from "
                          f"{item.get('vendor')}, {item.get('total')}"
                          + (f" — held by {who}" if who else ""))
+        return "\n".join(lines)
+
+    if intent == "list_invoices":
+        rows = facts.get("invoices") or []
+        if not rows:
+            return i18n.t("chat.structured.no_invoice", locale)
+        lines = [f"The {len(rows)} most recent invoice(s):"]
+        for item in rows:
+            lines.append(f"- {item.get('invoice_number')} from {item.get('vendor')}: "
+                         f"{_plain(item.get('total'))} {_plain(item.get('currency'), '')} "
+                         f"— the rules decided {item.get('automated_decision')}, "
+                         f"ledger status {item.get('ledger_status')}.")
+        if facts.get("note"):
+            lines.append(facts["note"])
+        return "\n".join(lines)
+
+    if intent == "list_vendors":
+        rows = facts.get("vendors") or []
+        if not rows:
+            return "There are no vendors on the approved list."
+        lines = [f"{facts.get('total', len(rows))} vendor(s) on the approved list:"]
+        for item in rows:
+            lines.append(f"- {item.get('vendor_name')} "
+                         f"(status: {_plain(item.get('status'))})")
+        if facts.get("note"):
+            lines.append(facts["note"])
+        return "\n".join(lines)
+
+    if intent == "list_purchase_orders":
+        rows = facts.get("purchase_orders") or []
+        if not rows:
+            return "There are no purchase orders on file."
+        lines = [f"{facts.get('total', len(rows))} purchase order(s):"]
+        for item in rows:
+            lines.append(f"- {item.get('po_number')} ({item.get('vendor')}): "
+                         f"{_plain(item.get('amount'))} {_plain(item.get('currency'), '')} "
+                         f"raised, {_plain(item.get('remaining'))} remaining.")
+        if facts.get("note"):
+            lines.append(facts["note"])
         return "\n".join(lines)
 
     if intent == "invoice":
@@ -1359,6 +1535,9 @@ _STARTERS = [
     ("chat.suggestion.volume", "How many invoices were processed this week?"),
     ("chat.suggestion.po_balance", "What is the remaining balance on PO-1002?"),
     ("chat.suggestion.why_held", "Why was the last invoice held?"),
+    ("chat.suggestion.list_invoices", "Show me the invoices"),
+    ("chat.suggestion.list_vendors", "List all vendors"),
+    ("chat.suggestion.list_pos", "List all purchase orders"),
     ("chat.suggestion.capabilities", "What can you help me with?"),
 ]
 

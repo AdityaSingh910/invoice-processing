@@ -2557,12 +2557,13 @@ It also costs one provider call per question rather than two.
 
 ### 7f.2 What it can and cannot answer
 
-Nine intents, each mapping to one retriever over data the caller can already
+Twelve intents, each mapping to one retriever over data the caller can already
 reach: a named invoice's decision and reasons · the review queue and who holds
 what · a vendor's recent invoices and approval standing · a PO's remaining
 balance · headline KPIs · pipeline timings and extraction routes · the review
 funnel and latency · one invoice's activity history · per-person reviewer
-figures. Plus `capabilities`, which reads nothing.
+figures · **and the three LISTINGS added later (§7f.11): the invoices, the
+vendors, the purchase orders.** Plus `capabilities`, which reads nothing.
 
 **Three question classes get a fixed answer with no provider call at all**,
 because each has one correct answer that depends on no record, and asking a
@@ -2746,6 +2747,93 @@ activity intent on the word "reviewed". Both are fixed and both have tests.
 7. **No frontend test suite exists in this project** (§11.4), so the UI is
    verified by `tsc --noEmit`, `npm run build`, and driving the real app. The
    backend behind it is covered by the 87 tests above.
+
+### 7f.11 The listing intents (later addition, not a new phase)
+
+**Status: implemented, tested (31 new tests in `tests/test_chat.py`), verified.**
+
+**The assistant could not list anything, and that was a capability gap wearing
+a routing bug's clothes.**
+
+Every retriever K2 shipped is a **lookup by name** or an **aggregate**:
+`retrieve_vendor` requires `entities["vendor"]`, `retrieve_purchase_order`
+requires a PO number, and there was no invoice-listing retriever at all. So
+"list all vendors" had nowhere to go. It did not merely fail to route — routing
+it correctly would have returned empty lists.
+
+**The user-visible symptom was worse than `unrecognised`.** "Which vendors are
+approved?" matched `overview` on the word *approved*, retrieved headline
+figures, and the model — correctly refusing to invent from what it was handed
+— answered *"The application does not have any vendor-approval information."*
+That is false: `storage.list_vendors()` exists and **"Approved vendors" is a
+navigation row in the same sidebar.** The design worked (nothing was
+hallucinated); the capability was missing.
+
+**Three retrievers, reading what the Reference and Invoices screens already
+show**, under the same `invoice:read`, capped at the existing `MAX_ROWS` (20):
+`retrieve_invoice_list`, `retrieve_vendor_list`, `retrieve_purchase_order_list`.
+
+- **PO balances come from `analytics.purchase_orders()`**, which derives all of
+  them in one pass. Calling `storage.remaining_for_po()` per row would have
+  been the N+1 §7g.10 already caught once in the portal, **and** a second
+  expression of the ledger rule, which §7c.8 exists to prevent.
+- **`showing` and `total` are separate fields.** Twenty of two hundred and
+  twenty of twenty are different answers, and a payload that could not tell
+  them apart would let a truthful model say "here are the vendors" when it had
+  been handed a tenth of them.
+
+**THE ORDERING IS THE DESIGN: each listing intent sits DIRECTLY ABOVE the
+lookup for the same noun.** "list all purchase orders" contains "purchase
+order" and would otherwise be answered by the lookup with `{found: false}`.
+Putting the listing first cannot cost a lookup, because a question naming a
+specific reference never reaches the loop — `resolve_intent` short-circuits on
+the extracted PO/invoice reference first. `list_invoices` additionally declines
+to match "what"/"which", so it never competes with `review_queue` for "what
+invoices are waiting for review" — a shipped suggestion chip. Relying on
+ordering alone to protect that would have been thinner than not competing.
+
+**The plural fix is the small half, and it is recorded because it was
+originally mistaken for the whole thing.** `vendor` does not match
+"vendors" and `stage` does not match "stages", so those phrasings fell
+through to `overview`. Now `vendors?`, `suppliers?`, `stages?`,
+`routes?`, `bottlenecks?`. Safe to widen precisely because the
+listing intents above now claim the listing phrasings. **This is the third time
+this class of bug has appeared here** — §7f.9 records the other two — and it
+is a papercut, not a one-off.
+
+**Also updated, because a capability nobody can discover is not a
+capability:** three new suggestion chips (`ask` in English so it routes, `label`
+translated — §7i.7's two-part rule), the `chat.unrecognised` fallback, which
+now offers the listings, and `retrieve_capabilities`. All three new message
+keys are translated into all six non-English catalogues, because
+`test_every_shipped_language_has_a_complete_catalogue` fails on a missing key
+rather than letting fallback stand in for finishing a translation.
+
+**`build_sources` was extended to the new payload keys** (`vendors`,
+`purchase_orders`). A citation must name records that were actually read
+whichever retriever read them; without this a listed vendor appeared on screen
+with nothing under `sources` saying where it came from.
+
+**No new scope, no schema change, no security change.** The model still never
+chooses what is fetched (§7f.1) — these are three more hand-written retrievers
+over data the caller could already reach, which is "more intents", not "let the
+model retrieve".
+
+**Tests.** 31 added, including a **regression guard** parametrised over every
+shipped suggestion chip and every phrasing that already worked, since ordering
+is what protects them. Mutation-checked:
+
+| Mutation | Broke | Correct? |
+|---|---|---|
+| a listing intent routes to the lookup retriever instead | 2 | ✅ |
+| `_listing` stops reporting truncation | **0 at first** — see below | ✅ after |
+
+**THE SECOND MUTATION CAUGHT A GENUINELY MISSING TEST AND IS RECORDED RATHER
+THAN QUIETLY FIXED.** The cap test drove `retrieve_invoice_list`, which
+computes its own truncation rather than using the shared `_listing` helper — so
+`_listing`'s flag was never exercised in the truncating case and the mutation
+broke nothing. Two tests were added that cap the vendor and PO listings
+directly; the mutation now breaks exactly those.
 
 ---
 
@@ -4813,6 +4901,152 @@ feature and the audit exports are untouched.
 
 ---
 
+## 7l. Making the Analytics screen load (not a lettered phase)
+
+**Status: implemented, tested (5 new tests in `tests/test_analytics.py`),
+measured against the live deployment.**
+
+**NOT A NEW PHASE IN THE A-M TRACK** — the same designation §7b.13/§7b.14/§7j
+use for targeted work between lettered phases. It changed no KPI, no
+definition, no authorization rule and no schema.
+
+### 7l.1 What was actually wrong
+
+The Analytics screen took **13 seconds** on the live deployment. Measured
+rather than guessed, and the measurement is what redirected the work:
+
+| Measurement | Result |
+|---|---|
+| the seven endpoints, **sequentially** | 12.2s |
+| the seven endpoints, **in parallel** (what the screen did) | **13.1s** |
+| `/api/health` and `/api/auth/me` at 8-way concurrency | 0.38s, no degradation |
+| `/api/reference` at 1 / 2 / 4 / 8 concurrent | 1.3 / 2.5 / 6.1 / 13.6s |
+| runs in the database | **2** |
+
+Three things fall out of that table and each one killed an obvious theory:
+
+- **Parallel was no faster than sequential**, so the seven requests were not
+  parallelising at all — the page cost the SUM of them.
+- **Linear scaling on a DB endpoint** (1.3 → 13.6s for 1 → 8 callers) is
+  concurrency of exactly one. But **health and auth were completely unaffected
+  at the same concurrency**, so the process was neither CPU-starved nor
+  short of threads: only the database path serialised.
+- **Two runs.** So none of this was data volume, and none of it was the JSON
+  scanning §7c.2 warns about at scale. It was pure per-round-trip cost.
+
+Dividing each endpoint's time by the round trips it makes gives a consistent
+**~180ms per database round trip** — intercontinental latency, not app-to-DB
+latency. One dashboard load made **50 of them**.
+
+### 7l.2 Fix one: `SET search_path` on every borrow
+
+`get_conn()` issued `SET search_path` **every time a connection was borrowed**,
+and `search_path` is *session* state that stays in force until the session
+ends. So 21 of that load's 50 round trips restated something the connection
+already knew.
+
+It is now skipped when that connection is already set to the schema in force.
+The check reads the live `PG_SCHEMA` rather than assuming it is constant,
+because `tests/pg_schema.py` monkeypatches it per test while a pooled
+connection outlives the test that first borrowed it — so a changed schema still
+re-issues and **test isolation is exactly as strict as it was**. The cache is a
+`WeakKeyDictionary` on the physical connection, so an entry cannot outlive the
+socket it describes.
+
+**This is sound only because the connection really is a session** — the same
+assumption §4 already rests on when it requires Supabase's Session pooler or a
+direct connection and refuses the Transaction pooler.
+
+It helps every endpoint in the application, not only these seven.
+
+### 7l.3 Fix two: seven requests for one screen
+
+Each of the seven paid the full price of being a request — its own TLS round
+trip from the browser, authentication, rate-limit accounting, connection
+borrows — and then queued behind the others at the database.
+
+`GET /api/analytics/dashboard` returns the same seven payloads, under the same
+key names, from one pass over the window. **It composes the seven services; it
+does not reimplement them** — every value is the return of the very function
+the single endpoint calls, so the two cannot drift, and a test asserts they are
+identical field for field. The seven endpoints are unchanged and still served.
+
+Being one request also lets the three services that need the same whole-window
+read share it. `_scan_run_json` is wanted by `overview`, `processing` and
+`_hold_reasons`; `_run_counts` by `overview` and `reviews`. A `ContextVar` memo
+set on entry to `dashboard()` and reset on the way out makes each happen once.
+
+**THAT MEMO IS NOT A CACHE AND §7c.1'S RULE IS UNTOUCHED.** Nothing is stored,
+it cannot outlive the request that created it, two concurrent requests cannot
+see each other's rows, and outside `dashboard()` it is `None` so every single
+endpoint reads for itself exactly as before. A run committed between two
+requests still changes the second answer — asserted directly.
+
+**Authorization is not pooled with the data.** `users` is the one service here
+that reports on PEOPLE, and §7c.5's rule still applies: your own row unless you
+hold `invoice:admin`, decided from the authenticated principal. Bundling it
+with six invoice-level sections is not a way to read a colleague's figures that
+`/api/analytics/users` would refuse — which is the one test in this section
+that had to exist.
+
+No new scope: the same `invoice:read` behind the same reporting limiter
+(§7e.4), and the endpoint was added to that limiter's sweep in
+`test_security_hardening.py` because "one endpoint left off is the whole
+control" is that test's own reason for existing.
+
+### 7l.4 The result
+
+| | Before | After |
+|---|---|---|
+| HTTP requests | 7 | **1** |
+| DB round trips | 49 | **27** |
+| of those, pure `SET search_path` | 21 | **0** |
+| at the measured 180ms/round trip | ~13s | **~5s** |
+
+### 7l.5 What is still slow, and it is not code
+
+**~180ms per database round trip is the remaining cost**, and 27 of them is
+most of the 5 seconds. That is a *topology* number: a colocated app and
+database are single-digit milliseconds apart. The Supabase instance resolves
+into AWS's `ap-south-1` (Mumbai) IPv6 range; whatever region the Railway
+service is in is far enough away to cost 180ms per exchange.
+
+**Putting the two in the same region is worth more than anything left in the
+code** — it would take those 27 round trips from ~4.9s to well under half a
+second. Recorded here rather than attempted because only the owner can move
+either service.
+
+**Separately, the deployed Railway build is still stale** (§2, §7k.9 item 2):
+a 30-way concurrent burst of ordinary reads returned **14 × HTTP 500**, which
+is precisely the connection-pool bug `191392c` fixes. Redeploying Railway is
+a prerequisite for any of this being visible in production.
+
+### 7l.6 Tests
+
+Five added to `tests/test_analytics.py` (§22), and `/api/analytics/dashboard`
+was added to that file's `ENDPOINTS` sweep — which buys the unauthenticated,
+forged-token, bad-range, no-leak and write-method checks for it automatically.
+It was inserted **before** `users` in that list, because `ENDPOINTS[:-1]` means
+"the endpoints a viewer reads in full" and appending after `users` would have
+quietly changed what that slice tests.
+
+Checked against passing vacuously by mutation — both reverted and re-verified
+green:
+
+| Mutation | Broke | Correct? |
+|---|---|---|
+| the shared-read memo never hits | 1 (the reads-once test) | ✅ |
+| `dashboard` ignores `invoice:admin` and always shows everyone | 1 (the per-person authorization test) | ✅ |
+
+One of the new tests was too strict at first and is recorded rather than
+quietly loosened: it compared the combined payload to the single ones field for
+field, including `oldest_awaiting_age_seconds` — which is read off the clock at
+the moment the request is answered, exactly like `generated_at`, and so
+legitimately differs between two calls milliseconds apart. Both are excluded by
+name; everything else must still match exactly.
+
+---
+
 ## 8. Authentication, authorization
 
 - **OAuth 2.0 resource-server pattern.** `Authorization: Bearer <JWT>`,
@@ -5068,7 +5302,7 @@ matter more than they did when every caller was an employee (§7g.12).
 
 ## 10. Testing
 
-**1,895 tests, 29 files.** Both Groq and Gemini mocked at the HTTP transport
+**1,932 tests, 29 files.** Both Groq and Gemini mocked at the HTTP transport
 boundary — the suite needs no API key, no network, no quota, only a reachable
 PostgreSQL (`DATABASE_URL`). `test_samples.py` is the deliberate exception:
 it honours a live key and exercises the real routes end-to-end.
@@ -5085,12 +5319,12 @@ signature verified, an actual signature actually verified.
 | File | Tests | Covers |
 |---|---|---|
 | `test_multilingual.py` | 284 | Phase L: catalogue completeness and the refusal to let a translation file introduce a message, locale negotiation and fourteen hostile Accept-Language shapes, substitution that cannot reach an attribute or a format spec, THE INVARIANT (one verdict and one `rules_failed` across every language, asserted against the parsed source that no rule compares one), Phase J's whole isolation check repeated per language, the portal's frozen tables and their unmapped-rule fallback in seven languages, the assistant's fixed refusals and the fact that a question cannot choose the answer language, document-language detection in seven languages plus four non-Latin scripts and eight hostile inputs, an English invoice reading identically under every language hint, the comma-decimal number matrix, dates that are never guessed and never emptied, twelve multilingual injections caught and eight benign foreign phrases not, a per-language no-leak sweep, and that Phase L added no table |
-| `test_client_portal.py` | 174 | Phase J: client authentication through the real password grant, both directions of the scope boundary (no client role holds an `invoice:*` scope, no internal role holds a `portal:*` one), a parametrised sweep of EVERY internal route enumerated from `app.routes`, isolation in both directions across the list, detail, document metadata, document bytes and purchase orders, IDOR through path, query string, body and forged token claims, the fail-closed handling of every incomplete binding, deactivation and demotion landing on the next request, the vendor-name collision rule, no-leak greps over every response, the frozen explanation table and its fallback, the client-visible timeline, submission (attribution, source, the same pipeline, no streamed stage names, both budgets, both limiters), the vendor-identity guard, and a read-only assertion against the module's parsed source |
+| `test_client_portal.py` | 175 | Phase J: client authentication through the real password grant, both directions of the scope boundary (no client role holds an `invoice:*` scope, no internal role holds a `portal:*` one), a parametrised sweep of EVERY internal route enumerated from `app.routes`, isolation in both directions across the list, detail, document metadata, document bytes and purchase orders, IDOR through path, query string, body and forged token claims, the fail-closed handling of every incomplete binding, deactivation and demotion landing on the next request, the vendor-name collision rule, no-leak greps over every response, the frozen explanation table and its fallback, the client-visible timeline, submission (attribution, source, the same pipeline, no streamed stage names, both budgets, both limiters), the vendor-identity guard, and a read-only assertion against the module's parsed source |
 | `test_gmail_oauth.py` | 144 | Phase G2: token encryption at rest (round trip, non-determinism, fail-closed on a rotated AUTH_SECRET), PKCE and the authorization URL, the refused-scope table, authorization initiation, state/CSRF validation (forged, expired, replayed, wrong-provider, missing), a successful callback end to end, every rejected callback path (cancel, failed exchange, insufficient scope, no refresh token, storage failure), token refresh (reuse, expiry, early-refresh skew, refresh-token preservation), revoked and expired grants including the three-state rule that a network failure must NOT revoke, connect/disconnect and remote-revoke failure, authorization enforcement across every endpoint and role, no-leak greps over every response and the provider description, Gmail retrieval (byte-exact raw, oldest-first, cursor, overlap, paging, oversized), provider selection, duplicate handling with and without the pre-filter, Phase F verification and quarantine/release over a Gmail message, the existing pipeline reached through Gmail, and that IMAP is untouched |
-| `test_chat.py` | 87 | Phase K2: deterministic intent routing, retrieval against real records, the per-person authorization rule from both sides, prompt injection (fenced facts, defanged closing tag, line items that never arrive at all), secret-extraction and payment/correctness refusals, citations that cannot be fabricated, input and history validation, every provider failure degrading to the records, the separate daily budget, and two tests asserting the module is read-only against its parsed source |
-| `test_security_hardening.py` | 81 | Phase K: account deactivation and the live re-check (revocation, demotion, scope intersection), per-account login limiting, the reporting/export limiter across all thirteen endpoints, HTTP security headers incl. the SSE path and the production-only HSTS, CORS read per request, .env-bound settings, plus the boundaries the audit re-verified — no hash or secret in any response, no path or traceback in an error, storage-key traversal, hostile filter values, and the email quarantine gate |
+| `test_chat.py` | 118 | Phase K2: deterministic intent routing, retrieval against real records, the per-person authorization rule from both sides, prompt injection (fenced facts, defanged closing tag, line items that never arrive at all), secret-extraction and payment/correctness refusals, citations that cannot be fabricated, input and history validation, every provider failure degrading to the records, the separate daily budget, and two tests asserting the module is read-only against its parsed source |
+| `test_security_hardening.py` | 82 | Phase K: account deactivation and the live re-check (revocation, demotion, scope intersection), per-account login limiting, the reporting/export limiter across all thirteen endpoints, HTTP security headers incl. the SSE path and the production-only HSTS, CORS read per request, .env-bound settings, plus the boundaries the audit re-verified — no hash or secret in any response, no path or traceback in an error, storage-key traversal, hostile filter values, and the email quarantine gate |
 | `test_logs.py` | 204 | Phase I: retrieval and context joins, total ordering under identical timestamps, every filter and every combination, the reused date window, LIKE-metacharacter escaping, grouping and its per-person authorization, the two streams, event detail, the per-run stage view (order, unmeasured-is-null, refused filters, malformed blobs), both CSV exports (list-parity, formula neutralisation, truncation, no-leak greps), HTTP authorization, read-only-ness, and the one new index |
-| `test_analytics.py` | 119 | Phase H: every KPI against known rows, the null-not-zero rule, task-success vs automation-rate divergence, per-stage timing and bottleneck ordering, both review latencies, date windows and UTC boundaries, trends with gaps, malformed/wrong-shaped JSON, the ledger-agreement anti-drift test, the email funnel, per-person authorization from both sides, read-only-ness, and no-leak greps |
+| `test_analytics.py` | 124 | Phase H: every KPI against known rows, the null-not-zero rule, task-success vs automation-rate divergence, per-stage timing and bottleneck ordering, both review latencies, date windows and UTC boundaries, trends with gaps, malformed/wrong-shaped JSON, the ledger-agreement anti-drift test, the email funnel, per-person authorization from both sides, read-only-ness, and no-leak greps; plus (§7l) the combined dashboard endpoint — payload equivalence with all seven single endpoints, its per-person authorization, the shared read happening once per request and never outliving one |
 | `test_email_ingestion.py` | 106 | Phase G: sender/relevance triage, the no-LLM-for-junk guarantee (an extraction spy), provider failure, idempotency under 8 threads, attachment validation & path traversal, multi-invoice emails, the Phase F gate, quarantine→release→process, authorization, backwards compatibility; plus (§7b.13) 11 tests for consumer-webmail sender context — Gmail/Outlook/Yahoo missing-evidence annotation, the authenticated-trusted-domain path proven untouched, an unknown-company sender proven undecorated, a structural spoof and a broken signature both still FAILED, a trusted consumer address still refused admission without evidence, a pure non-UNVERIFIED gate test, and the full Gmail release-to-run chain |
 | `test_email_security.py` | 110 | Phase F: real DKIM verification (all four canonicalisations, tampered signature/body, revoked key), DMARC alignment, discarded/forged Authentication-Results, spoofed From, conflicting signals, unavailable-vs-failed, S/MIME + PGP detection, malformed/hostile headers, quarantine gate, 10-thread ruling race, authorization, backwards compatibility |
 | `test_api_security.py` | 62 | authn, authz, rate limits, secrets, input, errors, plus (§11.-0.5) a real-thread burst of ordinary reads asserting no 500 and no 401, that `get_conn()` BLOCKS for a connection rather than refusing, and the `DB_POOL_MAX` fallback |
@@ -5836,7 +6070,7 @@ is already configured.
 
 ```powershell
 .\start.ps1                 # installs deps, generates samples, starts server, opens browser
-.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,895 tests, no key/network needed
+.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,932 tests, no key/network needed
 .\reset-demo.ps1             # clear run history (samples are order-dependent)
 .\reset-demo.ps1 -Replay     # clear, then drive all 10 samples through the API
 ```

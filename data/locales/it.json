@@ -43,7 +43,7 @@
   "chat.oos.payment": "Questa applicazione elabora e approva fatture; non conserva alcuna informazione su pagamenti, rimesse o dati bancari. Approvare una fattura qui registra una decisione, non un pagamento. Se sia stata effettivamente pagata risulta dal sistema che emette i pagamenti.",
   "chat.oos.correctness": "L'applicazione registra ciò che hanno deciso le sue regole e ciò che hanno deciso le persone, ma non conserva alcuna traccia indipendente del fatto che una decisione fosse corretta: non esiste né un riferimento certo né una conferma successiva con cui confrontarla. Posso dirle che cosa è stato deciso e da chi.",
   "chat.oos.configuration": "Ho accesso soltanto ai dati delle fatture. Non ho accesso a credenziali, chiavi, impostazioni d'ambiente o a informazioni su come questo sistema è installato, e non potrei recuperarle nemmeno se mi venisse chiesto.",
-  "chat.unrecognised": "Non sono riuscito a capire a quali dati si riferisce la domanda. Posso cercare una fattura dal suo numero, il residuo di un ordine di acquisto, ciò che è in attesa di verifica, le fatture recenti di un fornitore o i dati principali di un periodo. Mi chieda una di queste cose e la recupero.",
+  "chat.unrecognised": "Non sono riuscito a capire a quali dati si riferisce la domanda. Posso elencare le fatture, i fornitori o gli ordini di acquisto; cercare una fattura per numero o il saldo residuo di un ordine di acquisto; dire che cosa è in attesa di revisione; oppure fornire i dati principali di un periodo. Chiedimi una di queste cose e la recupererò.",
   "chat.notice.no_model": "Risposta ricavata direttamente dai dati: non è configurato alcun modello linguistico, quindi non è un testo redatto.",
   "chat.notice.budget_spent": "Il budget giornaliero dell'assistente è esaurito, quindi questi sono i dati recuperati senza il riepilogo redatto. I dati stessi non sono interessati.",
   "chat.notice.provider_failed": "L'assistente non è riuscito a raggiungere il modello linguistico ({detail}), quindi questi sono i dati recuperati senza il riepilogo redatto.",
@@ -59,6 +59,9 @@
   "chat.suggestion.volume": "Quante fatture sono state elaborate questa settimana?",
   "chat.suggestion.po_balance": "Qual è il residuo dell'ordine PO-1002?",
   "chat.suggestion.why_held": "Perché l'ultima fattura è stata trattenuta?",
+  "chat.suggestion.list_invoices": "Mostrami le fatture",
+  "chat.suggestion.list_vendors": "Elenca tutti i fornitori",
+  "chat.suggestion.list_pos": "Elenca tutti gli ordini di acquisto",
   "chat.suggestion.capabilities": "In che cosa puoi aiutarmi?",
 
   "pipeline.language.detected": "Lingua del documento: {language}.",

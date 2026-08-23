@@ -43,7 +43,7 @@
   "chat.oos.payment": "Cette application traite et approuve des factures ; elle ne conserve aucune information de paiement, de règlement ni de compte bancaire. Approuver une facture ici enregistre une décision, pas un paiement. Le fait qu'elle ait été réellement payée relève du système qui émet les paiements.",
   "chat.oos.correctness": "L'application enregistre ce que ses règles ont décidé et ce que les personnes ont décidé, mais elle ne conserve aucune trace indépendante indiquant si une décision était juste : il n'existe ni référence de vérité ni confirmation ultérieure permettant la comparaison. Je peux vous dire ce qui a été décidé et par qui.",
   "chat.oos.configuration": "Je n'ai accès qu'aux enregistrements de factures. Je n'ai accès ni aux identifiants, ni aux clés, ni aux paramètres d'environnement, ni à quoi que ce soit concernant le déploiement de ce système, et je ne pourrais pas les récupérer si on me le demandait.",
-  "chat.unrecognised": "Je n'ai pas pu déterminer de quels enregistrements parle cette question. Je peux retrouver une facture par son numéro, le solde restant d'un bon de commande, ce qui est en attente de vérification, les factures récentes d'un fournisseur, ou les chiffres clés d'une période. Posez une question sur l'un de ces sujets et je ferai la recherche.",
+  "chat.unrecognised": "Je n'ai pas pu déterminer de quels enregistrements parle cette question. Je peux lister les factures, les fournisseurs ou les bons de commande ; retrouver une facture par son numéro ou le solde restant d'un bon de commande ; indiquer ce qui attend une revue ; ou donner les chiffres clés d'une période. Demandez-moi l'une de ces choses et je la récupérerai.",
   "chat.notice.no_model": "Réponse établie directement à partir des enregistrements : aucun modèle de langue n'est configuré, ce texte n'est donc pas rédigé.",
   "chat.notice.budget_spent": "Le budget quotidien de l'assistant est épuisé ; voici donc les données récupérées sans le résumé rédigé. Les enregistrements eux-mêmes ne sont pas affectés.",
   "chat.notice.provider_failed": "L'assistant n'a pas pu joindre le modèle de langue ({detail}) ; voici donc les données récupérées sans le résumé rédigé.",
@@ -59,6 +59,9 @@
   "chat.suggestion.volume": "Combien de factures ont été traitées cette semaine ?",
   "chat.suggestion.po_balance": "Quel est le solde restant du bon de commande PO-1002 ?",
   "chat.suggestion.why_held": "Pourquoi la dernière facture a-t-elle été retenue ?",
+  "chat.suggestion.list_invoices": "Affiche les factures",
+  "chat.suggestion.list_vendors": "Liste tous les fournisseurs",
+  "chat.suggestion.list_pos": "Liste tous les bons de commande",
   "chat.suggestion.capabilities": "Que pouvez-vous faire pour moi ?",
 
   "pipeline.language.detected": "Langue du document : {language}.",

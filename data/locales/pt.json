@@ -43,7 +43,7 @@
   "chat.oos.payment": "Esta aplicação processa e aprova faturas; não guarda qualquer informação de pagamentos, remessas ou dados bancários. Aprovar uma fatura aqui regista uma decisão, não um pagamento. Se foi de facto paga consta do sistema que emite os pagamentos.",
   "chat.oos.correctness": "A aplicação regista o que as suas regras decidiram e o que as pessoas decidiram, mas não guarda qualquer registo independente sobre se uma decisão estava certa: não existe uma referência de verdade nem uma confirmação posterior para comparar. Posso dizer-lhe o que foi decidido e por quem.",
   "chat.oos.configuration": "Só tenho acesso a registos de faturas. Não tenho acesso a credenciais, chaves, definições de ambiente nem a nada sobre a forma como este sistema está instalado, e não conseguiria obtê-los se me fosse pedido.",
-  "chat.unrecognised": "Não consegui perceber a que registos se refere essa pergunta. Posso procurar uma fatura pelo número, o saldo disponível de uma ordem de compra, o que está pendente de verificação, as faturas recentes de um fornecedor ou os números principais de um período. Pergunte sobre um desses temas e eu procuro.",
+  "chat.unrecognised": "Não consegui perceber a que registos se refere essa pergunta. Posso listar as faturas, os fornecedores ou as ordens de compra; procurar uma fatura pelo número ou o saldo restante de uma ordem de compra; dizer o que está à espera de revisão; ou dar os números principais de um período. Pergunte-me por um desses e vou obtê-lo.",
   "chat.notice.no_model": "A responder diretamente a partir dos registos: não há nenhum modelo de linguagem configurado, pelo que isto não está redigido como texto corrido.",
   "chat.notice.budget_spent": "O orçamento diário do assistente esgotou-se, pelo que estes são os dados obtidos sem o resumo redigido. Os registos em si não são afetados.",
   "chat.notice.provider_failed": "O assistente não conseguiu contactar o modelo de linguagem ({detail}), pelo que estes são os dados obtidos sem o resumo redigido.",
@@ -59,6 +59,9 @@
   "chat.suggestion.volume": "Quantas faturas foram processadas esta semana?",
   "chat.suggestion.po_balance": "Qual é o saldo disponível da PO-1002?",
   "chat.suggestion.why_held": "Porque é que a última fatura ficou retida?",
+  "chat.suggestion.list_invoices": "Mostra-me as faturas",
+  "chat.suggestion.list_vendors": "Lista todos os fornecedores",
+  "chat.suggestion.list_pos": "Lista todas as ordens de compra",
   "chat.suggestion.capabilities": "Em que me pode ajudar?",
 
   "pipeline.language.detected": "Idioma do documento: {language}.",

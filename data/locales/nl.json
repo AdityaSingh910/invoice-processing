@@ -43,7 +43,7 @@
   "chat.oos.payment": "Deze toepassing verwerkt en keurt facturen goed; ze bewaart geen betaal-, overboekings- of bankgegevens. Een factuur hier goedkeuren legt een besluit vast, geen betaling. Of er daadwerkelijk is betaald, staat in het systeem dat de betalingen uitvoert.",
   "chat.oos.correctness": "De toepassing legt vast wat haar regels hebben besloten en wat mensen hebben besloten, maar ze houdt geen onafhankelijke registratie bij van de vraag of een besluit juist was: er is geen vaststaande referentie en geen latere bevestiging om mee te vergelijken. Ik kan u wel vertellen wat er is besloten en door wie.",
   "chat.oos.configuration": "Ik heb alleen toegang tot factuurgegevens. Ik heb geen toegang tot inloggegevens, sleutels, omgevingsinstellingen of iets over hoe dit systeem is uitgerold, en ik zou ze ook niet kunnen ophalen als daarom werd gevraagd.",
-  "chat.unrecognised": "Ik kon niet vaststellen over welke gegevens die vraag gaat. Ik kan een factuur op nummer opzoeken, het resterende bedrag van een inkooporder, wat op controle wacht, de recente facturen van een leverancier, of de kerncijfers over een periode. Vraag naar een daarvan en ik zoek het op.",
+  "chat.unrecognised": "Ik kon niet vaststellen over welke gegevens die vraag gaat. Ik kan de facturen, de leveranciers of de inkooporders opsommen; een factuur op nummer of het resterende saldo van een inkooporder opzoeken; zeggen wat op beoordeling wacht; of de kerncijfers van een periode geven. Vraag naar een daarvan en ik haal het op.",
   "chat.notice.no_model": "Antwoord rechtstreeks uit de gegevens: er is geen taalmodel ingesteld, dus dit is geen geschreven tekst.",
   "chat.notice.budget_spent": "Het dagbudget van de assistent is op, dus dit zijn de opgehaalde gegevens zonder geschreven samenvatting. De gegevens zelf blijven ongewijzigd.",
   "chat.notice.provider_failed": "De assistent kon het taalmodel niet bereiken ({detail}), dus dit zijn de opgehaalde gegevens zonder geschreven samenvatting.",
@@ -59,6 +59,9 @@
   "chat.suggestion.volume": "Hoeveel facturen zijn er deze week verwerkt?",
   "chat.suggestion.po_balance": "Wat is het resterende bedrag van PO-1002?",
   "chat.suggestion.why_held": "Waarom is de laatste factuur tegengehouden?",
+  "chat.suggestion.list_invoices": "Toon me de facturen",
+  "chat.suggestion.list_vendors": "Toon alle leveranciers",
+  "chat.suggestion.list_pos": "Toon alle inkooporders",
   "chat.suggestion.capabilities": "Waarmee kun je me helpen?",
 
   "pipeline.language.detected": "Taal van het document: {language}.",

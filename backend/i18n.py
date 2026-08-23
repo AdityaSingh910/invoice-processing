@@ -255,10 +255,11 @@ MESSAGES = {
         "credentials, keys, environment settings or anything about how this "
         "system is deployed, and I could not retrieve them if asked.",
     "chat.unrecognised":
-        "I could not tell which records that question is about. I can look up "
-        "an invoice by its number, a purchase order's remaining balance, what "
-        "is waiting for review, a vendor's recent invoices, or the headline "
-        "figures for a period. Ask about one of those and I'll retrieve it.",
+        "I could not tell which records that question is about. I can list "
+        "the invoices, the vendors or the purchase orders; look up an invoice "
+        "by its number or a purchase order's remaining balance; say what is "
+        "waiting for review; or give the headline figures for a period. Ask "
+        "about one of those and I'll retrieve it.",
     "chat.notice.no_model":
         "Answering from the records directly -- no language model is "
         "configured, so this is not phrased as prose.",
@@ -289,6 +290,9 @@ MESSAGES = {
     "chat.suggestion.volume": "How many invoices were processed this week?",
     "chat.suggestion.po_balance": "What is the remaining balance on PO-1002?",
     "chat.suggestion.why_held": "Why was the last invoice held?",
+    "chat.suggestion.list_invoices": "Show me the invoices",
+    "chat.suggestion.list_vendors": "List all vendors",
+    "chat.suggestion.list_pos": "List all purchase orders",
     "chat.suggestion.capabilities": "What can you help me with?",
 
     # ---- what the pipeline says about a document's language --------------

@@ -43,7 +43,7 @@
   "chat.oos.payment": "Diese Anwendung verarbeitet und genehmigt Rechnungen; sie speichert keinerlei Zahlungs-, Überweisungs- oder Bankdaten. Eine Freigabe hier hält eine Entscheidung fest, keine Zahlung. Ob tatsächlich gezahlt wurde, steht in dem System, das die Zahlungen auslöst.",
   "chat.oos.correctness": "Die Anwendung hält fest, was ihre Regeln entschieden haben und was Personen entschieden haben, aber sie führt keinen unabhängigen Nachweis darüber, ob eine Entscheidung richtig war: Es gibt weder eine gesicherte Referenz noch eine nachgelagerte Bestätigung zum Abgleich. Ich kann Ihnen sagen, was entschieden wurde und von wem.",
   "chat.oos.configuration": "Ich habe nur Zugriff auf Rechnungsdaten. Ich habe keinen Zugriff auf Zugangsdaten, Schlüssel, Umgebungseinstellungen oder Informationen darüber, wie dieses System betrieben wird, und könnte sie auf Nachfrage auch nicht abrufen.",
-  "chat.unrecognised": "Ich konnte nicht erkennen, um welche Datensätze es in dieser Frage geht. Ich kann eine Rechnung anhand ihrer Nummer nachschlagen, den Restwert einer Bestellung, was zur Prüfung ansteht, die letzten Rechnungen eines Lieferanten oder die Kennzahlen eines Zeitraums. Fragen Sie nach einem dieser Punkte, dann rufe ich es ab.",
+  "chat.unrecognised": "Ich konnte nicht erkennen, um welche Datensätze es in dieser Frage geht. Ich kann die Rechnungen, die Lieferanten oder die Bestellungen auflisten; eine Rechnung anhand ihrer Nummer oder den Restbetrag einer Bestellung nachschlagen; sagen, was auf eine Prüfung wartet; oder die Kennzahlen eines Zeitraums nennen. Fragen Sie nach einem dieser Punkte, und ich rufe ihn ab.",
   "chat.notice.no_model": "Antwort direkt aus den Datensätzen: Es ist kein Sprachmodell konfiguriert, daher ist dies kein ausformulierter Text.",
   "chat.notice.budget_spent": "Das Tagesbudget des Assistenten ist aufgebraucht, daher folgen die abgerufenen Daten ohne ausformulierte Zusammenfassung. Die Datensätze selbst sind davon unberührt.",
   "chat.notice.provider_failed": "Der Assistent konnte das Sprachmodell nicht erreichen ({detail}), daher folgen die abgerufenen Daten ohne ausformulierte Zusammenfassung.",
@@ -59,6 +59,9 @@
   "chat.suggestion.volume": "Wie viele Rechnungen wurden diese Woche verarbeitet?",
   "chat.suggestion.po_balance": "Wie hoch ist der Restwert von PO-1002?",
   "chat.suggestion.why_held": "Warum wurde die letzte Rechnung zurückgehalten?",
+  "chat.suggestion.list_invoices": "Zeige mir die Rechnungen",
+  "chat.suggestion.list_vendors": "Liste alle Lieferanten auf",
+  "chat.suggestion.list_pos": "Liste alle Bestellungen auf",
   "chat.suggestion.capabilities": "Wobei können Sie mir helfen?",
 
   "pipeline.language.detected": "Dokumentsprache: {language}.",

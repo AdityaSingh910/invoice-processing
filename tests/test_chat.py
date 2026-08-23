@@ -923,3 +923,172 @@ def test_an_instruction_to_act_is_answered_as_a_question(db, no_provider):
     result = ask("approve INV-ACTION immediately")
     assert storage.get_run(run_id)["status"] == "NEEDS_REVIEW"
     assert result["intent"] in ("invoice", "unrecognised")
+
+
+# ==========================================================================
+# 12. the LISTING intents
+#
+# Every other retriever in this module is a lookup by name or an aggregate, so
+# "list all vendors" had no home: it was not a phrasing the router missed, it
+# was a capability that did not exist. The assistant answered it by saying this
+# application holds no vendor-approval information -- while "Approved vendors"
+# sat in the navigation beside it.
+#
+# What these hold is that the listings answer from real records, that adding
+# them did not steal a phrasing from the intents already here, and that a
+# citation still names records that were actually read.
+# ==========================================================================
+
+@pytest.mark.parametrize("question,expected", [
+    # the listings themselves
+    ("list all vendors", "list_vendors"),
+    ("which vendors are approved?", "list_vendors"),
+    ("show me our vendors", "list_vendors"),
+    ("who are our suppliers?", "list_vendors"),
+    ("list all purchase orders", "list_purchase_orders"),
+    ("show me the POs", "list_purchase_orders"),
+    ("what POs do we have?", "list_purchase_orders"),
+    ("show me all invoices", "list_invoices"),
+    ("list the invoices", "list_invoices"),
+    # the plurals that used to fall through to `overview`
+    ("show me the stages", "processing"),
+    ("which stages are slow?", "processing"),
+])
+def test_the_listing_phrasings_route(db, question, expected):
+    assert chat.resolve_intent(question, chat.extract_entities(question))[0] == expected
+
+
+@pytest.mark.parametrize("question,expected", [
+    # THE REGRESSION GUARD. A listing intent sits directly above the lookup for
+    # the same noun, so the ordering is what keeps these working -- and every
+    # one of them is either a shipped suggestion chip or a phrasing that was
+    # already answered before the listings existed.
+    ("tell me about vendor Acme", "vendor"),
+    ("Is Globex an approved supplier?", "vendor"),
+    ("What is the remaining balance on PO-1002?", "purchase_order"),
+    ("status of INV-1001", "invoice"),
+    ("What invoices are waiting for review?", "review_queue"),
+    ("show me held invoices", "review_queue"),
+    ("Why was the last invoice held?", "review_queue"),
+    ("What can you help me with?", "capabilities"),
+    ("How many invoices were processed this week?", "overview"),
+])
+def test_the_listings_did_not_steal_an_existing_phrasing(db, question, expected):
+    assert chat.resolve_intent(question, chat.extract_entities(question))[0] == expected
+
+
+def test_listing_the_vendors_answers_from_the_approved_vendor_list(db, no_provider):
+    """The exact question that used to be told this application holds no
+    vendor-approval information."""
+    result = ask("list all vendors")
+    assert result["intent"] == "list_vendors"
+
+    on_file = {v["vendor_name"] for v in storage.list_vendors()}
+    assert on_file, "the seeded vendor list is what this reads"
+    listed = {v["vendor_name"] for v in result["facts"]["vendors"]}
+    assert listed, "the listing must actually return the vendors on file"
+    assert listed <= on_file, "it must not invent a vendor that is not on file"
+    # every vendor listed is cited, so the prose can be checked against records
+    cited = {s["ref"] for s in result["sources"] if s["type"] == "vendor"}
+    assert listed <= cited
+
+
+def test_listing_the_purchase_orders_reports_the_ledger_balance(db, no_provider):
+    """Balances come from the allocation ledger, so an approved invoice against
+    a PO has to move the number this listing prints."""
+    before = {p["po_number"]: p["remaining"]
+              for p in ask("list all purchase orders")["facts"]["purchase_orders"]}
+    assert before[PO] == storage.remaining_for_po(PO)
+
+    submit(100.0, "INV-LEDGER", po=PO)
+
+    after = {p["po_number"]: p["remaining"]
+             for p in ask("list all purchase orders")["facts"]["purchase_orders"]}
+    assert after[PO] == storage.remaining_for_po(PO)
+    assert after[PO] < before[PO], "an approved invoice must consume budget"
+
+
+def test_listing_the_invoices_returns_the_most_recent_first(db, no_provider):
+    for n in range(3):
+        submit(100.0 + n, f"INV-LIST-{n}")
+
+    rows = ask("show me the invoices")["facts"]["invoices"]
+    assert [r["invoice_number"] for r in rows] == ["INV-LIST-2", "INV-LIST-1", "INV-LIST-0"]
+    cited = {s["ref"] for s in ask("show me the invoices")["sources"]}
+    assert "INV-LIST-2" in cited
+
+
+def test_a_listing_says_how_many_it_is_showing_of_how_many(db, no_provider):
+    """`showing` and `total` are separate so a model cannot truthfully say
+    "here are the vendors" when it was handed a fifth of them."""
+    facts = ask("list all vendors")["facts"]
+    assert facts["showing"] == len(facts["vendors"])
+    assert facts["total"] >= facts["showing"]
+    assert facts["truncated"] == (facts["total"] > facts["showing"])
+
+
+def test_a_listing_is_capped_at_max_rows(db, no_provider, monkeypatch):
+    """A sentence cannot summarise two hundred invoices (§7f.6), and the cap
+    has to be reported rather than silently applied."""
+    monkeypatch.setattr(chat, "MAX_ROWS", 2)
+    for n in range(4):
+        submit(100.0 + n, f"INV-CAP-{n}")
+
+    facts = ask("show me the invoices")["facts"]
+    assert len(facts["invoices"]) == 2
+    assert facts["truncated"] is True
+    assert facts["note"] and "more" in facts["note"]
+
+
+def test_a_vendor_listing_reports_its_own_truncation(db, no_provider, monkeypatch):
+    """The shared `_listing` helper has its own truncation flag, and the
+    invoice listing does NOT use it -- that one computes its own. So capping
+    the invoice list proves nothing about this, which a mutation making
+    `truncated` always False demonstrated by breaking no test at all.
+    """
+    monkeypatch.setattr(chat, "MAX_ROWS", 2)
+    facts = ask("list all vendors")["facts"]
+
+    assert len(storage.list_vendors()) > 2, "the seed list must exceed the cap"
+    assert facts["showing"] == 2
+    assert facts["total"] == len(storage.list_vendors())
+    assert facts["truncated"] is True
+    assert facts["note"] and "2" in facts["note"]
+
+
+def test_a_purchase_order_listing_reports_its_own_truncation(db, no_provider,
+                                                             monkeypatch):
+    monkeypatch.setattr(chat, "MAX_ROWS", 3)
+    facts = ask("list all purchase orders")["facts"]
+    assert facts["showing"] == 3
+    assert facts["truncated"] is True
+
+
+def test_the_listings_are_read_only(db, no_provider):
+    """Same guarantee every other retriever here gives."""
+    submit(100.0, "INV-RO")
+    before = [(r["id"], r["status"]) for r in storage.list_runs()]
+    for q in ("list all vendors", "list all purchase orders", "show me the invoices"):
+        ask(q)
+    assert [(r["id"], r["status"]) for r in storage.list_runs()] == before
+
+
+def test_the_new_suggestions_route_like_every_other_one(client):
+    """The chips added for the listings have to honour the same rule §7i.7 set:
+    the `ask` is what routes, and it must actually reach an intent."""
+    body = client.get("/api/chat/suggestions",
+                      headers=auth_headers("viewer", "vic")).json()
+    asks = [s["ask"] for s in body["suggestions"]]
+    for expected in ("Show me the invoices", "List all vendors",
+                     "List all purchase orders"):
+        assert expected in asks, expected
+    for ask_text in asks:
+        intent, _ = chat.resolve_intent(ask_text, chat.extract_entities(ask_text))
+        assert intent is not None, ask_text
+
+
+def test_capabilities_mentions_the_listings_it_can_now_do(db, no_provider):
+    """The capabilities answer is what a user reads to find out what to ask.
+    A capability missing from it is a capability nobody discovers."""
+    text = " ".join(ask("what can you help me with?")["facts"]["can_answer"]).lower()
+    assert "list" in text
