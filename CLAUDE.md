@@ -1804,6 +1804,15 @@ that has never run an extraction genuinely has no such table. That reads as
 
 ### 7c.13 Frontend
 
+> **THE SCREEN THIS SECTION DESCRIBES WAS CUT DOWN LATER, AT THE OWNER'S
+> REQUEST — READ §7n BEFORE TRUSTING THE PANEL LIST BELOW.** Six panels are
+> gone from the page (task success, automation over time, per-stage timing, the
+> review funnel, reviewer workload, email ingestion) and two were replaced by
+> compact versions. **Nothing in the BACKEND changed**: every endpoint, every
+> KPI definition, every figure §7c describes is still computed and still
+> served, so the rest of this section remains accurate about what the API does
+> and about the display rules the surviving panels still follow.
+
 A new **Analytics** section (its own "Reporting" nav group), integrated into the
 existing redesign rather than replacing any of it — it reuses `Panel`,
 `PanelHeader`, `DataTable`, `Meter`, `Segmented`, `Tooltip`, `EmptyState`,
@@ -5068,6 +5077,293 @@ field, including `oldest_awaiting_age_seconds` — which is read off the clock a
 the moment the request is answered, exactly like `generated_at`, and so
 legitimately differs between two calls milliseconds apart. Both are excluded by
 name; everything else must still match exactly.
+
+---
+
+## 7m. Processing that survives a refresh (not a lettered phase)
+
+**Status: implemented, tested (24 tests in `tests/test_background_processing.py`),
+mutation-checked, and verified against a real running server.**
+
+**NOT A NEW PHASE IN THE A–M TRACK** — the same designation §7b.13/§7b.14/§7j/§7l
+use for targeted work between lettered phases. It changed no rule, no stage, no
+scope, no KPI and no decision.
+
+### 7m.1 The bug, and the exact mechanism
+
+Uploading an invoice and then refreshing the browser killed the processing.
+Not "lost the view of it" — killed it: no run, no document, no activity row.
+The invoice had not failed, it had never happened.
+
+**The mechanism, read out of the installed Starlette rather than guessed at**
+(`starlette/responses.py`, `StreamingResponse.__call__`):
+
+```python
+async with anyio.create_task_group() as task_group:
+    async def wrap(func):
+        await func()
+        task_group.cancel_scope.cancel()
+    task_group.start_soon(wrap, partial(self.stream_response, send))
+    await wrap(partial(self.listen_for_disconnect, receive))
+```
+
+`listen_for_disconnect` returns the moment `http.disconnect` arrives and
+**cancels the whole group**, which cancels `stream_response` and therefore the
+generator it is pulling. `POST /api/runs/stream` handed `run_pipeline` — the
+entire nine stages — to that generator, so the pipeline advanced only while the
+browser's `fetch` was reading it, and was cancelled at whatever `await` it was
+sitting on when the browser went away.
+
+**The second half is what made it invisible rather than merely interrupted.** A
+run is written ONCE, in the DECISION stage, by `storage.save_run_checked` (§3).
+Cancel before that and nothing at all has been persisted — which is why a
+reloaded page found nothing to show, and why "processing" was not a state
+anything could report: no row existed to report it.
+
+Demonstrated directly against a live server before anything was changed: a raw
+socket posting to `/api/runs/stream`, closed mid-stream, produced **zero runs**
+after 25 seconds of waiting.
+
+### 7m.2 The change, and its size
+
+The upload endpoint and the work are now separate. `POST /api/runs` does only
+what must happen while the caller is still there — authorize, read the bytes,
+check the magic number, write a durable job row — and answers **202** with a job
+id. `backend/jobs.py`'s worker pool does the reading, holding no reference to
+the request, and writes what it finds. `GET /api/jobs/{job_id}` answers what
+became of it, to anybody who asks, whenever they ask.
+
+**`POST /api/runs/stream` IS UNCHANGED — not one line.** It is a working API for
+a caller that does hold the connection open, and it is what most of the test
+suite drives (14 files post to it). The UI moved off it; nothing else did.
+
+**Nothing about extraction or judgement changed.** `jobs.py` consumes
+`main.run_pipeline` and reads the frames it already emits — the same generator
+the SSE endpoint drives and the same one email ingestion has driven since Phase
+G (§7b.8). Every stage, the confidence gate, PO matching, the allocation ledger,
+the audit trail, document persistence and review routing are the ones every
+other door gets. A test asserts both doors produce identical stage lists and
+identical audit-trail keys.
+
+### 7m.3 Why this is the ninth thing stored, and the first table since Phase G2
+
+Eight times the answer to "should this be stored" was no (§3, §6.2, §7c.1,
+§7d.1, §7f.5, §7g.11, §7i.12, §7k.10). **A job in flight is the one state no
+existing row implies**, for exactly the reason §7m.1 gives: between accepting a
+PDF and committing a verdict there is nothing on file, so "is this still being
+read?" has nothing to be derived from. Same category as §7h.4's refresh token —
+not derivable, therefore stored.
+
+**It is a SEPARATE table, not a `PROCESSING` value in `runs.status`, and that
+is the load-bearing decision.** `runs.status` is the LEDGER: PO consumption
+joins to `status='APPROVED'`, the review queue selects `NEEDS_REVIEW`, analytics
+groups by it, the portal translates it, and `rules.decide()`'s three-value
+hierarchy is the whole decision model. A fourth, transient value in that column
+would put an in-flight upload in front of every one of those readers. A job is
+not a decision; it is the work that produces one.
+
+```
+processing_jobs   job_id (UNIQUE), idempotency_key, filename, size_bytes,
+                  status (queued|processing|completed|failed), source,
+                  submitted_by, client_id, run_id (FK -> runs, ON DELETE SET NULL),
+                  run_status, stages_json, result_json, error_message,
+                  created_at, updated_at, processing_started_at,
+                  processing_completed_at
+```
+
+Indexes: `processing_jobs(status)`, `(created_at)`, `(run_id)`, and **a PARTIAL
+UNIQUE index on `idempotency_key WHERE status IN ('queued','processing')`** —
+§7m.5. No column was added to any existing table. The two schema-enumeration
+tests (§7h.12's items 2 and 3) were extended with the one new table name and
+nothing else in them was touched.
+
+### 7m.4 Why a thread pool, and not a queue service
+
+Nothing external was introduced because nothing was needed. The requirement is
+that processing survive the FRONTEND disconnecting, not the backend being
+replaced, and this deployment runs exactly one uvicorn worker in one Railway
+container — a decision §7k.7 already made deliberately, for the rate limiters.
+
+**Threads rather than `asyncio.create_task`, and that is the interesting half:
+this pipeline blocks.** `extraction` makes a synchronous HTTPS call, pdfplumber
+parses on the CPU, psycopg2 blocks on a socket. Several of those on the event
+loop would stall every HTTP request in the process behind them — the same
+reason `email_ingest` runs its poller through `asyncio.to_thread`. Each worker
+drives the async generator on its own private loop with `asyncio.run`, which is
+exactly the pattern `email_ingest._run_invoice_pipeline` established (§7b.8).
+
+`INVOICE_JOB_WORKERS` (default 4) bounds it, read at call time like every other
+setting. Threads are non-daemon and joined at exit, so a container being
+replaced finishes the invoice it is holding rather than abandoning it half-read.
+
+### 7m.5 Duplicate protection is the database's, twice over
+
+**A refresh does not resubmit** — a browser does not replay a `fetch` POST on
+reload — so the real population is a double-clicked button, a re-render firing
+submit twice, and a retried request. Both guards are locks, not checks, because
+a check-then-act would let two racing requests both pass before either wrote:
+
+1. **The partial unique index** refuses a second job while one is live for the
+   same content. `create_processing_job` inserts `ON CONFLICT DO NOTHING`; the
+   loser reads the winner's row back and the endpoint returns it with
+   `duplicate: true`, so the second caller watches the first one's work.
+   Proved with ten real threads posting the same PDF through one barrier:
+   one job, one run.
+2. **`claim_processing_job`** moves a job `queued -> processing` under
+   `SELECT ... FOR UPDATE` — the one locking pattern this codebase uses
+   everywhere (§4). A worker that loses does no work at all.
+
+**The dedupe key is the CONTENT** (sha256 of the bytes, scoped to the submitter
+and the door), not a token the client chooses, so a client that sends nothing
+is still protected.
+
+**AND IT IS ONLY UNIQUE WHILE THE JOB IS LIVE, WHICH IS WHAT KEEPS IT FROM
+QUIETLY REPLACING THE DUPLICATE RULE.** Once a job settles its key is free, so
+re-uploading the same invoice tomorrow creates a real second run and is rejected
+by `rules.duplicate_check` exactly as it always was — the AP control, intact. A
+test drives that whole sequence and asserts the second run comes back REJECTED.
+
+### 7m.6 Concurrency
+
+Two invoices are two jobs, two workers, two rows and two runs; nothing is
+shared but the pool. The PO ledger's own protection is unchanged and is what it
+always was — `save_run_checked` locks the `purchase_orders` rows and re-checks
+the balance under them (§3), which is now reached from three doors instead of
+two. A test uploads two different PDFs through one barrier and asserts distinct
+jobs, distinct runs and each result attached to the right filename.
+
+### 7m.7 Failure, and the state after a restart
+
+A worker catches `BaseException`, records `failed` with a message, and stops.
+Nothing re-queues it — asking again reports the same failure rather than
+starting the work over, which is the whole point of a failure being a state.
+
+**A job still `queued` or `processing` at startup belongs to a process that no
+longer exists**, because the pool lives in this one. `storage.abandon_stale_jobs`
+closes those out as failed before the first request is served. Reporting
+"processing" for ever would be worse: it is not true, and there is nothing the
+reader could do about it. This is correct with one uvicorn worker and would need
+scoping to a worker identity with more (§7m.9 item 2).
+
+### 7m.8 Frontend
+
+`ProcessPage.tsx` calls `startRun` and then polls `GET /api/jobs/{id}` once a
+second until it settles. The stage list, the phase stepper and the result panel
+are unchanged — they are fed from the job's `stages` and `result` instead of
+from SSE frames, so the screen looks and behaves as it did.
+
+The job id is remembered in `sessionStorage`, and **that is a bookmark, not
+state the work depends on**: it says which job this tab was watching, never what
+is happening to it. Losing it is survivable — a tab with no bookmark asks the
+server for anything of this user's that is still running (`GET /api/jobs?active=1&mine=1`)
+and adopts it. Only the second route is narrowed to active jobs: adopting a
+finished job in a fresh tab would ambush somebody with a result they did not
+produce, while adopting a running one tells them something they need to know.
+
+Two refs, not one, and the reason is a bug this work introduced and then found
+by re-reading it: suppressing the completion toast on a restored job also
+suppressed the register refresh, so refreshing mid-run left the Invoices table
+stale. `settled` is one-shot per job; `startedHere` gates only the toast.
+
+`streamRun` is left in `lib/api.ts`, unused, with a note saying so — the
+endpoint behind it is unchanged and still works.
+
+### 7m.9 Known limitations
+
+1. **The PDF bytes live in the worker's memory for the length of the run.** A
+   container replaced mid-invoice loses them, and the job is closed out as
+   failed at the next startup with a message saying to upload it again. Making
+   that survivable means writing the bytes to the Phase C `DocumentStore`
+   before queueing and deleting the holding copy afterwards — exactly what
+   §7b.7 does for a quarantined attachment — and it was not done because the
+   requirement was surviving the FRONTEND disconnecting.
+2. **The stale-job reconciliation assumes one uvicorn worker.** With several,
+   one worker starting would fail jobs another is legitimately running. The
+   Dockerfile runs `--workers 1` for reasons §7k.7 already records, so this is
+   consistent with the deployment rather than a new constraint — but it is a
+   real coupling and is stated rather than hidden.
+3. **Polling, not push.** One small read a second while an invoice is being
+   read, none afterwards. A websocket would be fewer bytes and a great deal
+   more machinery, and the CSP (§7e.5) would need `connect-src` widening.
+4. **The portal submission endpoint (`POST /api/portal/invoices`) still runs
+   the pipeline inside the request.** It was left alone deliberately: it is an
+   ordinary POST, not a streamed response, so a client disconnect does not
+   cancel it the way the SSE path was cancelled — the bug reported does not
+   exist there. Moving it to a job would be a change to the supplier-facing
+   API contract, which this fix does not need to make.
+5. **Email ingestion is unchanged** and did not need changing: its poller is
+   already a background task and already drives `run_pipeline` off the request
+   path.
+
+---
+
+## 7n. Cutting the Analytics screen down (not a lettered phase)
+
+**Status: implemented, verified in a real browser. Frontend only — one file.**
+
+**NOT A NEW PHASE**, and not a disagreement with §7c. The owner asked for a
+shorter Analytics screen in a specific order; this is that edit.
+
+### 7n.1 What was removed, and what "removed" means here
+
+Gone from the page: the **task success** KPI, **automation over time**,
+**where the time goes**, the **review funnel**, **review workload** and
+**email ingestion**. The two full-width tables — **vendor performance** and
+**purchase order budgets** — were replaced by a compact closing row.
+
+**NOTHING WAS REMOVED FROM THE BACKEND.** `analytics.py` is untouched, all
+seven single endpoints and the combined `/api/analytics/dashboard` are
+unchanged, and the screen still asks for the whole dashboard payload in one
+request (§7l.3) — it simply renders four of the seven sections. So every
+figure §7c defines is still computed, still tested by the 124 tests in
+`test_analytics.py`, and still one line of TSX away from coming back. A reader
+who concludes from the screen that task success or the email funnel was
+abandoned has drawn the wrong conclusion, which is why this is written down.
+
+### 7n.2 The order, which is the actual request
+
+```
+[ Automation rate ] [ Processing success ] [ Human review rate ] [ Avg run time ]
+Decision overview           Approved / Review / Rejected, as headline counts
+Why invoices need attention grouped by the RULE that failed (§7c.11, unchanged)
+Processing volume           the per-UTC-day chart
+Top vendors | Purchase order budgets      the smaller closing row
+```
+
+Two things were kept that the sketch did not show, and both were checked with
+the owner rather than assumed:
+
+- **The three proportion bars stay inside Decision overview** — automated,
+  human rulings, ledger status. That is §3's central distinction (what the
+  rules concluded, never rewritten; what a person ruled; what the ledger
+  reads), and a screen showing one headline set of counts with no way to see
+  where those three disagree would flatten it.
+- **`Why invoices stop` was renamed to `Why invoices need attention`** and is
+  otherwise the same panel, grouping by rule name rather than by reason
+  sentence for the reason §7c.11 gives.
+
+### 7n.3 The closing row is capped, and says so
+
+`VENDOR_ROWS` / `PO_ROWS` (5 each), with "Showing 5 of 9 purchase orders"
+printed beneath whenever there are more. A silently short list is the failure
+mode this replaces: the full tables showed every row, so cutting them to five
+without a count would turn a complete table into a truncated one that still
+looked complete. The full data is still at `/api/analytics/vendors`.
+
+### 7n.4 What went with it
+
+`FunnelRow` and `Latency` were deleted — the review funnel, the email funnel
+and the review-latency block were their only callers. `RateTrend` is no longer
+imported here but **stays in `charts.tsx`**: it is a general primitive, and
+deleting a component because its last caller went is how a codebase loses the
+thing it needs next month. `users` and `email` are no longer read off the
+dashboard payload; the payload still carries them.
+
+Verified with `tsc --noEmit`, `npm run build`, and by driving the real app in
+Chromium against a live server with eight seeded invoices — section order read
+back out of the DOM, all six removed titles asserted absent, no console
+errors, and no horizontal overflow at 900px in dark mode. There is still no
+frontend test suite (§11.4), so that is the whole gate.
 
 ---
 
