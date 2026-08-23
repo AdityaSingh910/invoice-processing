@@ -434,7 +434,14 @@ def test_pdf_export_succeeds_and_contains_invoice_and_reasons(db, client):
     assert "Audit History" in text
 
 
-def test_pdf_contains_rejection_email_section_after_a_send(db, client, auth_secret, monkeypatch):
+def test_the_pdf_carries_no_rejection_email_section_even_after_a_send(
+        db, client, auth_secret, monkeypatch):
+    """The audit report deliberately does not report on rejection emails.
+
+    The send is still recorded in `invoice_activity` and still shows up in the
+    report's Audit History, which is where an action taken on a run belongs;
+    what was removed is the dedicated section that restated it.
+    """
     run_id = rejected_invoice()
     link_email_sender(run_id, address="vendor@acme-office.example")
     gmail_connected()
@@ -448,7 +455,13 @@ def test_pdf_contains_rejection_email_section_after_a_send(db, client, auth_secr
     import pdfplumber, io
     pdf_bytes = audit_export.build_pdf(run_id)
     text = "\n".join(p.extract_text() or "" for p in pdfplumber.open(io.BytesIO(pdf_bytes)).pages)
-    assert "vendor@acme-office.example" in text
+
+    # the removed section's own wording, in all three of its states
+    assert "Sent by" not in text
+    assert "Attempted, not delivered" not in text
+    assert "No rejection email has been sent for this invoice." not in text
+    # ...while the send itself is still on the record
+    assert "Rejection Email Sent" in text
 
 
 def test_csv_export_contains_expected_fields(db):

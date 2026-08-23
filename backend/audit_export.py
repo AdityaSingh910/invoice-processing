@@ -284,28 +284,5 @@ def build_pdf(run_id: int) -> bytes:
     else:
         story.append(Paragraph("No activity recorded.", _BODY))
 
-    story.append(Paragraph("Rejection Email", _H2))
-    last_send = data["last_send"]
-    if last_send:
-        meta = last_send.get("metadata") or {}
-        story.append(_kv_table([
-            ("Status", "Sent"),
-            ("Recipient", meta.get("recipient")),
-            ("Subject", meta.get("subject")),
-            ("Sent at", last_send["created_at"]),
-            ("Sent by", last_send.get("actor")),
-        ]))
-    elif data["send_history"]:
-        latest = data["send_history"][-1]
-        meta = latest.get("metadata") or {}
-        story.append(_kv_table([
-            ("Status", "Attempted, not delivered"),
-            ("Recipient", meta.get("recipient")),
-            ("Last attempt", latest["created_at"]),
-            ("Error category", meta.get("error_category")),
-        ]))
-    else:
-        story.append(Paragraph("No rejection email has been sent for this invoice.", _BODY))
-
     doc.build(story)
     return buf.getvalue()
