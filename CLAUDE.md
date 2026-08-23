@@ -5003,6 +5003,30 @@ control" is that test's own reason for existing.
 | of those, pure `SET search_path` | 21 | **0** |
 | at the measured 180ms/round trip | ~13s | **~5s** |
 
+### 7l.4a The frontend falls back to the seven, and that is about DEPLOYMENT
+
+`useAnalyticsDashboard` asks for the combined endpoint and, **on a 404 only**,
+asks for the seven and assembles the same shape.
+
+This is not distrust of the new endpoint. It is the fact §2 already records:
+**the two halves deploy separately and one of them lags** — Vercel auto-deploys
+on a push to `main`, Railway does not. So there is a window in which the new
+bundle is live and the API serving it has not been redeployed and answers 404.
+Without the fallback that window is a BROKEN Analytics screen on the public
+site; with it the screen works at exactly its old speed until the API catches
+up, and then silently gets fast.
+
+**Only a 404 triggers it.** A 401 ends the session, a 429 is the rate limiter,
+and a 500 is a real failure the reader needs to see rather than have papered
+over by seven more requests.
+
+It is permanent rather than temporary: the same window reopens on every future
+backend change, so removing it once Railway is redeployed would only
+reintroduce the problem next time.
+
+Verified against the live stale API: `/api/analytics/dashboard` returns 404 and
+all seven single endpoints return 200, which is exactly the path this takes.
+
 ### 7l.5 What is still slow, and it is not code
 
 **~180ms per database round trip is the remaining cost**, and 27 of them is

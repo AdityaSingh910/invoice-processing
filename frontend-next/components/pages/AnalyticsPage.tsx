@@ -46,7 +46,7 @@ import type {
   AnalyticsVendors,
   Kpi,
 } from "@/lib/types";
-import { useAnalytics, type Async, type RangeKey } from "@/lib/useData";
+import { useAnalyticsDashboard, type Async, type RangeKey } from "@/lib/useData";
 import { PageBody, PageHeader } from "@/components/layout/AppShell";
 import {
   Badge,
@@ -101,7 +101,7 @@ export default function AnalyticsPage() {
    * The seven single endpoints still exist and are unchanged -- this is a
    * cheaper way to ask for all of them, not a replacement for asking for one.
    */
-  const dashboard = useAnalytics<AnalyticsDashboard>("dashboard", range, true, reloadKey);
+  const dashboard = useAnalyticsDashboard(range, true, reloadKey);
 
   /**
    * Each panel below still reads a resource of its own shape -- `data`,

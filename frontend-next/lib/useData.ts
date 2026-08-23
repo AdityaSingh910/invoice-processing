@@ -15,8 +15,8 @@
  * a sign-out event at the user who just signed in.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiJson } from "./api";
-import type { Reference, RunRecord } from "./types";
+import { ApiError, apiJson } from "./api";
+import type { AnalyticsDashboard, Reference, RunRecord } from "./types";
 
 export interface Async<T> {
   data: T | null;
@@ -53,7 +53,12 @@ function describe(err: unknown): string {
  * no flag at all, so the ref is gone. Writing state after unmount has been a
  * no-op since React 18; it was never the thing worth guarding.
  */
-function useResource<T>(path: string, enabled: boolean, reloadKey: number): Async<T> {
+function useResource<T>(
+  path: string,
+  enabled: boolean,
+  reloadKey: number,
+  fetcher?: (signal: AbortSignal) => Promise<T>,
+): Async<T> {
   // One object, so a settled request cannot land as three separate renders --
   // and, more to the point, so `loading` and `data` can never disagree about
   // which request they came from.
@@ -111,7 +116,7 @@ function useResource<T>(path: string, enabled: boolean, reloadKey: number): Asyn
       }
     };
 
-    apiJson<T>(path, { signal: controller.signal })
+    (fetcher ? fetcher(controller.signal) : apiJson<T>(path, { signal: controller.signal }))
       .then((d) => settle(() => ({ data: d, loading: false, error: null })))
       .catch((e) => {
         // An abort is this hook superseding itself, not a failure. Reporting it
@@ -162,6 +167,58 @@ export type RangeKey = "today" | "7d" | "30d" | "month" | "all";
 
 const analyticsPath = (name: string, range: RangeKey) =>
   `/api/analytics/${name}?range=${encodeURIComponent(range)}`;
+
+/**
+ * THE ANALYTICS SCREEN, IN ONE REQUEST -- WITH A FALLBACK TO THE SEVEN.
+ *
+ * `/api/analytics/dashboard` returns all seven sections from one pass, which is
+ * what took the screen from about thirteen seconds to about five. The fallback
+ * exists because of a fact about how this application is DEPLOYED, not because
+ * the endpoint is unreliable: the two halves ship separately and one of them
+ * lags (see CLAUDE.md §2 -- Vercel auto-deploys on a push to main, Railway does
+ * not). So there is a window in which this bundle is live and the API serving
+ * it has not been redeployed yet and answers 404.
+ *
+ * Without the fallback that window is a BROKEN Analytics screen. With it, the
+ * screen works exactly as it did before, at exactly its old speed, until the
+ * API catches up -- and then silently gets fast. Only a 404 triggers it: a 401
+ * ends the session, a 429 is the rate limiter, and a 500 is a real failure the
+ * user needs to see rather than have papered over by seven more requests.
+ *
+ * This is deliberately temporary in spirit but permanent in code -- the same
+ * window reopens on every future backend change, so removing it once the API
+ * is redeployed would just reintroduce the problem next time.
+ */
+export function useAnalyticsDashboard(
+  range: RangeKey,
+  enabled = true,
+  reloadKey = 0
+): Async<AnalyticsDashboard> {
+  return useResource<AnalyticsDashboard>(
+    analyticsPath("dashboard", range),
+    enabled,
+    reloadKey,
+    async (signal) => {
+      try {
+        return await apiJson<AnalyticsDashboard>(
+          analyticsPath("dashboard", range), { signal });
+      } catch (e) {
+        if (!(e instanceof ApiError) || e.status !== 404) throw e;
+        // The API predates the combined endpoint. Ask the way we used to.
+        const [overview, trends, processing, reviews, vendors, users, email] =
+          await Promise.all(([
+            "overview", "trends", "processing", "reviews", "vendors", "users", "email",
+          ] as const).map((name) =>
+            apiJson<never>(analyticsPath(name, range), { signal })));
+        return {
+          range: (overview as { range: AnalyticsDashboard["range"] }).range,
+          generated_at: new Date().toISOString(),
+          overview, trends, processing, reviews, vendors, users, email,
+        } as AnalyticsDashboard;
+      }
+    },
+  );
+}
 
 export const useAnalytics = <T,>(
   name: string,
