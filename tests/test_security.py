@@ -150,7 +150,7 @@ def _clean_po_match():
     }
 
 
-def test_security_flag_forces_review_on_an_otherwise_perfect_invoice():
+def test_security_flag_stops_an_otherwise_perfect_invoice():
     """Everything else passes; the flag alone must stop the auto-approval."""
     clean_info = {"route": "groq-text", "notes": [], "security_flags": []}
     status, _ = rules.decide(clean_info, [], True, "Vendor approved.", None, "No dup.", _clean_po_match())
@@ -158,16 +158,32 @@ def test_security_flag_forces_review_on_an_otherwise_perfect_invoice():
 
     flagged = dict(clean_info, security_flags=["line_item[0].description: decision tampering"])
     status, reasons = rules.decide(flagged, [], True, "Vendor approved.", None, "No dup.", _clean_po_match())
-    assert status == "NEEDS_REVIEW"
+    assert status == "REJECTED"
     assert any(r["text"].startswith("SECURITY:") and r["level"] == "fail" for r in reasons)
 
 
-def test_security_flag_does_not_reject():
-    """Review, never reject. Auto-rejecting on a keyword would let anyone block a
-    competitor's payment by printing a phrase on their invoice."""
+def test_a_security_flag_rejects():
+    """REJECTED, not review. This reverses the original policy deliberately.
+
+    The pipeline used to hold such a document for a person, on the reasoning
+    that the guard is a keyword matcher and auto-rejecting on a keyword lets
+    anyone block a competitor's payment by printing a phrase on their invoice.
+    That reasoning is still true and is recorded in full beside the branch in
+    rules.decide -- it was overruled by the product owner, who takes the view
+    that a document trying to direct the process that judges it should be
+    refused outright rather than queued.
+
+    The consequence this test exists to pin: REJECTED is terminal and never
+    auto-overridden, so a false positive here needs an administrator, not a
+    reviewer. test_benign_invoice_is_not_flagged is what keeps that cost
+    bounded, and it matters more now than it did.
+    """
     info = {"route": "regex", "notes": [], "security_flags": ["vendor_name: role reassignment"]}
-    status, _ = rules.decide(info, [], True, "Vendor approved.", None, "No dup.", _clean_po_match())
-    assert status != "REJECTED"
+    status, reasons = rules.decide(info, [], True, "Vendor approved.", None, "No dup.", _clean_po_match())
+    assert status == "REJECTED"
+    assert any("rejected rather than queued for review" in r["text"] for r in reasons), (
+        "the reason must say what happened to the invoice, not just that something was found"
+    )
 
 
 def test_duplicate_still_outranks_a_security_flag():
@@ -230,7 +246,7 @@ def test_hostile_pdf_is_flagged_end_to_end():
         info, rules.validate_required_fields(inv.to_dict()),
         True, "Vendor approved.", None, "No duplicate.", _clean_po_match(),
     )
-    assert status == "NEEDS_REVIEW"
+    assert status == "REJECTED"
     assert any("SECURITY" in r["text"] for r in reasons)
 
     # The extractor must not have been talked into inventing a verdict field.

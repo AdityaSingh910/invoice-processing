@@ -54,6 +54,39 @@ MAX_PAGES_VISION = 3                  # pages sent to the vision model
 # These are the first business rules to leave the code. Phase 3 moves the whole
 # policy to a versioned rules.yaml; until then, changing a number here changes
 # what the process approves, so treat edits as a policy change, not a tweak.
+# --------------------------------------------------------------------------
+# The largest amount this application will accept off a document.
+#
+# THIS IS A REPRESENTABILITY GUARD, NOT A PLAUSIBILITY JUDGEMENT, and the
+# distinction matters because rules.validate_amount deliberately has no upper
+# bound: a large invoice is a PO/tolerance question, and an arbitrary business
+# ceiling would reject legitimate high-value invoices the ledger is perfectly
+# capable of judging. That reasoning stands and is not being overturned here.
+#
+# What it did not account for is that the money columns are PostgreSQL `real`,
+# which tops out near 3.4e38. Past that the INSERT raises, so the run is never
+# written -- the decision was reached and then could not be recorded, which
+# leaves no audit trail and hands the uploader a raw database error. A value
+# that cannot be stored cannot be judged, so it is refused at the door instead.
+#
+# 1e15 leaves twenty-three orders of magnitude of headroom under the column's
+# real ceiling, which is deliberate: this must never be the thing that stops a
+# genuine invoice, only the thing that stops a number no column can hold.
+# --------------------------------------------------------------------------
+MAX_INVOICE_TOTAL_ENV = "MAX_INVOICE_TOTAL"
+
+
+def max_invoice_total() -> float:
+    """Read at call time, like every other setting here. A missing or
+    unparseable value falls back to the default rather than raising."""
+    raw = os.environ.get(MAX_INVOICE_TOTAL_ENV, "").strip()
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 1e15
+    return value if 0 < value <= 3.0e38 else 1e15
+
+
 PO_TOLERANCE_PERCENT = 0.01   # 1% of the remaining balance
 PO_TOLERANCE_DOLLARS = 50.0   # ...or this, whichever is larger
 

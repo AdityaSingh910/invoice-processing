@@ -318,9 +318,12 @@ def _check_prompt_injection(result):
     1. The hostile text was TRANSCRIBED, not obeyed and not dropped. The prompt
        instructs the model to copy such text into the field where it physically
        appears, so a reviewer sees what the document actually said.
-    2. The verdict is NEEDS_REVIEW, never REJECTED. Auto-rejecting on a keyword
-       would hand anyone a way to block a competitor's payment by printing a
-       phrase on their invoice.
+    2. The verdict is REJECTED. That reverses the original policy by the product
+       owner's decision -- a document that tries to direct the process judging
+       it is refused outright rather than queued for a person. The cost is real
+       and is recorded beside the branch in rules.decide: the guard is a keyword
+       matcher, and REJECTED is terminal, so a false positive needs an
+       administrator rather than a reviewer.
 
     Note the guard is not what stops an injection from working -- the model has
     no authority to begin with, and rules.decide() never sees it. The guard is
@@ -354,8 +357,8 @@ def _check_prompt_injection(result):
     assert pm["po_number"] == "PO-1010"
     assert pm["within_tolerance"] is True
 
-    # Nothing was consumed: a held run charges no PO budget.
-    assert result["status"] == "NEEDS_REVIEW"
+    # Nothing was consumed: a rejected run charges no PO budget either.
+    assert result["status"] == "REJECTED"
 
 
 

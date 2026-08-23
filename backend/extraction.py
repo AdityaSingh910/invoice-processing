@@ -288,7 +288,7 @@ def _invoice_from_payload(data: dict, raw_text: str, method: str, page_label: st
     """
     def num(v):
         if isinstance(v, (int, float)):
-            return float(v)
+            return _usable_amount(v)
         if isinstance(v, str):
             return _to_float(v)
         return None
@@ -545,6 +545,38 @@ def groq_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 
 # regex fallback
 # --------------------------------------------------------------------------
 
+def _usable_amount(v) -> Optional[float]:
+    """A number this application can actually record, or None.
+
+    Two things are refused, and both are refused HERE -- at the boundary where
+    a document becomes data -- rather than further in:
+
+    * NON-FINITE. Python's json.loads accepts the bare literals `Infinity`,
+      `-Infinity` and `NaN` as an extension to the JSON spec, so a model that
+      emits one hands us a float no arithmetic and no column can deal with.
+      Stored, it also makes the run unserialisable: FastAPI refuses to encode
+      a non-finite float, so ONE such row 500s /api/runs, /api/runs/{id} and
+      /api/analytics/overview for every user until it is deleted.
+    * OUT OF RANGE. Anything past config.max_invoice_total() cannot be written
+      to a `real` column, so the INSERT raises after the decision was already
+      made -- no run, no audit trail, and a raw Postgres error shown to
+      whoever uploaded it.
+
+    Refusing returns None, which reads downstream as "this field could not be
+    read". That is accurate: a figure that cannot be represented was not
+    successfully read, and the run is then held by the required-field check
+    exactly as an unreadable scan is. Nothing is clamped or rounded into range,
+    because silently turning 1e45 into a storable number would invent an amount
+    the document never stated.
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return f if abs(f) <= config.max_invoice_total() else None
+
+
 def _to_float(s, decimal_comma: bool = False) -> Optional[float]:
     """A printed amount as a number.
 
@@ -587,7 +619,10 @@ def _to_float(s, decimal_comma: bool = False) -> Optional[float]:
         v = float(s)
     except ValueError:
         return None
-    return -v if neg else v
+    # Same door, same guard: a long enough run of digits parses to a finite but
+    # unstorable number (46 digits gives 1e45), and "1e999" parses to inf. A
+    # printed amount that cannot be recorded was not successfully read.
+    return _usable_amount(-v if neg else v)
 
 
 def _first(text: str, patterns, group=1) -> Optional[str]:

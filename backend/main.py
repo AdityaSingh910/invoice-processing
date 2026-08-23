@@ -583,6 +583,19 @@ async def run_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str = None,
     mark()
 
     # 8. TOLERANCE_CHECK
+    #
+    # The line-item comparison is reported HERE rather than only in the final
+    # verdict, and the reason is a real reporting failure it fixes: this stage
+    # compares the invoice TOTAL against the PO, so an invoice that rearranged
+    # the quantities underneath a correct total showed "within tolerance, diff
+    # $0.00" -- every stage green -- and then came out NEEDS_REVIEW with nothing
+    # on screen explaining why. Someone watching the pipeline could only
+    # conclude the verdict was wrong.
+    #
+    # It belongs on this stage rather than a tenth one: this is the stage that
+    # asks whether the money lines up with what was ordered, and quantities and
+    # unit prices are that same question one level down.
+    line_items = rules.line_item_check(extracted, po_match)
     if po_match["po_number"] is not None:
         if po_match.get("is_multi"):
             # The comparison is against the COMBINED balance, so say so and show
@@ -608,6 +621,24 @@ async def run_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str = None,
     else:
         tol_detail = "Skipped — no PO to compare against."
         tol_status = "warn"
+    if line_items["findings"]:
+        # A total that matched is no longer the whole story, so the stage must
+        # stop reading as "ok" -- it is what drives the hold.
+        kinds = []
+        for f in line_items["findings"]:
+            if f["kind"] not in kinds:
+                kinds.append(f["kind"])
+        tol_detail += (
+            " Line items DISAGREE with the PO ("
+            + ", ".join(k.replace("_", " ") for k in kinds)
+            + f"): {line_items['findings'][0]['item']} — "
+            + line_items["findings"][0]["detail"]
+            + (f"; and {len(line_items['findings']) - 1} more"
+               if len(line_items["findings"]) > 1 else "")
+        )
+        tol_status = "fail"
+    elif line_items["compared"]:
+        tol_detail += f" {line_items['compared']} line item(s) match the PO."
     yield sse("stage", {"stage": stage("TOLERANCE_CHECK", tol_status, tol_detail)})
     await asyncio.sleep(0.25)
     mark()
@@ -621,7 +652,7 @@ async def run_pipeline(filename: str, pdf_bytes: bytes, uploaded_by: str = None,
     status, reasons = rules.decide(
         extract_info, missing, vendor_ok, vendor_detail, dup_row, dup_detail, po_match,
         arithmetic=arithmetic, amount=amount, audit=audit, extracted=extracted,
-        low_confidence=low_confidence,
+        low_confidence=low_confidence, line_items=line_items,
     )
     yield sse("stage", {"stage": stage("DECISION", "ok", f"Final status: {status}.")})
     await asyncio.sleep(0.15)
