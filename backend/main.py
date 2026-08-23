@@ -1923,6 +1923,39 @@ def analytics_users(window: "analytics.Window" = Depends(analytics_window),
                            see_everyone=principal.has("invoice:admin"))
 
 
+@app.get("/api/analytics/dashboard")
+def analytics_dashboard(window: "analytics.Window" = Depends(analytics_window),
+                        limit: int = Query(None, ge=1, le=analytics.MAX_GROUP_LIMIT),
+                        principal: auth.Principal = Depends(ratelimit.rate_limit_reporting)):
+    """Every section of the Analytics screen, in one request.
+
+    The screen has seven panels and was fetching them from the seven endpoints
+    above, in parallel. Each of those pays for being a request -- a TLS round
+    trip from the browser, authentication, rate-limit accounting, its own
+    connection borrows -- and then they queue behind one another on the way to
+    the database, so the page cost roughly the SUM of the seven rather than the
+    slowest. This returns the same seven payloads, under the same key names,
+    from one pass over the window.
+
+    THE SEVEN ENDPOINTS ARE UNCHANGED AND STILL SERVED. This composes them
+    rather than replacing them: a client that wants one panel still asks for
+    one panel, and every value here is the return of the very function the
+    single endpoint calls, so the two cannot disagree.
+
+    Authorised exactly as they are -- the same `invoice:read` scope behind the
+    same reporting limiter, and `users` still decides its own scope from the
+    authenticated principal (see `/api/analytics/users`), so the combined
+    payload is never a way to read a colleague's figures that the single one
+    would refuse.
+    """
+    return analytics.dashboard(
+        window,
+        viewer=principal.username,
+        see_everyone=principal.has("invoice:admin"),
+        limit=analytics.resolve_limit(limit),
+    )
+
+
 
 # --------------------------------------------------------------------------
 # Logs, filtering, grouping and exports (Phase I)

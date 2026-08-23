@@ -1306,6 +1306,11 @@ def test_per_user_timing_is_reported_or_explicitly_absent(db):
 ENDPOINTS = ["/api/analytics/overview", "/api/analytics/trends",
              "/api/analytics/processing", "/api/analytics/reviews",
              "/api/analytics/vendors", "/api/analytics/email",
+             "/api/analytics/dashboard",
+             # `users` STAYS LAST. `ENDPOINTS[:-1]` below means "the endpoints a
+             # viewer reads in full", and this is the one that narrows itself to
+             # the caller's own row -- so appending anything after it would
+             # quietly change what that slice tests.
              "/api/analytics/users"]
 
 
@@ -1581,3 +1586,138 @@ def test_the_range_bounds_reach_the_database_as_parameters_not_as_text(db):
         analytics.resolve_window("custom", "2026-01-01'; DROP TABLE runs--", "2026-02-01")
     # The table is still there and still queryable.
     assert analytics.overview(window())["volume"]["runs"] == 0
+
+
+# ==========================================================================
+# 22. the combined dashboard endpoint
+#
+# The screen has seven panels and used to fetch them as seven requests. They
+# queue behind each other on the way to the database, so the page cost roughly
+# the SUM of the seven -- about thirteen seconds against the live deployment,
+# where the same seven run sequentially took twelve. `/api/analytics/dashboard`
+# answers all seven from one pass.
+#
+# What these tests hold is that making it cheaper did not make it different:
+# the payloads are the same, the authorization is the same, and the one read
+# that is now shared is shared WITHIN a request and never across one.
+# ==========================================================================
+
+def test_the_dashboard_returns_exactly_what_the_seven_endpoints_return(client):
+    """It composes the seven services; it does not reimplement them. If this
+    ever fails, the combined payload has started to drift from the single
+    endpoints, and a reader would get a different answer depending on which
+    they asked."""
+    approved("INV-D1", 100.0)
+    held("INV-D2", 9000.0)
+
+    combined = client.get("/api/analytics/dashboard", params={"range": "all"}).json()
+
+    for name in ("overview", "trends", "processing", "reviews",
+                 "vendors", "users", "email"):
+        single = client.get(f"/api/analytics/{name}", params={"range": "all"}).json()
+        assert strip_generated(combined[name]) == strip_generated(single), name
+
+
+#: Fields read off the CLOCK at the moment a request is answered, so two calls
+#: a few milliseconds apart differ in them by design. `generated_at` records
+#: when the answer was produced; `oldest_awaiting_age_seconds` is how long the
+#: oldest open item has been waiting AS OF NOW, which is the whole point of it.
+#: Everything else must match exactly.
+CLOCK_FIELDS = ("generated_at", "oldest_awaiting_age_seconds")
+
+
+def strip_generated(obj):
+    if isinstance(obj, dict):
+        return {k: strip_generated(v) for k, v in obj.items() if k not in CLOCK_FIELDS}
+    if isinstance(obj, list):
+        return [strip_generated(v) for v in obj]
+    return obj
+
+
+def test_the_dashboard_narrows_reviewer_figures_exactly_as_the_users_endpoint_does(client):
+    """THE AUTHORIZATION TEST THIS ENDPOINT EXISTS TO PASS.
+
+    `users` is the one service here that reports on PEOPLE, and it shows the
+    caller their own row unless they hold `invoice:admin` (§7c.5). Bundling it
+    with six invoice-level sections must not become a way to read a colleague's
+    figures that asking for `/api/analytics/users` directly would refuse."""
+    seed_two_reviewers(None)
+
+    viewer = client.get("/api/analytics/dashboard",
+                        params={"range": "all"},
+                        headers=auth_headers("viewer", "alice"))
+    assert viewer.status_code == 200
+    assert viewer.json()["users"]["scope"] == "self"
+    assert viewer.json()["users"]["viewer"] == "alice"
+    assert "bob" not in viewer.text
+
+    admin = client.get("/api/analytics/dashboard",
+                       params={"range": "all"},
+                       headers=auth_headers("admin", "ada"))
+    assert admin.json()["users"]["scope"] == "all"
+    assert {u["username"] for u in admin.json()["users"]["users"]} >= {"alice", "bob"}
+
+
+def test_the_dashboard_reads_the_rows_its_sections_share_only_once(db):
+    """The saving this endpoint exists for, pinned so it cannot quietly regress.
+
+    Three services need the same whole-window read of the JSON columns
+    (`overview`, `processing` and `_hold_reasons` via `reviews`) and two need
+    the same counts. Asked as seven requests that is three reads and two counts;
+    asked as one it is one of each."""
+    approved("INV-SHARED", 100.0)
+
+    calls = {"scan": 0, "counts": 0}
+    real_scan, real_counts = analytics._read_run_json, analytics._read_run_counts
+    analytics._read_run_json = lambda w: (calls.__setitem__("scan", calls["scan"] + 1),
+                                          real_scan(w))[1]
+    analytics._read_run_counts = lambda w: (calls.__setitem__("counts", calls["counts"] + 1),
+                                            real_counts(w))[1]
+    try:
+        w = window()
+        analytics.overview(w); analytics.processing(w); analytics.reviews(w)
+        separate = dict(calls)
+
+        calls["scan"] = calls["counts"] = 0
+        analytics.dashboard(window(), viewer="ada", see_everyone=True)
+        combined = dict(calls)
+    finally:
+        analytics._read_run_json, analytics._read_run_counts = real_scan, real_counts
+
+    assert separate == {"scan": 3, "counts": 2}, separate
+    assert combined == {"scan": 1, "counts": 1}, combined
+
+
+def test_the_shared_read_is_scoped_to_one_request_and_is_not_a_cache(client):
+    """§7c.1's rule is untouched: nothing is stored, and every request still
+    aggregates from the rows as they are at that moment. A run committed
+    between two calls must change the second answer."""
+    first = client.get("/api/analytics/dashboard", params={"range": "all"}).json()
+    assert first["overview"]["volume"]["runs"] == 0
+
+    approved("INV-AFTER", 100.0)
+
+    second = client.get("/api/analytics/dashboard", params={"range": "all"}).json()
+    assert second["overview"]["volume"]["runs"] == 1
+    assert second["reviews"]["funnel"]["runs"] == 1
+
+
+def test_outside_a_dashboard_request_every_service_reads_for_itself(db):
+    """The memo is None outside `dashboard()`, so the seven single endpoints
+    behave exactly as they did before it existed -- which is what makes this a
+    cheaper way to ask for all seven rather than a change to any of them."""
+    approved("INV-ALONE", 100.0)
+    assert analytics._MEMO.get() is None
+
+    calls = {"n": 0}
+    real = analytics._read_run_json
+    analytics._read_run_json = lambda w: (calls.__setitem__("n", calls["n"] + 1), real(w))[1]
+    try:
+        w = window()
+        analytics.overview(w)
+        analytics.processing(w)
+    finally:
+        analytics._read_run_json = real
+
+    assert calls["n"] == 2, "two separate calls must each read for themselves"
+    assert analytics._MEMO.get() is None, "the memo must not leak out of dashboard()"

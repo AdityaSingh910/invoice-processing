@@ -44,6 +44,7 @@ import os
 import re
 import time
 import uuid
+import weakref
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -76,6 +77,13 @@ PG_SCHEMA = "public"
 
 _POOL = None
 _POOL_DSN = None
+
+# The schema each pooled connection was last set to, so `get_conn()` can skip
+# re-issuing a `SET search_path` that is already in force on that very
+# connection. Keyed WEAKLY on the physical connection, so an entry cannot
+# outlive the socket it describes and a rebuilt pool starts with no stale
+# claims about connections that are gone.
+_APPLIED_SCHEMA = weakref.WeakKeyDictionary()
 
 
 def _dsn() -> str:
@@ -205,8 +213,31 @@ def get_conn():
     raw = _getconn_waiting(pool)
     raw.cursor_factory = psycopg2.extras.RealDictCursor
     raw.autocommit = True   # matches sqlite3's default; write_txn() turns it off
-    with raw.cursor() as cur:
-        cur.execute(f'SET search_path TO "{PG_SCHEMA}"')
+
+    # `search_path` is SESSION state -- it stays in force on the connection
+    # until the session ends -- so re-issuing it on every borrow restated
+    # something the connection already knew, and cost a full round trip to the
+    # database to do it. That was never free: one Analytics dashboard load
+    # borrows 21 connections across its seven endpoints, so 21 of the ~50 round
+    # trips it made were this statement alone. Against a database a couple of
+    # hundred milliseconds away that is seconds of page load spent on nothing.
+    #
+    # It is skipped only when THIS connection is already set to exactly the
+    # schema in force now. The check reads the live `PG_SCHEMA` rather than
+    # assuming it is constant, because tests/pg_schema.py monkeypatches it to a
+    # fresh schema per test while a pooled connection happily outlives the test
+    # that first borrowed it -- so a changed schema still re-issues, and test
+    # isolation is exactly as strict as it was before.
+    #
+    # SOUND ONLY BECAUSE THE CONNECTION REALLY IS A SESSION. That is the same
+    # assumption section 4 already rests on when it requires Supabase's Session
+    # pooler or a direct connection and refuses the Transaction pooler -- whose
+    # whole behaviour is to recycle the server connection between statements,
+    # dropping exactly this kind of session-scoped `SET`.
+    if _APPLIED_SCHEMA.get(raw) != PG_SCHEMA:
+        with raw.cursor() as cur:
+            cur.execute(f'SET search_path TO "{PG_SCHEMA}"')
+        _APPLIED_SCHEMA[raw] = PG_SCHEMA
     return _PooledConnection(raw, pool)
 
 

@@ -131,6 +131,8 @@ the full automated-decision-to-human-decision transition matrix.
 import json
 import re
 import statistics
+import contextvars
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import config
@@ -436,7 +438,71 @@ def _is_number(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+# --------------------------------------------------------------------------
+# Reading the same rows once per REQUEST, not once per section
+#
+# Seven of these services answer one screen, and three of them need the same
+# whole-window read: `_scan_run_json` is called by `overview`, `processing` and
+# `_hold_reasons`, and `_run_counts` by `overview` and `reviews`. Called as
+# seven separate HTTP requests that is unavoidable -- each one is its own
+# process-wide event and shares nothing with the others.
+#
+# `dashboard()` answers all seven in ONE request, which makes it avoidable: the
+# window is identical across them, the tables are read-only for the duration,
+# and so the second and third read of the same rows can only produce the same
+# answer as the first. The memo below is what lets it skip them.
+#
+# IT IS SCOPED TO ONE CALL AND IT IS NOT A CACHE. A ContextVar, set on entry to
+# `dashboard()` and reset on the way out, so nothing survives the request that
+# created it and two concurrent requests cannot see each other's rows. Outside
+# that block the memo is None and every service reads the database exactly as
+# it always did -- which is what keeps the seven individual endpoints, and
+# every test that drives them, behaving identically to before.
+#
+# This does NOT weaken section 7c.1's rule. Nothing is stored: the figures are
+# still aggregated from the rows on every request, and a run committed between
+# two requests still changes the next answer. The only thing shared is one
+# read, inside one request, that would otherwise have been issued three times
+# in a row against a database a couple of hundred milliseconds away.
+_MEMO = contextvars.ContextVar("analytics_shared_reads", default=None)
+
+
+@contextmanager
+def _shared_reads():
+    """Within this block, each whole-window read happens at most once."""
+    token = _MEMO.set({})
+    try:
+        yield
+    finally:
+        _MEMO.reset(token)
+
+
+def _once(name: str, window: Window, compute):
+    """`compute(window)`, but only the first time for this window in a request.
+
+    The window is compared by IDENTITY, not by value. Everything inside one
+    `dashboard()` call is handed the very same object, so identity is exactly
+    the question being asked -- and being wrong in the safe direction (a
+    different object recomputes) beats inventing an equality for `Window` that
+    a later field could silently fall out of.
+    """
+    memo = _MEMO.get()
+    if memo is None:
+        return compute(window)
+    hit = memo.get(name)
+    if hit is not None and hit[0] is window:
+        return hit[1]
+    value = compute(window)
+    memo[name] = (window, value)
+    return value
+
+
 def _scan_run_json(window: Window) -> dict:
+    """See `_read_run_json`. Shared within one `dashboard()` request."""
+    return _once("scan", window, _read_run_json)
+
+
+def _read_run_json(window: Window) -> dict:
     """Read the JSON columns of every run in the window, once.
 
     Serves several breakdowns that all need the same rows -- per-stage timings,
@@ -571,6 +637,11 @@ def _scan_run_json(window: Window) -> dict:
 # --------------------------------------------------------------------------
 
 def _run_counts(window: Window) -> dict:
+    """See `_read_run_counts`. Shared within one `dashboard()` request."""
+    return _once("counts", window, _read_run_counts)
+
+
+def _read_run_counts(window: Window) -> dict:
     """One query for every count the headline KPIs need.
 
     Deliberately a single pass with FILTERed aggregates rather than one query
@@ -1675,3 +1746,47 @@ def _blank_user(username: str) -> dict:
         "claims_held_now": 0,
         "events": {},
     }
+
+
+# --------------------------------------------------------------------------
+# The whole Analytics screen, in one request
+#
+# WHY THIS EXISTS. The screen has seven panels and was fetching them as seven
+# separate HTTP requests. Every one of those pays the full cost of being a
+# request -- its own TLS round trip from the browser, its own authentication,
+# its own rate-limit accounting, its own connection borrows -- and then all
+# seven queue behind each other on the way to the database, so the page took
+# roughly the SUM of the seven rather than the slowest of them. Measured
+# against the live deployment that was about thirteen seconds, and running them
+# sequentially took twelve: the parallelism was buying nothing at all.
+#
+# One request instead removes six of those round trips outright, and lets the
+# three services that need the same whole-window read share it (see
+# `_shared_reads`) rather than issuing it three times.
+#
+# THE SEVEN SERVICES ARE UNCHANGED AND SO ARE THEIR ENDPOINTS. This composes
+# them; it does not reimplement them, and it cannot drift from them, because
+# every value below is the return of the same function `/api/analytics/<name>`
+# calls. A client that wants one panel still asks for one panel.
+#
+# AUTHORIZATION IS NOT POOLED WITH THE DATA. `users` is the one service here
+# that reports on PEOPLE rather than invoices, and section 7c.5 gives it its own
+# rule: your own row unless you hold `invoice:admin`. That decision is made by
+# the caller from the authenticated principal and passed in, exactly as the
+# individual endpoint makes it -- so asking for the combined payload can never
+# be a way to see a colleague's figures that asking for the single one refuses.
+def dashboard(window: Window, viewer: str, see_everyone: bool,
+              limit: int = DEFAULT_GROUP_LIMIT) -> dict:
+    """Every section of the Analytics screen, from one pass over the window."""
+    with _shared_reads():
+        return {
+            "range": window.as_dict(),
+            "generated_at": _utc_now().isoformat(),
+            "overview": overview(window),
+            "trends": trends(window),
+            "processing": processing(window),
+            "reviews": reviews(window),
+            "vendors": vendors(window, limit=limit),
+            "users": users(window, viewer=viewer, see_everyone=see_everyone),
+            "email": email(window),
+        }

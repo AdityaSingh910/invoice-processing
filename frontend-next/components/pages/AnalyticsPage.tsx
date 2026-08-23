@@ -37,6 +37,7 @@ import {
 } from "@/lib/metrics";
 import type {
   AnalyticsEmail,
+  AnalyticsDashboard,
   AnalyticsOverview,
   AnalyticsProcessing,
   AnalyticsReviews,
@@ -45,7 +46,7 @@ import type {
   AnalyticsVendors,
   Kpi,
 } from "@/lib/types";
-import { useAnalytics, type RangeKey } from "@/lib/useData";
+import { useAnalytics, type Async, type RangeKey } from "@/lib/useData";
 import { PageBody, PageHeader } from "@/components/layout/AppShell";
 import {
   Badge,
@@ -86,36 +87,62 @@ export default function AnalyticsPage() {
   const [range, setRange] = useState<RangeKey>("30d");
   const [reloadKey, setReloadKey] = useState(0);
 
-  const overview = useAnalytics<AnalyticsOverview>("overview", range, true, reloadKey);
-  const trends = useAnalytics<AnalyticsTrends>("trends", range, true, reloadKey);
-  const processing = useAnalytics<AnalyticsProcessing>("processing", range, true, reloadKey);
-  const reviews = useAnalytics<AnalyticsReviews>("reviews", range, true, reloadKey);
-  const vendors = useAnalytics<AnalyticsVendors>("vendors", range, true, reloadKey);
-  const users = useAnalytics<AnalyticsUsers>("users", range, true, reloadKey);
-  const email = useAnalytics<AnalyticsEmail>("email", range, true, reloadKey);
+  /**
+   * ONE REQUEST FOR SEVEN PANELS.
+   *
+   * This screen used to call seven endpoints in parallel. Parallel bought
+   * nothing: the seven queue behind one another on the way to the database, so
+   * the page cost roughly the SUM of them -- about thirteen seconds against the
+   * live deployment, where running the same seven sequentially took twelve.
+   * `/api/analytics/dashboard` returns the identical seven payloads from one
+   * pass over the window, so the page pays one TLS round trip instead of seven
+   * and the server reads the rows the panels share once instead of three times.
+   *
+   * The seven single endpoints still exist and are unchanged -- this is a
+   * cheaper way to ask for all of them, not a replacement for asking for one.
+   */
+  const dashboard = useAnalytics<AnalyticsDashboard>("dashboard", range, true, reloadKey);
 
   /**
-   * ONE PRESS OF THIS BUTTON IS SEVEN REQUESTS, which is why it is the one
-   * refresh in the app that has to guard itself.
+   * Each panel below still reads a resource of its own shape -- `data`,
+   * `loading`, `error` -- so nothing downstream of here had to change when the
+   * seven requests became one. They now share one request's state, which is
+   * simply the truth: there is one request, so the panels succeed and fail
+   * together rather than seven ways.
+   */
+  const section = <T,>(pick: (d: AnalyticsDashboard) => T): Async<T> => ({
+    data: dashboard.data ? pick(dashboard.data) : null,
+    loading: dashboard.loading,
+    error: dashboard.error,
+    refresh: dashboard.refresh,
+  });
+
+  const overview = section<AnalyticsOverview>((d) => d.overview);
+  const trends = section<AnalyticsTrends>((d) => d.trends);
+  const processing = section<AnalyticsProcessing>((d) => d.processing);
+  const reviews = section<AnalyticsReviews>((d) => d.reviews);
+  const vendors = section<AnalyticsVendors>((d) => d.vendors);
+  const users = section<AnalyticsUsers>((d) => d.users);
+  const email = section<AnalyticsEmail>((d) => d.email);
+
+  /**
+   * One press of this button is now ONE request rather than seven, but the
+   * guard stays, because the reason for it has not gone away.
    *
    * `useResource` coalesces repeat presses per resource (see lib/useData.ts),
-   * but this screen does not call `resource.refresh()` -- it changes a
-   * reloadKey that seven hooks depend on, so each press restarts all seven
-   * regardless of what any one of them is doing. Five quick presses is
-   * thirty-five requests arriving together, against endpoints that are metered
-   * per user AND per IP (§7e.4) and that hold a database connection each. That
-   * is how a refresh became a 429 and, worse, how it exhausted the connection
-   * pool and turned neighbouring reads into 500s.
+   * and this screen still does not call `resource.refresh()` -- it changes a
+   * reloadKey the hook depends on, so a press restarts the request regardless
+   * of what it is doing. These endpoints are metered per user AND per IP
+   * (§7e.4) and hold a database connection, and a burst of them is what used
+   * to exhaust the connection pool and turn neighbouring reads into 500s.
    *
-   * So while any panel is still loading the button is disabled and this is a
+   * So while the screen is still loading the button is disabled and this is a
    * no-op. Disabled rather than silently ignored: a control that looks
    * pressable and does nothing reads as a broken button, and the reason it is
    * unavailable -- something is already loading -- is exactly what the reader
    * needs to know.
    */
-  const anyLoading =
-    overview.loading || trends.loading || processing.loading ||
-    reviews.loading || vendors.loading || users.loading || email.loading;
+  const anyLoading = dashboard.loading;
 
   const refresh = () => {
     if (anyLoading) return;

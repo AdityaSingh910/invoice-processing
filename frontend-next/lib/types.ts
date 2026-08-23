@@ -557,6 +557,27 @@ export interface AnalyticsUsers {
   note: string | null;
 }
 
+/** All seven analytics sections, from one request.
+ *
+ *  The screen needs every one of these to render, and fetching them as seven
+ *  separate requests cost roughly the SUM of the seven rather than the slowest
+ *  -- they queue behind each other on the way to the database. `/api/analytics/
+ *  dashboard` returns the same seven payloads, under these key names, and each
+ *  is the very object its own endpoint would have returned, so nothing below
+ *  this type had to change. The single endpoints are still there for a client
+ *  that wants one panel. */
+export interface AnalyticsDashboard {
+  range: AnalyticsRange;
+  generated_at: string;
+  overview: AnalyticsOverview;
+  trends: AnalyticsTrends;
+  processing: AnalyticsProcessing;
+  reviews: AnalyticsReviews;
+  vendors: AnalyticsVendors;
+  users: AnalyticsUsers;
+  email: AnalyticsEmail;
+}
+
 /* ------------------------------------------------------ assistant (K2) */
 
 /** Where an answer came from. Sent by the server on every reply so the UI can

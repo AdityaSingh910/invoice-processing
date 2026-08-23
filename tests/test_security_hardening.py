@@ -357,7 +357,8 @@ def test_the_limit_response_says_when_to_come_back(client, monkeypatch):
 @pytest.mark.parametrize("path", [
     "/api/analytics/overview", "/api/analytics/trends", "/api/analytics/processing",
     "/api/analytics/reviews", "/api/analytics/vendors", "/api/analytics/email",
-    "/api/analytics/users", "/api/logs", "/api/logs/facets", "/api/logs/export",
+    "/api/analytics/users", "/api/analytics/dashboard",
+    "/api/logs", "/api/logs/facets", "/api/logs/export",
     "/api/logs/stages", "/api/logs/stages/export",
     "/api/runs/999999/audit-report.pdf", "/api/runs/999999/audit-report.csv",
 ])
