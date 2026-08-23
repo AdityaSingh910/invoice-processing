@@ -12,16 +12,16 @@ Built for the Zamp AI Solutions Associate case study, **PS-1 (Finance / AP)**.
 
 ## Where the project stands right now
 
-**The app runs. All 10 sample invoices produce their expected verdicts, and the
+**The app runs. All 14 sample invoices produce their expected verdicts, and the
 suite is green.**
 
 | | |
 |---|---|
 | Pipeline | Working, 9 stages, streamed live to the browser |
-| Sample invoices | 10 / 10 matching the manifest, driven through the real pipeline |
+| Sample invoices | 14 / 14 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, seven sections, light-first enterprise design with an explicit dark-mode toggle — plus a separate **supplier portal** shell for external clients |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **1,818 passing** deterministically, 29 files, no live API calls |
+| Automated tests | **2,015 collected** across 33 files, no live API calls (the live-provider cases are the documented exception — see Known problems) |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
@@ -313,12 +313,18 @@ Regenerate anytime with `python sample_invoices/generate_invoices.py`.
 | `07_multi_po_wayne.pdf` | One invoice covering two POs | **NEEDS_REVIEW** ‡ |
 | `08_fx_match_oscorp.pdf` | Different currency, converts to an exact match | **APPROVED** § |
 | `09_currency_number_collision_lexcorp.pdf` | Same raw number, wrong currency | **REJECTED** § |
+| `10_prompt_injection_cyberdyne.pdf` | Instructions to the reader hidden in the document | **REJECTED** |
+| `11_line_item_mismatch_acme_tech.pdf` | Total matches the PO; the lines underneath it do not | **NEEDS_REVIEW** |
+| `12_concurrency_race_keyboard_a.pdf` | $4,000 against an untouched $7,000 order | **APPROVED** (partial) ¶ |
+| `13_concurrency_race_keyboard_b.pdf` | The same $4,000 claim against the $3,000 left | **NEEDS_REVIEW** ¶ |
 
 **Order matters.** Several cases are history-dependent by design:
 
 - Run `02` → `03` → `03b` to see split-PO balance tracking. Each APPROVED run
   consumes part of `PO-1002`; by `03b` there is nothing left.
 - Run `01` before `06` or the duplicate has nothing to collide with.
+- Run `12` and `13` in either order — but only once. The second pass meets a
+  drained PO and both are held, so reset the demo before showing it again.
 
 Run `03b` alone against a fresh database and it is **APPROVED** — same bytes,
 opposite verdict, because $2,500 against an untouched $5,000 PO is an ordinary
@@ -356,6 +362,19 @@ conversion produces — so it is rejected outright rather than held: at the
 pinned rate it is actually `$5,400.00`, meaning paying the face value would
 silently underpay by $400. See
 [Currency mismatch and FX conversion](#currency-mismatch-and-fx-conversion).
+
+¶ **Samples 12 and 13 are the concurrency demonstration, and they are the one
+pair meant to be run at the SAME time.** Each is an ordinary $4,000 partial
+invoice against `PO-7000-CONC`; together they claim $8,000 of a $7,000 order.
+Nothing in either document is wrong, so nothing in extraction or the rules can
+separate them — only the ledger can. Open the app in two browser sessions and
+press Run within a second of each other: exactly one is approved, the other is
+held, and the order is left with $3,000. Either one may win, which is the
+point. Run sequentially they do the same thing in slow motion, which is the
+useful way to show what the balance check does before showing that it holds
+under a race. The purchase order itself is in `sample-data/concurrency/` as a
+document to read — deliberately not in the sample list, because a purchase
+order is not an invoice and the pipeline would hold it as a malformed one.
 
 ---
 

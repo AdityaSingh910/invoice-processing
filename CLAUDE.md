@@ -46,7 +46,7 @@ vendor binding no token can assert (§7g).
 - **`data/`** — seed POs, vendors, demo users (JSON, tracked in git,
   reloaded into Postgres on every startup) plus gitignored runtime state
   (`documents/`).
-- **`tests/`** — 1,895 tests, 29 files, real (schema-isolated) PostgreSQL, both
+- **`tests/`** — 2,015 tests, 33 files, real (schema-isolated) PostgreSQL, both
   LLM providers mocked, and Google mocked at the two functions that open a
   socket. See §10.
 
@@ -5377,6 +5377,198 @@ frontend test suite (§11.4), so that is the whole gate.
 
 ---
 
+## 7o. The concurrency demo fixtures (not a lettered phase)
+
+**Status: implemented, verified against a real running pipeline, committed
+(`df999b9`, `7c6f820`, `8ace8d8`).**
+
+**NOT A NEW PHASE IN THE A–M TRACK** — the same designation §7b.13/§7b.14/§7j/
+§7l/§7m/§7n use for targeted work between lettered phases. **No backend,
+frontend, schema, rule, scope or concurrency logic was touched.** What this
+adds is three PDFs, two seed rows and two manifest entries, so that the row
+lock `save_run_checked()` has always taken can be *shown* to somebody rather
+than described to them.
+
+### 7o.1 What it is
+
+§4's concurrency guarantee — two invoices racing one PO cannot both approve
+past its balance — was provable only through
+`test_concurrent_invoices_cannot_overspend_a_po`. There was no way to
+demonstrate it in a browser, because no shipped fixture set up the contention:
+the split-PO trio (`02`/`03`/`03b`) is *sequential* by design, and each of its
+invoices is valid only in its own turn.
+
+```
+PO-7000-CONC                 $7,000     Keyboard Corporation
+  INV-CONC-4000-A            $4,000     individually valid
+  INV-CONC-4000-B            $4,000     individually valid
+                             -------
+  together                   $8,000     $1,000 more than the order authorises
+```
+
+Both are ordinary partial invoices on their own, which is the whole point:
+nothing in either **document** is wrong, so nothing in extraction or the rules
+can separate them. Only the ledger can, and only at the moment they collide.
+
+| Path | What it is |
+|---|---|
+| `sample-data/concurrency/PO-CONCURRENCY-7000.pdf` | the purchase order, as a document to read |
+| `sample-data/concurrency/INV-CONCURRENCY-4000-{A,B}.pdf` | the two invoices |
+| `sample_invoices/12_concurrency_race_keyboard_a.pdf` | the same invoice A, where the UI lists samples |
+| `sample_invoices/13_concurrency_race_keyboard_b.pdf` | the same invoice B |
+
+**The PO PDF is deliberately NOT in `sample_invoices/`.** That directory is a
+list of things the pipeline runs, and a purchase order is not an invoice: it
+would be read as one with no invoice number and held, and accepting it would
+consume the entire $7,000 and destroy the demo. It stays a reference document.
+
+### 7o.2 The seed rows
+
+```
+data/purchase_orders.json    PO-7000-CONC, Keyboard Corporation, 7000.00 USD, open
+data/approved_vendors.json   Keyboard Corporation, V-011, approved
+```
+
+Both are reloaded into Postgres on every startup, exactly as §4 describes, so
+this is seed data and not a migration. Without them the two invoices are held
+for an unapproved vendor and never reach the balance check at all — the demo
+looks like it is working (two holds!) while demonstrating nothing.
+
+### 7o.3 Why the PO is `PO-7000-CONC` and not `PO-CONC-7000`
+
+The identifier originally asked for was `PO-CONC-7000`. It was renamed after
+the fixture was driven through the real pipeline, and the reason is worth
+keeping because it is a property of this codebase rather than of the fixture.
+
+`extraction.regex_extract`'s PO patterns require a **digit** immediately after
+the optional `PO-` prefix:
+
+```python
+r"(?:P\.?O\.?|purchase[ \t]*order)[ \t#:\-]*((?:PO[-–—_]?)?\d[\w\-\/]*)"
+```
+
+`PO-CONC-7000` has letters there, so it parses to **no PO reference at all**.
+That is harmless while Groq is answering — the LLM route reads the label fine
+— but the regex route is not a rare path: it is what runs whenever the text
+route fails, and Groq's free tier returns 429 readily. It was returning 429
+throughout the session that built this, which is how the problem was found.
+The failure is also the worst shape available: both invoices are held for "no
+explicit PO reference", so the demo silently becomes a demo of nothing.
+
+`PO-7000-CONC` satisfies both routes. **The regex was not changed** — a
+demo fixture is not a reason to touch extraction, and the pattern is correct
+about the reference shapes this application has always used.
+
+### 7o.4 A description must not end in a bare number
+
+The first version of the invoices carried a freight line described as
+`Delivery and handling - shipment 1 of 2`. Flattened to a text line, that
+trailing `2` sits directly against the numeric columns:
+
+```
+5 Delivery and handling - shipment 1 of 2 1 30.00 30.00
+```
+
+and the line-item check reads it as `2 x 130.00 = 260.00` against a stated
+`30.00`, so **every run failed the arithmetic check and was held** — the
+demo could never have worked. The descriptions no longer end in a digit
+(`Delivery and handling, partial shipment`). All twelve line items across the
+two invoices now parse with `qty x unit price == amount` and sum exactly to
+$4,000.
+
+This is a fixture bug, not a parser bug: a real invoice does not put a bare
+number at the end of a description column, and the checker is right to read
+the last three numbers on the line as quantity, price and amount.
+
+### 7o.5 Labelling them cost a test edit, and that is the only test change
+
+The sample list (`GET /api/sample-invoices`) enumerates the **directory**, so
+the two PDFs appeared the moment they were copied in — but as bare filenames,
+because the label, note and expected-verdict badge come from
+`manifest.json`.
+
+Adding manifest entries is not free, and the coupling is easy to miss:
+`test_samples.py` reads that manifest as its single source of truth, drives
+**every** entry through the pipeline in declared order, and ends on
+
+```python
+EXTRA_CHECKS[filename](result)
+```
+
+so a labelled sample with no entry in that dict raises `KeyError` — which it
+did, on the first attempt. Both now have one, in the shape `_check_split_a` /
+`_check_overflow` already use:
+
+- `_check_concurrency_a` — an untouched $7,000 order goes to $3,000, and
+  `is_partial is True`. Alone, it is an ordinary partial invoice.
+- `_check_concurrency_b` — meets a $3,000 balance with
+  `within_tolerance is False`.
+
+**Those two functions and the two dict lines are the whole test change.** No
+existing check was edited, loosened or reordered.
+
+### 7o.6 What was actually verified
+
+Driven through the real app over HTTP, against a throwaway schema (a real
+`MonkeyPatch` and an explicit `assert storage.PG_SCHEMA != "public"` first —
+§10's rule, which exists because ignoring it once cost a developer their run
+history):
+
+| Run | Result |
+|---|---|
+| Sequential, A then B | A **APPROVED**, B **NEEDS_REVIEW**, `PO-7000-CONC` left at **$3,000** |
+| Both at once, two threads through one `threading.Barrier` | **B approved, A held**, balance still **$3,000** |
+
+Either may win — the point is that exactly one did, and the ledger is right
+afterwards. **Both runs happened on the regex route**, because Groq was
+429-ing, which is precisely the case §7o.3's rename was made to survive.
+
+Suites re-run afterwards, against a local Postgres: `test_audit_trail`,
+`test_vendor_matching`, `test_line_items`, `test_allocations`,
+`test_po_edge_cases`, `test_reset_demo` — **128 passed**. `test_samples.py`:
+**13 of 14 passed**, the exception being `05_scanned_no_text.pdf` reporting
+`Vision extraction failed - rate limit / quota exhausted (429)` — the
+live-provider condition §10 has documented since Phase F, on a free tier of
+20 requests a day.
+
+### 7o.7 The sign-in box lost a line (`42b601f`)
+
+Unrelated to the fixtures, done in the same session: the sentence *"Access is
+scoped to your account's permissions."* under the **Sign in** heading was
+removed. `login.scopedNote` had exactly one reader, so its seven catalogue
+entries in `frontend-next/lib/i18n.tsx` went with it rather than staying
+behind as dead strings — the per-key fallback (§7i.3) means a key removed from
+every catalogue at once leaves nothing to fall back to and nothing to
+translate. `npx tsc --noEmit` clean, `npm run build` succeeds, and the string
+appears in zero files under `frontend-next/out/`.
+
+### 7o.8 Known limitations
+
+1. **The race needs two real sessions.** Nothing in the UI drives both
+   invoices at once; the demonstration is a person on two devices, or two
+   browser profiles, pressing Run within a second of each other. The
+   verification script that proved it lives in a scratchpad, not in the repo.
+2. **Whichever invoice loses is held, not rejected** — `NEEDS_REVIEW`, because
+   billing over a remaining balance is recoverable and tolerance is one-sided
+   (§3). Anyone expecting the word REJECTED on the losing run is expecting the
+   wrong verdict.
+3. **The two invoices are not history-independent**, exactly like the split-PO
+   trio: run them twice without `.\reset-demo.ps1` and the second pass meets a
+   drained PO, so both are held and the race cannot happen. The manifest notes
+   say so; the UI's amber dot marks them once they have been processed.
+4. **`sample-data/` is not in the container image.** The `Dockerfile` copies
+   `backend/`, `data/`, `sample_invoices/` and `scripts/`, so the deployed app
+   serves the two invoices from `sample_invoices/` and has no copy of the PO
+   document at all. That is correct — it is a document for a person to read,
+   not something the API serves — but it does mean the live site cannot show
+   it.
+5. **The seed rows need a Railway redeploy to reach the live site**, because
+   `data/*.json` is baked into the image and reloaded at startup (§4). Until
+   then the deployed app has no `PO-7000-CONC` and both invoices are held for
+   an unknown vendor.
+
+---
+
 ## 8. Authentication, authorization
 
 - **OAuth 2.0 resource-server pattern.** `Authorization: Bearer <JWT>`,
@@ -5632,7 +5824,9 @@ matter more than they did when every caller was an employee (§7g.12).
 
 ## 10. Testing
 
-**1,932 tests, 29 files.** Both Groq and Gemini mocked at the HTTP transport
+**2,015 tests, 33 files** (measured with `--collect-only` on 2026-08-24; every
+figure recorded here before that was already stale by more than the two cases
+§7o added). Both Groq and Gemini mocked at the HTTP transport
 boundary — the suite needs no API key, no network, no quota, only a reachable
 PostgreSQL (`DATABASE_URL`). `test_samples.py` is the deliberate exception:
 it honours a live key and exercises the real routes end-to-end.
@@ -5676,7 +5870,7 @@ signature verified, an actual signature actually verified.
 | `test_inferred_po.py` | 13 | distance cap, ambiguity guard |
 | `test_po_edge_cases.py` | 12 | split-PO, idempotency, reversal, PO-lock concurrency |
 | `test_reset_demo.py` | 11 | who may clear run history, what survives it |
-| `test_samples.py` | 10 | the 10 samples end to end, in manifest order |
+| `test_samples.py` | 14 | every sample end to end, in manifest order — including the two concurrency invoices §7o added |
 
 (Counts verified via `pytest --collect-only -q` on the current tree — not
 copied from an old table.)
@@ -5904,7 +6098,7 @@ object in place of pytest's `monkeypatch`. Its `setattr` did nothing, so
 deleting the run history that was there and inserting two demo rows. The two
 rows were removed again through `storage.clear_run_history()` after confirming
 `public` held nothing else, so the schema is now in the state `.\reset-demo.ps1`
-produces (empty history; the 9 POs and 8 vendors are seed data reloaded from
+produces (empty history; the 12 POs and 11 vendors are seed data reloaded from
 `data/*.json` and were never at risk). The lost history was demo run data, but
 it was still the developer's.
 
@@ -6400,7 +6594,7 @@ is already configured.
 
 ```powershell
 .\start.ps1                 # installs deps, generates samples, starts server, opens browser
-.\venv\Scripts\python.exe -m pytest tests\ -q      # 1,932 tests, no key/network needed
+.\venv\Scripts\python.exe -m pytest tests\ -q      # 2,015 tests, no key/network needed
 .\reset-demo.ps1             # clear run history (samples are order-dependent)
 .\reset-demo.ps1 -Replay     # clear, then drive all 10 samples through the API
 ```
@@ -6651,6 +6845,15 @@ Neither commit contains `claudee.md`.
 ### 13.3 Commits
 
 ```
+42b601f Drop the scoped-access line from the sign-in box
+8ace8d8 Label the concurrency samples like every other one
+7c6f820 Seed the concurrency PO, and make its invoices readable without a model
+df999b9 Add three sample PDFs for demonstrating the PO-balance race
+4eef7aa Drop the rejection-email section from the audit report
+8573cf2 Refuse an amount no column can hold, and a document that gives orders
+8d9b920 Notice what a correct total can hide, and what a document can carry
+720b767 Drop the provenance footer from the analytics screen
+9d111c8 Drop the three proportion bars from Decision overview
 8440871 Record why rapid refresh signed the user out
 216ae8c Stop a busy server from being read as an expired session
 191392c Let a burst of reads queue for a connection instead of failing
@@ -6712,9 +6915,9 @@ the code, verify against the code directly rather than trusting either.
 
 1. Read this file, then `README.md`.
 2. `git status` — expect only `claudee.md` UNTRACKED, and no uncommitted changes.
-   `git log --oneline -10` — expect `8440871` at the tip.
+   `git log --oneline -10` — expect `42b601f` at the tip.
    `git branch -vv` — expect `main` level with `origin/main`; everything through
-   `8440871` is committed AND pushed. **`claudee.md` is not part of the app;
+   `42b601f` is committed AND pushed. **`claudee.md` is not part of the app;
    leave it alone and keep it out of every commit** (§11.3).
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
 4. `.\venv\Scripts\python.exe -m pytest tests\ -q`
