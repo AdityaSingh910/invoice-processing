@@ -247,15 +247,6 @@ export default function LoginGate() {
     }
   }
 
-  /* The hero call to action does not sign anybody in -- there is nothing to
-     submit yet. On a narrow screen the form is below the fold, so it scrolls
-     there and puts the caret in the first field, which is the whole of what
-     "open it" can honestly mean before a credential exists. */
-  function focusForm() {
-    usernameRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    usernameRef.current?.focus({ preventScroll: true });
-  }
-
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#0a0a0c] text-white">
       {/* ------------------------------------------------------- background */}
@@ -297,37 +288,14 @@ export default function LoginGate() {
         </header>
 
         <main className="flex flex-1 items-center justify-center px-5 py-10 sm:px-8">
-          <div className="grid w-full max-w-[1140px] items-center gap-12 lg:grid-cols-[1.1fr_minmax(380px,0.9fr)] lg:gap-16">
-            {/* ----------------------------------------------------- hero */}
-            <section className="text-center lg:text-left">
-              <h1 className="text-[38px] leading-[1.05] font-semibold tracking-[-0.03em] sm:text-[52px] lg:text-[58px]">
-                {t("login.hero.title")}
-              </h1>
-
-              <p className="mx-auto mt-5 max-w-[520px] text-[15.5px] leading-relaxed text-white/55 lg:mx-0">
-                {t("login.hero.subtitle")}
-              </p>
-
-              <div className="mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-center lg:justify-start">
-                <button
-                  type="button"
-                  onClick={focusForm}
-                  className="group inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-white px-5
-                    text-[14px] font-semibold text-[#0a0a0c] transition-transform hover:-translate-y-px
-                    focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2
-                    focus-visible:outline-white/60"
-                >
-                  {t("login.hero.cta")}
-                  <span aria-hidden className="transition-transform group-hover:translate-x-0.5">
-                    &rarr;
-                  </span>
-                </button>
-              </div>
-
-            </section>
-
+          {/* One column, centred. The hero copy and its call to action are
+              gone: the button never signed anybody in -- there is nothing to
+              submit before a credential exists -- so it only scrolled to the
+              form it was sitting next to. With the form centred there is
+              nothing left for it to do. */}
+          <div className="w-full max-w-[400px]">
             {/* --------------------------------------------- authentication */}
-            <div className="mx-auto w-full max-w-[400px]">
+            <div className="w-full">
               <div className="rounded-2xl border border-white/[0.09] bg-white/[0.045] p-6 shadow-[0_28px_70px_-24px_rgba(0,0,0,0.9)] backdrop-blur-xl sm:p-7">
                 <h2 className="text-[21px] font-semibold tracking-[-0.02em]">{t("login.title")}</h2>
                 <p className="mt-1 text-[12.5px] text-white/45">{t("login.scopedNote")}</p>
