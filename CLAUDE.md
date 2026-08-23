@@ -6845,6 +6845,7 @@ Neither commit contains `claudee.md`.
 ### 13.3 Commits
 
 ```
+2ee4252 Record the concurrency demo fixtures and the sign-in trim
 42b601f Drop the scoped-access line from the sign-in box
 8ace8d8 Label the concurrency samples like every other one
 7c6f820 Seed the concurrency PO, and make its invoices readable without a model
@@ -6915,9 +6916,9 @@ the code, verify against the code directly rather than trusting either.
 
 1. Read this file, then `README.md`.
 2. `git status` — expect only `claudee.md` UNTRACKED, and no uncommitted changes.
-   `git log --oneline -10` — expect `42b601f` at the tip.
+   `git log --oneline -10` — expect `2ee4252` at the tip.
    `git branch -vv` — expect `main` level with `origin/main`; everything through
-   `42b601f` is committed AND pushed. **`claudee.md` is not part of the app;
+   `2ee4252` is committed AND pushed. **`claudee.md` is not part of the app;
    leave it alone and keep it out of every commit** (§11.3).
 3. Confirm `DATABASE_URL` is set and PostgreSQL is reachable.
 4. `.\venv\Scripts\python.exe -m pytest tests\ -q`
