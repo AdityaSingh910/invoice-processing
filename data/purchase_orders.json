@@ -105,6 +105,14 @@
         "amount": 500000.00
       }
     ]
+  },
+  {
+    "po_number": "PO-7000-CONC",
+    "vendor": "Keyboard Corporation",
+    "amount": 7000.00,
+    "currency": "USD",
+    "issued_date": "2026-08-03",
+    "status": "open",
+    "description": "Mechanical keyboards and peripherals, SF HQ refresh"
   }
 ]
-

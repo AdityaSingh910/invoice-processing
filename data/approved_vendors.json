@@ -8,5 +8,6 @@
   {"vendor_name": "Oscorp Materials", "vendor_id": "V-007", "status": "approved"},
   {"vendor_name": "LexCorp Studios", "vendor_id": "V-008", "status": "approved"},
   {"vendor_name": "Cyberdyne Systems", "vendor_id": "V-009", "status": "approved"},
-  {"vendor_name": "Acme Technologies", "vendor_id": "V-010", "status": "approved"}
+  {"vendor_name": "Acme Technologies", "vendor_id": "V-010", "status": "approved"},
+  {"vendor_name": "Keyboard Corporation", "vendor_id": "V-011", "status": "approved"}
 ]
