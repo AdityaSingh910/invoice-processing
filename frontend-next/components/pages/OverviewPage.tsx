@@ -46,8 +46,16 @@ import {
   IconRefresh,
   IconUpload,
 } from "@/components/ui/icons";
-import { LegendItem, SERIES, Sparkline, VolumeChart } from "@/components/charts";
+import { LegendItem, SERIES, VolumeChart } from "@/components/charts";
 import ResetDemoButton from "@/components/ResetDemoButton";
+
+/** Rows in each of the two lists on the middle row. */
+const FEED_ROWS = 5;
+
+/** How many purchase orders the landing screen shows before deferring to the
+ *  Reference register. Six fills the panel beside the activity feed without
+ *  setting the page's height on its own. */
+const PO_ROWS = 6;
 
 /** The vivid end of each tone, for the thin status rule on a feed row. */
 const TONE_VAR: Record<string, string> = {
@@ -86,11 +94,29 @@ export default function OverviewPage({
   const t = useMemo(() => totals(rows), [rows]);
   const days = useMemo(() => byDay(rows), [rows]);
   const valueIsRounded = compactMoneyIsRounded(t.valueProcessed);
-  const reasons = useMemo(() => topExceptionReasons(rows), [rows]);
+  /* Five causes and five events, so the two panels beside each other come out
+     roughly the same height -- a ranked cause is one line and a feed row is
+     two, so equal COUNTS would not have been equal panels. Both lists defer to
+     a fuller screen anyway: the ranking to Invoices, the feed to View all. */
+  const reasons = useMemo(() => topExceptionReasons(rows, FEED_ROWS), [rows]);
+  /**
+   * Purchase orders, most consumed first, and only the first few.
+   *
+   * The reference order is the order they were raised in, which is no order at
+   * all on a landing screen: nine rows of "0%" pushed the panel past every
+   * other thing on the page, and the one order actually running out of budget
+   * was wherever it happened to fall. Sort is stable, so a database where
+   * nothing has been billed yet still lists them exactly as it always did.
+   *
+   * The rest are one click away -- "View all" in the panel header goes to the
+   * Reference screen, which is the full register and always was.
+   */
   const pos = useMemo(
-    () => poUsage(rows, reference.data?.purchase_orders ?? []),
+    () =>
+      [...poUsage(rows, reference.data?.purchase_orders ?? [])].sort((a, b) => b.pct - a.pct),
     [rows, reference.data]
   );
+  const posShown = pos.slice(0, PO_ROWS);
   /**
    * "Recent activity" means the last things that HAPPENED, not the last things
    * that ARRIVED.
@@ -111,7 +137,7 @@ export default function OverviewPage({
     () =>
       [...rows]
         .sort((a, b) => lastTouched(b) - lastTouched(a))
-        .slice(0, 7),
+        .slice(0, FEED_ROWS),
     [rows]
   );
 
@@ -164,46 +190,74 @@ export default function OverviewPage({
       />
 
       <PageBody>
-        {/* --------------------------------------------------------- value strip
-            Processed volume, on its own.
+        {/* --------------------------------------------------------- value + volume
+            How much money went through, and how the outcomes fell out day by
+            day.
 
-            The four tiles that used to sit beside it -- the awaiting-review
-            hero, "Straight through", "Average run time" and "Rejected
-            outright" -- were removed at the owner's request. Nothing about
-            what they measured was wrong; the outcome split they carried is
-            still on the Volume chart directly below, the held count is still
-            the Review queue's own badge in the sidebar, and every one of the
-            four figures is reported in full on the Analytics screen. So this
-            removes a repetition, not a measurement. */}
-        {loading ? (
-          <Skeleton className="h-[116px]" />
-        ) : (
-          /* The tile is shortened to fit, so it says so rather than
-             presenting a rounded figure as the total: $17,991.00 drawn as
-             "$18.0k" is off by nine dollars, and the only way to find that out
-             was to add the invoices up by hand. The exact figure is in the
-             tooltip beside it.
+            They stay two panels rather than one because they answer over
+            DIFFERENT windows: the figure covers every run the API returned,
+            the chart covers the last fourteen days. One panel carrying both
+            would put a 14-day heading over an all-time number.
 
-             The hint names the OTHER approximation too. This sum adds `total`
-             across runs whatever currency each invoice is in (lib/metrics.ts
-             `totals()`), so a USD invoice and an AUD one land in the same
-             number -- a volume indicator, not a bookkeeping total. The
-             Analytics screen does not repeat it; the server reports value in a
-             bucket per currency. */
-          <Stat
-            label="Value processed"
-            value={`${valueIsRounded ? "≈" : ""}${compactMoney(t.valueProcessed)}`}
-            caption={`${money(t.valueApproved)} approved`}
-            icon={<IconInvoice size={12} />}
-            hint={`Shortened to fit. The exact figure is ${money(
-              t.valueProcessed
-            )}. It adds invoice totals together across currencies, so read it as processed volume rather than as a bookkeeping total.`}
-            spark={days.map((d) => d.total)}
-          />
-        )}
+            The card lost its sparkline in the same move, and not for space:
+            that line was drawn from `byDay().total`, which is a COUNT of
+            invoices per day, sitting directly beneath a figure in dollars --
+            two different measures over two different windows, stacked, with
+            nothing saying so. The chart immediately to its right already draws
+            those same daily counts, axed and labelled. */}
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)]">
+          {loading ? (
+            <Skeleton className="h-[196px]" />
+          ) : (
+            /* Centred, not spread. The card stretches to the height of the
+               chart beside it, and `justify-between` put the label at the top
+               of ~340px and the figure at the bottom of it -- a card that read
+               as two unrelated fragments with a hole between them. The three
+               lines are one thing, so they travel as one block. */
+            <Panel className="flex h-full flex-col justify-center">
+              <div className="flex items-start justify-between gap-2">
+                <span className="flex items-center gap-1.5">
+                  <span className="text-faint">
+                    <IconInvoice size={13} />
+                  </span>
+                  <span className="t-caption">Value processed</span>
+                </span>
+                {/* The figure is shortened to fit, so it says so rather than
+                    presenting a rounded number as the total: $17,991.00 drawn
+                    as "$18.0k" is off by nine dollars, and the only way to
+                    find that out was to add the invoices up by hand. The exact
+                    figure is in here.
 
-        {/* ------------------------------------------------------ volume + why */}
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
+                    The hint names the OTHER approximation too. This sum adds
+                    `total` across runs whatever currency each invoice is in
+                    (lib/metrics.ts `totals()`), so a USD invoice and an AUD
+                    one land in the same number -- a volume indicator, not a
+                    bookkeeping total. The Analytics screen does not repeat it;
+                    the server reports value in a bucket per currency. */}
+                <Tooltip
+                  label={`Shortened to fit. The exact figure is ${money(
+                    t.valueProcessed
+                  )}. It adds invoice totals together across currencies, so read it as processed volume rather than as a bookkeeping total.`}
+                >
+                  <span
+                    tabIndex={0}
+                    className="grid h-3.5 w-3.5 cursor-help place-items-center rounded-full border border-line text-[10px] text-faint"
+                  >
+                    ?
+                  </span>
+                </Tooltip>
+              </div>
+
+              <div className="mt-3">
+                <div className="t-display tnum">
+                  {valueIsRounded ? "≈" : ""}
+                  {compactMoney(t.valueProcessed)}
+                </div>
+                <p className="t-meta mt-1.5">{money(t.valueApproved)} approved</p>
+              </div>
+            </Panel>
+          )}
+
           <Panel>
             <PanelHeader
               title="Volume"
@@ -220,7 +274,27 @@ export default function OverviewPage({
               {loading ? <Skeleton className="h-[132px] w-full" /> : <VolumeChart data={days} />}
             </div>
           </Panel>
+        </div>
 
+        {/* ------------------------------------------------------- the two lists
+            Both panels answer "what happened" -- why the process stopped, and
+            what it last did -- so they sit on one row as a matched pair. They
+            used to be on two different rows, each paired with something of a
+            very different shape, which left the taller one dragging a column
+            of empty panel beside it.
+
+            They stretch to a common height rather than each taking its own:
+            one list is ranked causes and the other is a feed, so they are
+            never the same length, and left to themselves the shorter one
+            floats with a ragged hole beside it. Level bottom edges read as a
+            row; two different heights read as a mistake.
+
+            They pair at xl, not lg. At 1024 two columns leave each list about
+            300px, and a feed row carries a vendor, an invoice number, an
+            amount, a status and a time -- so the vendor, the only part a
+            person scans for, truncated to "U...". Below 1280 they stack and
+            each gets the full width. */}
+        <div className="grid gap-4 xl:grid-cols-2">
           <Panel flush>
             <PanelHeader
               bordered
@@ -277,74 +351,6 @@ export default function OverviewPage({
                   );
                 })}
               </ul>
-            )}
-          </Panel>
-        </div>
-
-        {/* ----------------------------------------------------- budgets + feed */}
-        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
-          <Panel flush>
-            <PanelHeader
-              bordered
-              title="Purchase order budgets"
-              description="Only approved invoices consume budget"
-              actions={
-                <Button size="xs" variant="ghost" onClick={() => onNavigate("reference")}>
-                  View all
-                </Button>
-              }
-            />
-            {reference.loading && !reference.data ? (
-              <div className="flex flex-col gap-3 p-4">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Skeleton key={i} className="h-7 w-full" />
-                ))}
-              </div>
-            ) : (
-              <DataTable minWidth={520}>
-                <thead>
-                  <tr>
-                    <TH>PO</TH>
-                    <TH>Vendor</TH>
-                    <TH align="right">Consumed</TH>
-                    <TH align="right">Remaining</TH>
-                    <TH className="w-[132px]">Utilisation</TH>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pos.map(({ po, consumed, remaining, pct, over }) => {
-                    const tone = over ? "bad" : pct >= 99.5 ? "warn" : "ok";
-                    return (
-                      <tr key={po.po_number}>
-                        <TD className="tnum text-[13.5px] font-medium">{po.po_number}</TD>
-                        <TD className="max-w-[150px] truncate text-[13.5px] text-muted">
-                          {po.vendor}
-                        </TD>
-                        <TD align="right" className="text-[13.5px] text-muted">
-                          {money(consumed)}
-                        </TD>
-                        <TD align="right" className="text-[13.5px] font-semibold">
-                          {money(remaining)}
-                        </TD>
-                        <TD>
-                          <div className="flex items-center gap-2">
-                            <Meter
-                              value={consumed}
-                              max={po.amount}
-                              tone={tone}
-                              height={4}
-                              ariaLabel={`${pct.toFixed(0)}% consumed`}
-                            />
-                            <span className="tnum w-8 shrink-0 text-right text-[12px] text-faint">
-                              {pct.toFixed(0)}%
-                            </span>
-                          </div>
-                        </TD>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </DataTable>
             )}
           </Panel>
 
@@ -424,67 +430,81 @@ export default function OverviewPage({
             )}
           </Panel>
         </div>
+
+        {/* ------------------------------------------------------------- budgets
+            Full width. It is a five-column table and it was squeezed into a
+            1.2fr column -- narrow enough to scroll sideways on a laptop, while
+            the shorter panel beside it ran out of rows and left a tall block
+            of nothing. */}
+          <Panel flush>
+            <PanelHeader
+              bordered
+              title="Purchase order budgets"
+              description={
+                pos.length > PO_ROWS
+                  ? `The ${PO_ROWS} most consumed of ${pos.length}. Only approved invoices consume budget.`
+                  : "Only approved invoices consume budget"
+              }
+              actions={
+                <Button size="xs" variant="ghost" onClick={() => onNavigate("reference")}>
+                  View all
+                </Button>
+              }
+            />
+            {reference.loading && !reference.data ? (
+              <div className="flex flex-col gap-3 p-4">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} className="h-7 w-full" />
+                ))}
+              </div>
+            ) : (
+              <DataTable minWidth={520}>
+                <thead>
+                  <tr>
+                    <TH>PO</TH>
+                    <TH>Vendor</TH>
+                    <TH align="right">Consumed</TH>
+                    <TH align="right">Remaining</TH>
+                    <TH className="w-[132px]">Utilisation</TH>
+                  </tr>
+                </thead>
+                <tbody>
+                  {posShown.map(({ po, consumed, remaining, pct, over }) => {
+                    const tone = over ? "bad" : pct >= 99.5 ? "warn" : "ok";
+                    return (
+                      <tr key={po.po_number}>
+                        <TD className="tnum text-[13.5px] font-medium">{po.po_number}</TD>
+                        <TD className="max-w-[150px] truncate text-[13.5px] text-muted">
+                          {po.vendor}
+                        </TD>
+                        <TD align="right" className="text-[13.5px] text-muted">
+                          {money(consumed)}
+                        </TD>
+                        <TD align="right" className="text-[13.5px] font-semibold">
+                          {money(remaining)}
+                        </TD>
+                        <TD>
+                          <div className="flex items-center gap-2">
+                            <Meter
+                              value={consumed}
+                              max={po.amount}
+                              tone={tone}
+                              height={4}
+                              ariaLabel={`${pct.toFixed(0)}% consumed`}
+                            />
+                            <span className="tnum w-8 shrink-0 text-right text-[12px] text-faint">
+                              {pct.toFixed(0)}%
+                            </span>
+                          </div>
+                        </TD>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </DataTable>
+            )}
+          </Panel>
       </PageBody>
     </>
-  );
-}
-
-/** One card of the reporting strip. */
-function Stat({
-  label,
-  value,
-  caption,
-  icon,
-  tone,
-  hint,
-  spark,
-  sparkTone,
-}: {
-  label: string;
-  value: string;
-  caption: string;
-  icon?: React.ReactNode;
-  tone?: "ok" | "bad";
-  hint?: string;
-  spark?: number[];
-  sparkTone?: string;
-}) {
-  return (
-    <Panel className="flex h-full flex-col justify-between">
-      <div className="flex items-center justify-between gap-2">
-        <span className="flex items-center gap-1.5">
-          <span className={tone === "ok" ? "text-ok" : tone === "bad" ? "text-bad" : "text-faint"}>
-            {icon}
-          </span>
-          <span className="t-caption">{label}</span>
-        </span>
-        {hint && (
-          <Tooltip label={hint}>
-            <span
-              tabIndex={0}
-              className="grid h-3.5 w-3.5 cursor-help place-items-center rounded-full border border-line text-[10px] text-faint"
-            >
-              ?
-            </span>
-          </Tooltip>
-        )}
-      </div>
-
-      <div className="mt-2.5 flex items-end justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="t-metric tnum">{value}</div>
-          <p className="t-meta mt-1 text-[12px] leading-snug">{caption}</p>
-        </div>
-        {/* The sparkline used to be hidden below 2xl: with four cards across
-            a laptop viewport the cell narrowed until the line overlapped the
-            caption beside it. The strip is one full-width card now, so there
-            is room for it at every width, and it can be drawn wider. */}
-        {spark && spark.some((v) => v > 0) && (
-          <div className="hidden shrink-0 sm:block">
-            <Sparkline values={spark} tone={sparkTone ?? "var(--accent)"} width={96} />
-          </div>
-        )}
-      </div>
-    </Panel>
   );
 }
