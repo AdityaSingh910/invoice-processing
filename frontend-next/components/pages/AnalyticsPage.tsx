@@ -76,7 +76,7 @@ import {
   IconInvoice,
   IconRefresh,
 } from "@/components/ui/icons";
-import { LegendItem, SERIES, SplitBar, VolumeChart } from "@/components/charts";
+import { LegendItem, SERIES, VolumeChart } from "@/components/charts";
 
 /** How many rows the two closing panels show. Named rather than inlined
  *  because the "showing N of M" line beneath each has to say the same number
@@ -250,14 +250,17 @@ export default function AnalyticsPage() {
         <Panel>
           <PanelHeader
             title="Decision overview"
-            // Framed on what the RULES decided, like the rest of this screen --
-            // an immutable record no later ruling rewrites. The ledger's own
-            // reading is the third bar below, where the two can be compared
-            // rather than confused.
+            // WHAT THE RULES DECIDED, not what the ledger currently reads.
+            // The two differ exactly where a person later moved a run, and the
+            // three proportion bars that used to sit under these counts were
+            // where that difference was visible. They were removed on request;
+            // the distinction still exists in the data and on the Invoices
+            // screen, so this description has to be the thing that says which
+            // of the two these numbers are.
             description="What the deterministic rules concluded, in this period"
           />
           {loading || !o ? (
-            <Skeleton className="mt-4 h-[160px]" />
+            <Skeleton className="mt-4 h-[92px]" />
           ) : o.volume.runs === 0 ? (
             <EmptyState
               compact
@@ -266,66 +269,26 @@ export default function AnalyticsPage() {
               description="Choose a wider range, or process an invoice."
             />
           ) : (
-            <>
-              <div className="mt-4 grid grid-cols-3 gap-4">
-                <HeadlineCount
-                  label="Approved"
-                  value={o.decisions.automated.APPROVED}
-                  total={o.volume.runs}
-                  color={SERIES.approved}
-                />
-                <HeadlineCount
-                  label="Review"
-                  value={o.decisions.automated.NEEDS_REVIEW}
-                  total={o.volume.runs}
-                  color={SERIES.needsReview}
-                />
-                <HeadlineCount
-                  label="Rejected"
-                  value={o.decisions.automated.REJECTED}
-                  total={o.volume.runs}
-                  color={SERIES.rejected}
-                />
-              </div>
-
-              {/* The three readings kept apart, because they are three
-                  different facts and this application treats them that way
-                  everywhere else: what the rules concluded (never rewritten),
-                  what a person then ruled, and what the PO ledger currently
-                  reads. */}
-              <div className="mt-5 flex flex-col gap-4 border-t border-line pt-4">
-                <MixRow
-                  title="Automated"
-                  hint="What the deterministic rules concluded. Never rewritten by a later ruling."
-                  total={o.volume.runs}
-                  segments={[
-                    { label: "Approved", value: o.decisions.automated.APPROVED, color: SERIES.approved },
-                    { label: "Held", value: o.decisions.automated.NEEDS_REVIEW, color: SERIES.needsReview },
-                    { label: "Rejected", value: o.decisions.automated.REJECTED, color: SERIES.rejected },
-                  ]}
-                />
-                <MixRow
-                  title="Human rulings"
-                  hint="What reviewers decided about the invoices they were handed."
-                  total={o.volume.runs}
-                  segments={[
-                    { label: "Accepted", value: o.decisions.human.ACCEPTED, color: SERIES.approved },
-                    { label: "Rejected", value: o.decisions.human.REJECTED, color: SERIES.rejected },
-                    { label: "Not reviewed", value: o.decisions.human.not_reviewed, color: "var(--line-strong)" },
-                  ]}
-                />
-                <MixRow
-                  title="Ledger status"
-                  hint="What the PO ledger currently reads. Differs from the automated row exactly where a person moved a run."
-                  total={o.volume.runs}
-                  segments={[
-                    { label: "Approved", value: o.decisions.status.APPROVED, color: SERIES.approved },
-                    { label: "Held", value: o.decisions.status.NEEDS_REVIEW, color: SERIES.needsReview },
-                    { label: "Rejected", value: o.decisions.status.REJECTED, color: SERIES.rejected },
-                  ]}
-                />
-              </div>
-            </>
+            <div className="mt-4 grid grid-cols-3 gap-4">
+              <HeadlineCount
+                label="Approved"
+                value={o.decisions.automated.APPROVED}
+                total={o.volume.runs}
+                color={SERIES.approved}
+              />
+              <HeadlineCount
+                label="Review"
+                value={o.decisions.automated.NEEDS_REVIEW}
+                total={o.volume.runs}
+                color={SERIES.needsReview}
+              />
+              <HeadlineCount
+                label="Rejected"
+                value={o.decisions.automated.REJECTED}
+                total={o.volume.runs}
+                color={SERIES.rejected}
+              />
+            </div>
           )}
         </Panel>
 
@@ -680,39 +643,6 @@ function HeadlineCount({
             nothing, the same rule every rate on this screen follows. */}
         {total > 0 ? `${formatPercent(value / total)} of ${formatCount(total)}` : "—"}
       </p>
-    </div>
-  );
-}
-
-/** A labelled proportion bar with its own counts beneath. */
-function MixRow({
-  title,
-  hint,
-  total,
-  segments,
-}: {
-  title: string;
-  hint: string;
-  total: number;
-  segments: { label: string; value: number; color: string }[];
-}) {
-  return (
-    <div>
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <Tooltip label={hint}>
-          <span tabIndex={0} className="t-caption cursor-help">
-            {title}
-          </span>
-        </Tooltip>
-        <span className="flex flex-wrap gap-2.5">
-          {segments
-            .filter((s) => s.value > 0)
-            .map((s) => (
-              <LegendItem key={s.label} color={s.color} label={s.label} value={s.value} />
-            ))}
-        </span>
-      </div>
-      <SplitBar segments={segments} total={total} ariaLabel={title} />
     </div>
   );
 }

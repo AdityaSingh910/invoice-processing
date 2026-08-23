@@ -5330,17 +5330,27 @@ Processing volume           the per-UTC-day chart
 Top vendors | Purchase order budgets      the smaller closing row
 ```
 
-Two things were kept that the sketch did not show, and both were checked with
-the owner rather than assumed:
+One thing was kept that the sketch did not show: **`Why invoices stop` was
+renamed to `Why invoices need attention`** and is otherwise the same panel,
+grouping by rule name rather than by reason sentence for the reason §7c.11
+gives.
 
-- **The three proportion bars stay inside Decision overview** — automated,
-  human rulings, ledger status. That is §3's central distinction (what the
-  rules concluded, never rewritten; what a person ruled; what the ledger
-  reads), and a screen showing one headline set of counts with no way to see
-  where those three disagree would flatten it.
-- **`Why invoices stop` was renamed to `Why invoices need attention`** and is
-  otherwise the same panel, grouping by rule name rather than by reason
-  sentence for the reason §7c.11 gives.
+**THE THREE PROPORTION BARS ARE GONE, AND THE FIRST VERSION OF THIS SECTION
+SAID THEY WOULD STAY.** Automated / human rulings / ledger status sat under the
+headline counts, and the argument for keeping them was that §3's central
+distinction — what the rules concluded (never rewritten), what a person ruled,
+what the ledger reads — is only visible where the three can be compared. The
+owner asked for them out, and that is their call to make; the paragraph is
+rewritten rather than deleted so the reasoning is on file if anyone wants them
+back.
+
+What follows from removing them is that **`Decision overview`'s counts are the
+AUTOMATED reading and nothing on that panel says where the ledger disagrees.**
+The panel description carries the whole weight of that now, which is why it
+reads "What the deterministic rules concluded" rather than anything shorter.
+The distinction itself is untouched everywhere it matters — `automated_decision`
+is still immutable, `status` still moves, the Invoices screen still shows both,
+and `/api/analytics/overview` still returns all three breakdowns.
 
 ### 7n.3 The closing row is capped, and says so
 
