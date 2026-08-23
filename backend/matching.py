@@ -1,6 +1,34 @@
 """PO matching, including split-PO balance tracking."""
+import json
+
 import config
 import storage
+
+
+def _po_line_items(po_row):
+    """The PO's own line items, or None when the PO does not itemise.
+
+    NULL and a malformed blob both read as None -- "this PO says nothing about
+    line items" -- because the rule that consumes this treats absence as "not
+    applicable" and passes. That is the safe direction: a PO whose JSON went bad
+    must not start holding every invoice against it, and it must not silently
+    read as an empty itemisation either, which would make every billed line look
+    like an item nobody ordered.
+
+    Guarded the same way analytics._loads guards runs.audit_json, for the same
+    reason: the column is TEXT, not JSONB, so one bad row must not take a
+    request down.
+    """
+    raw = _row_get(po_row, "line_items_json")
+    if not raw:
+        return None
+    try:
+        items = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(items, list):
+        return None
+    return [i for i in items if isinstance(i, dict)] or None
 
 
 def tolerance_for(amount: float) -> float:
@@ -144,6 +172,10 @@ def _position(po_row, exclude_run_id=None):
         "po_currency": _norm_currency(po_row.get("currency")),
         "source_file": _row_get(po_row, "source_file"),
         "source_row": _row_get(po_row, "source_row"),
+        # None for a PO that does not itemise, which is most of them. Flows into
+        # `allocations` for free, because each allocation is built as dict(p, ...),
+        # so a multi-PO invoice can be compared against every PO it named.
+        "po_line_items": _po_line_items(po_row),
         "consumed_before": round(consumed, 2),
         "remaining_before": round(po_row["amount"] - consumed, 2),
     }

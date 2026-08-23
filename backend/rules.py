@@ -1,5 +1,7 @@
 """Decision rules: required fields, vendor approval, duplicates, and the final
 aggregation of every check into one status + reasons trail."""
+import re
+
 import config
 import storage
 
@@ -180,6 +182,180 @@ def duplicate_check(extracted: dict, exclude_run_id=None):
             f"{dup['created_at'][:10]} (status {dup['status']})."
         )
     return None, "No prior run matches this vendor/invoice number/total combination."
+
+
+# --------------------------------------------------------------------------
+# Line-item agreement with the purchase order
+#
+# WHY THIS EXISTS, GIVEN THE PO BALANCE CHECK ALREADY RUNS
+#
+# Every money check before this one compares ONE number -- the invoice total --
+# against what the PO authorises. That is the right check and it catches
+# overbilling, but it is blind by construction to a rearrangement UNDERNEATH a
+# correct total: 8 laptops at 62,500 and 10 laptops at 50,000 are both 500,000,
+# so the balance check sees an exact match and every tolerance test passes. The
+# vendor has shipped two fewer machines and charged 25% more each, and nothing
+# above notices, because nothing above looks below the total.
+#
+# So this rule does not ask "is the total right". It asks "do the numbers that
+# PRODUCE the total agree with what was ordered".
+#
+# IT HOLDS, IT NEVER REJECTS. A quantity that differs is very often legitimate:
+# a partial shipment, a substituted part, a renegotiated price nobody put on the
+# PO. What it is not is something to approve unattended. Rejecting would also
+# turn a stale PO -- one the buyer agreed to vary by email -- into a bounced
+# invoice, which is a worse failure than a held one.
+#
+# IT IS SKIPPED, NOT FAILED, WHEN EITHER SIDE HAS NO LINE ITEMS. Most POs state
+# a total and nothing else, and the regex extraction route often reads no line
+# items at all. In both cases the honest answer is "there was nothing to
+# compare", and a check that failed on absence would hold nearly every invoice
+# this application already approves.
+# --------------------------------------------------------------------------
+
+LINE_ITEM_RULE = "Line items match the PO"
+
+# A money comparison needs a cent of slack for float representation, and no more
+# than that: this rule exists to notice a repriced line, so a real tolerance band
+# would defeat it. Quantities get a smaller epsilon because they are usually
+# whole numbers and occasionally fractional (hours, kilograms).
+_LINE_MONEY_EPSILON = 0.01
+_LINE_QTY_EPSILON = 0.001
+
+
+def normalise_item_name(name) -> str:
+    """Fold a line-item description to a comparable form.
+
+    Deliberately NOT storage.normalize_vendor_name: that one carries
+    vendor-specific rules (company suffixes and the like) and is the single
+    definition of vendor identity used to decide who sees whose invoices
+    (CLAUDE.md 7g.5). Borrowing it here would tie two unrelated notions of
+    sameness together, so that tightening one silently moves the other.
+
+    Punctuation and case are dropped and whitespace collapsed, so
+    "Laptop - Model X" and "laptop model x" are the same item. Nothing more
+    clever is attempted: a synonym table would be guessing at what a vendor
+    meant, and guessing wrong here means comparing two different products'
+    prices and reporting the difference as a discrepancy.
+    """
+    folded = re.sub(r"[^a-z0-9]+", " ", (name or "").strip().lower())
+    return " ".join(folded.split())
+
+
+def _num(v):
+    """A finite number, or None. Strings, bools, None and NaN all read as absent."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    return None if f != f else f
+
+
+def line_item_check(extracted: dict, po_match: dict) -> dict:
+    """Compare an invoice's line items against those of the PO(s) it names.
+
+    Returns {"applicable", "skipped_because", "compared", "findings"}.
+    `findings` is empty when everything agreed; each entry is
+    {"kind", "item", "detail"} where kind is one of:
+
+        quantity      the invoice bills a different number of units
+        unit_price    the invoice bills a different price per unit
+        line_total    quantity x unit_price does not equal the line's own amount
+        po_line_total the line's amount differs from what the PO authorised for it
+        unknown_item  the invoice bills for something the PO does not list
+
+    `line_total` is the one check that does not involve the PO at all -- it is
+    the line's internal arithmetic, and it is worth having separately because a
+    line that does not multiply out is wrong whoever ordered it. It therefore
+    runs even for a PO that does not itemise, which is the only part of this
+    rule that does.
+
+    A PO line the invoice never bills is NOT a finding. Billing less than was
+    ordered is a partial invoice, which this system treats as normal everywhere
+    else (tolerance is one-sided for exactly this reason).
+    """
+    findings = []
+    inv_items = [i for i in (extracted or {}).get("line_items") or [] if isinstance(i, dict)]
+
+    # Gather the PO side across every PO this invoice bound, so a multi-PO
+    # invoice can match a line to whichever order actually carries it.
+    po_items = []
+    for alloc in (po_match or {}).get("allocations") or []:
+        for item in alloc.get("po_line_items") or []:
+            po_items.append((alloc.get("po_number"), item))
+
+    if not inv_items:
+        return {"applicable": False, "compared": 0, "findings": [],
+                "skipped_because": "the invoice states no line items"}
+
+    # Internal arithmetic first: it needs no PO and is checked either way.
+    for item in inv_items:
+        qty = _num(item.get("quantity"))
+        price = _num(item.get("unit_price"))
+        amount = _num(item.get("amount"))
+        if qty is None or price is None or amount is None:
+            continue
+        expected = round(qty * price, 2)
+        if abs(expected - amount) > _LINE_MONEY_EPSILON:
+            findings.append({
+                "kind": "line_total",
+                "item": item.get("description") or "(unnamed line)",
+                "detail": ("{:g} x {:,.2f} = {:,.2f}, but the line states {:,.2f}"
+                           .format(qty, price, expected, amount)),
+            })
+
+    if not po_items:
+        return {"applicable": bool(findings), "compared": 0, "findings": findings,
+                "skipped_because": (None if findings
+                                    else "no purchase order on file states line items")}
+
+    # One queue per item name, popped as it is matched, so an invoice billing the
+    # same item on two lines is compared against two PO lines rather than the
+    # same one twice.
+    queues = {}
+    for po_number, item in po_items:
+        queues.setdefault(normalise_item_name(item.get("description")), []).append((po_number, item))
+
+    compared = 0
+    for item in inv_items:
+        name = item.get("description") or ""
+        queue = queues.get(normalise_item_name(name))
+        if not queue:
+            findings.append({
+                "kind": "unknown_item",
+                "item": name or "(unnamed line)",
+                "detail": "this line is not on any purchase order this invoice references",
+            })
+            continue
+
+        po_number, po_item = queue.pop(0)
+        compared += 1
+        label = "{} (against {})".format(name or "(unnamed line)", po_number)
+
+        inv_qty, po_qty = _num(item.get("quantity")), _num(po_item.get("quantity"))
+        if inv_qty is not None and po_qty is not None and abs(inv_qty - po_qty) > _LINE_QTY_EPSILON:
+            findings.append({
+                "kind": "quantity", "item": label,
+                "detail": "purchase order authorises {:g}, invoice bills {:g}".format(po_qty, inv_qty),
+            })
+
+        inv_price, po_price = _num(item.get("unit_price")), _num(po_item.get("unit_price"))
+        if inv_price is not None and po_price is not None and abs(inv_price - po_price) > _LINE_MONEY_EPSILON:
+            findings.append({
+                "kind": "unit_price", "item": label,
+                "detail": ("purchase order price {:,.2f} per unit, invoice bills {:,.2f}"
+                           .format(po_price, inv_price)),
+            })
+
+        inv_amt, po_amt = _num(item.get("amount")), _num(po_item.get("amount"))
+        if inv_amt is not None and po_amt is not None and abs(inv_amt - po_amt) > _LINE_MONEY_EPSILON:
+            findings.append({
+                "kind": "po_line_total", "item": label,
+                "detail": ("purchase order authorises {:,.2f} for this line, invoice bills {:,.2f}"
+                           .format(po_amt, inv_amt)),
+            })
+
+    return {"applicable": True, "compared": compared, "findings": findings,
+            "skipped_because": None}
 
 
 def reevaluate_po_queue(po_number: str, triggered_by: int = None):
@@ -793,6 +969,33 @@ def decide(extract_info: dict, missing_fields, vendor_ok, vendor_detail,
                 "ok",
             )
 
+    # Line items, LAST among the PO checks and deliberately so: it asks a
+    # question that only makes sense once a PO has been bound and its total
+    # compared. Note it can fire on an invoice whose total matched the PO
+    # exactly -- that is the entire point of it, and why it cannot be folded
+    # into the balance check above.
+    li = line_item_check(extracted or {}, po_match)
+    if li["findings"]:
+        review = True
+        add(
+            "Line items do not agree with the purchase order. The invoice total may still "
+            "match what was authorised, so the balance checks above can pass while the "
+            "quantities or prices underneath them have changed. Confirm the delivery and "
+            "the agreed price before paying — "
+            + "; ".join(f"{f['item']}: {f['detail']}" for f in li["findings"][:5])
+            + (f" (and {len(li['findings']) - 5} more)" if len(li["findings"]) > 5 else ""),
+            "fail",
+        )
+    _check(
+        LINE_ITEM_RULE, not li["findings"],
+        ((f"{len(li['findings'])} line-item discrepancy(ies)"
+          + (f" across {li['compared']} compared line(s)" if li["compared"] else ""))
+         if li["findings"] else
+         (f"{li['compared']} line(s) compared; quantities, unit prices and line totals agree"
+          if li["compared"] else f"not compared — {li['skipped_because']}")),
+        reason="Invoice line items do not match the purchase order.",
+    )
+
     if reject:
         status = "REJECTED"
     elif review:
@@ -824,6 +1027,7 @@ _RULE_FIELDS = {
     "Currency match": ["currency", "total"],
     "Currency/amount not reused across currencies": ["currency", "total"],
     "PO remaining check": ["total"],
+    LINE_ITEM_RULE: ["line_items"],
     "Document is an invoice": ["vendor_name", "invoice_number", "total"],
 }
 
@@ -853,6 +1057,9 @@ _SUGGESTED_RESOLUTIONS = {
                        "approve or onboard the vendor.",
     "PO matched": "Confirm which purchase order this invoice belongs to, or request the PO "
                   "number from the vendor.",
+    LINE_ITEM_RULE: "Compare the invoice against the purchase order and the goods actually "
+                    "received, then confirm the quantities and unit prices with the buyer "
+                    "before paying — the total agreeing does not mean the order was met.",
     "Invoice-to-PO split stated": "Confirm the proposed split against the vendor's backup "
                                   "documentation before accepting.",
     "Currency match": "Convert manually and confirm the correct amount, or request an "

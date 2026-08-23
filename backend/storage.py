@@ -713,11 +713,20 @@ def init_db(reset_runs: bool = False):
                     status TEXT,
                     description TEXT,
                     source_file TEXT,
-                    source_row INTEGER
+                    source_row INTEGER,
+                    line_items_json TEXT
                 )"""
             )
+            # `line_items_json` is OPTIONAL and NULL for every PO that does not
+            # itemise. A PO row carries a total, and for most of procurement that
+            # is the whole of what was authorised; only some POs also state what
+            # the money buys. Stored as JSON text rather than a `po_line_items`
+            # table because nothing joins to it -- it is read once, with its PO,
+            # by the one rule that compares it, exactly as `runs.stages_json` is
+            # (see CLAUDE.md section 4 on why that is not a table either).
             _ensure_columns(conn, "purchase_orders",
-                            {"source_file": "TEXT", "source_row": "INTEGER"})
+                            {"source_file": "TEXT", "source_row": "INTEGER",
+                             "line_items_json": "TEXT"})
 
             cur.execute(
                 """CREATE TABLE IF NOT EXISTS vendors (
@@ -1366,14 +1375,19 @@ def init_db(reset_runs: bool = False):
                 row_no = po.get("source_row")
                 if row_no is None:
                     row_no = i + 1
+                # A PO that does not itemise stores NULL, not "[]" -- "this PO
+                # says nothing about line items" and "this PO states it has none"
+                # are different claims, and only the first is true here.
+                items = po.get("line_items")
                 cur.execute(
                     """INSERT INTO purchase_orders
                        (po_number, vendor, amount, currency, issued_date, status, description,
-                        source_file, source_row)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        source_file, source_row, line_items_json)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (po["po_number"], po["vendor"], po["amount"], po["currency"],
                      po["issued_date"], po["status"], po["description"],
-                     po.get("source_file") or source_file, row_no),
+                     po.get("source_file") or source_file, row_no,
+                     json.dumps(items) if items else None),
                 )
 
             with open(VENDOR_SEED) as f:

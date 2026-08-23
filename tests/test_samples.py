@@ -308,6 +308,85 @@ def _check_currency_collision(result):
     assert result["audit"]["currency"]["same_number_suspected"] is True
 
 
+def _check_prompt_injection(result):
+    """The invoice is otherwise flawless -- approved vendor, explicit PO, exact
+    amount, sound arithmetic -- so the hold has exactly one cause, and that is
+    what makes this case worth having.
+
+    Two properties matter and neither is "the injection was blocked":
+
+    1. The hostile text was TRANSCRIBED, not obeyed and not dropped. The prompt
+       instructs the model to copy such text into the field where it physically
+       appears, so a reviewer sees what the document actually said.
+    2. The verdict is NEEDS_REVIEW, never REJECTED. Auto-rejecting on a keyword
+       would hand anyone a way to block a competitor's payment by printing a
+       phrase on their invoice.
+
+    Note the guard is not what stops an injection from working -- the model has
+    no authority to begin with, and rules.decide() never sees it. The guard is
+    what puts a person in front of the document before money moves.
+    """
+    audit = result["audit"]
+    assert audit["rules_failed"] == ["Security screen"], (
+        "the ONLY failing check must be the security screen -- if anything else "
+        "fails, this sample has stopped isolating the injection"
+    )
+
+    security = [r["text"] for r in result["reasons"] if r["text"].startswith("SECURITY:")]
+    assert len(security) == 1, "the security finding must be stated once, plainly"
+
+    # Two payloads in two fields, so two findings under two different labels --
+    # the guard reports one finding per field, which is what keeps them
+    # distinguishable. They are asserted against the REASON TEXT because that
+    # is the sentence a reviewer actually reads; the audit records the count.
+    assert "decision tampering" in security[0]
+    assert "instruction override" in security[0]
+
+    screen = next(c for c in audit["rules"] if c["name"] == "Security screen")
+    assert screen["passed"] is False
+    assert "2 instruction-like finding" in screen["detail"]
+
+    # The document was transcribed, not sanitised: the reviewer sees the real text.
+    assert "auto-approve" in security[0]
+
+    # The PO was matched and covered in full -- the money was never the problem.
+    pm = result["po_match"]
+    assert pm["po_number"] == "PO-1010"
+    assert pm["within_tolerance"] is True
+
+    # Nothing was consumed: a held run charges no PO budget.
+    assert result["status"] == "NEEDS_REVIEW"
+
+
+
+def _check_line_item_mismatch(result):
+    """The invoice total is EXACTLY what the PO authorises, and it is still held.
+
+    That is the whole case, so the premise is asserted before the conclusion: if
+    the balance check ever stops reporting a zero variance here, this sample has
+    quietly become an ordinary over-budget invoice and proves nothing.
+
+    Held, not rejected. A short delivery at a revised price is something to ask
+    the buyer about; rejecting would bounce an invoice the buyer may already
+    have agreed to.
+    """
+    pm = result["po_match"]
+    assert pm["po_number"] == "PO-EDGE-001"
+    assert pm["diff"] == 0.0, "the premise: the total is not what is wrong here"
+    assert pm["within_tolerance"] is True
+
+    audit = result["audit"]
+    assert audit["rules_failed"] == ["Line items match the PO"], (
+        "every total-based check must pass; only the line-item rule may fail"
+    )
+
+    reason = next(r["text"] for r in result["reasons"] if r["level"] == "fail")
+    # The reviewer is told the actual figures, not merely that something differs.
+    assert "10" in reason and "8" in reason
+    assert "62,500" in reason and "50,000" in reason
+
+
+
 EXTRA_CHECKS = {
     "01_happy_path_acme.pdf": _check_happy_path,
     "02_split_po_globex_a.pdf": _check_split_a,
@@ -319,6 +398,8 @@ EXTRA_CHECKS = {
     "07_multi_po_wayne.pdf": _check_multi_po,
     "08_fx_match_oscorp.pdf": _check_fx_match,
     "09_currency_number_collision_lexcorp.pdf": _check_currency_collision,
+    "10_prompt_injection_cyberdyne.pdf": _check_prompt_injection,
+    "11_line_item_mismatch_acme_tech.pdf": _check_line_item_mismatch,
 }
 
 

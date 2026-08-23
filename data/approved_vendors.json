@@ -6,5 +6,7 @@
   {"vendor_name": "Stark Industrial Parts", "vendor_id": "V-005", "status": "approved"},
   {"vendor_name": "Wayne Facilities", "vendor_id": "V-006", "status": "approved"},
   {"vendor_name": "Oscorp Materials", "vendor_id": "V-007", "status": "approved"},
-  {"vendor_name": "LexCorp Studios", "vendor_id": "V-008", "status": "approved"}
+  {"vendor_name": "LexCorp Studios", "vendor_id": "V-008", "status": "approved"},
+  {"vendor_name": "Cyberdyne Systems", "vendor_id": "V-009", "status": "approved"},
+  {"vendor_name": "Acme Technologies", "vendor_id": "V-010", "status": "approved"}
 ]

@@ -79,5 +79,32 @@
     "issued_date": "2026-07-12",
     "status": "open",
     "description": "Post-production services"
+  },
+  {
+    "po_number": "PO-1010",
+    "vendor": "Cyberdyne Systems",
+    "amount": 3400.00,
+    "currency": "USD",
+    "issued_date": "2026-07-16",
+    "status": "open",
+    "description": "Q3 network hardware refresh"
+  },
+  {
+    "po_number": "PO-EDGE-001",
+    "vendor": "Acme Technologies",
+    "amount": 500000.00,
+    "currency": "INR",
+    "issued_date": "2026-07-18",
+    "status": "open",
+    "description": "Laptop procurement - 10 units",
+    "line_items": [
+      {
+        "description": "Laptop",
+        "quantity": 10,
+        "unit_price": 50000.00,
+        "amount": 500000.00
+      }
+    ]
   }
 ]
+
