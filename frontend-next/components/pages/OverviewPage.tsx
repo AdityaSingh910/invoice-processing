@@ -188,13 +188,20 @@ export default function OverviewPage({
           {loading ? (
             <Skeleton className="h-[196px]" />
           ) : (
-            /* Centred, not spread. The card stretches to the height of the
-               chart beside it, and `justify-between` put the label at the top
-               of ~340px and the figure at the bottom of it -- a card that read
-               as two unrelated fragments with a hole between them. The three
-               lines are one thing, so they travel as one block. */
-            <Panel className="flex h-full flex-col justify-center">
-              <div className="flex items-start justify-between gap-2">
+            /* Centred on both axes, not spread. The card stretches to the
+               height of the chart beside it, and `justify-between` put the
+               label at the top of ~340px and the figure at the bottom of it --
+               a card that read as two unrelated fragments with a hole between
+               them. The three lines are one thing, so they travel as one
+               block, and the block sits in the middle of the space it has
+               rather than hugging the top-left corner of it.
+
+               The hint marker travels WITH the label for the same reason:
+               pinned to the right edge by `justify-between` it read as
+               belonging to the card rather than to the caption it explains,
+               and left a centred block with one element off on its own. */
+            <Panel className="flex h-full flex-col items-center justify-center text-center">
+              <div className="flex items-center gap-1.5">
                 <span className="flex items-center gap-1.5">
                   <span className="text-faint">
                     <IconInvoice size={13} />
