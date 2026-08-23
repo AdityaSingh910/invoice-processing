@@ -16,8 +16,6 @@ import {
   byDay,
   compactMoney,
   compactMoneyIsRounded,
-  formatDuration,
-  formatPercent,
   poUsage,
   topExceptionReasons,
   totals,
@@ -43,15 +41,10 @@ import {
   Tooltip,
 } from "@/components/ui";
 import {
-  IconAlert,
-  IconArrowUp,
   IconCheck,
-  IconChevronRight,
-  IconClock,
   IconInvoice,
   IconRefresh,
   IconUpload,
-  IconX,
 } from "@/components/ui/icons";
 import { LegendItem, SERIES, Sparkline, VolumeChart } from "@/components/charts";
 import ResetDemoButton from "@/components/ResetDemoButton";
@@ -171,127 +164,43 @@ export default function OverviewPage({
       />
 
       <PageBody>
-        {/* ---------------------------------------------------------- hero + strip
-            The exception queue is the only figure here that means work, so it
-            gets its own panel and an action. The reporting figures sit beside
-            it as their own cards, spaced rather than butted together, so each
-            one reads as a separate measurement instead of a segmented bar. */}
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)]">
-          {loading ? (
-            <Skeleton className="h-[132px]" />
-          ) : (
-            <Panel
-              className={t.openExceptions > 0 ? "border-warn-line" : ""}
-              hover={t.openExceptions > 0}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] ${
-                      t.openExceptions > 0 ? "bg-warn-quiet text-warn" : "bg-ok-quiet text-ok"
-                    }`}
-                  >
-                    {t.openExceptions > 0 ? <IconAlert size={13} /> : <IconCheck size={13} />}
-                  </span>
-                  <span className="t-caption">Awaiting review</span>
-                </div>
-                {t.openExceptions > 0 && (
-                  <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-warn-vivid pulse-ring" />
-                )}
-              </div>
+        {/* --------------------------------------------------------- value strip
+            Processed volume, on its own.
 
-              <div className="mt-3 flex items-end gap-2.5">
-                <span className="t-display tnum">{t.openExceptions}</span>
-                <span className="t-meta mb-1">
-                  {t.openExceptions === 1 ? "invoice" : "invoices"}
-                </span>
-              </div>
+            The four tiles that used to sit beside it -- the awaiting-review
+            hero, "Straight through", "Average run time" and "Rejected
+            outright" -- were removed at the owner's request. Nothing about
+            what they measured was wrong; the outcome split they carried is
+            still on the Volume chart directly below, the held count is still
+            the Review queue's own badge in the sidebar, and every one of the
+            four figures is reported in full on the Analytics screen. So this
+            removes a repetition, not a measurement. */}
+        {loading ? (
+          <Skeleton className="h-[116px]" />
+        ) : (
+          /* The tile is shortened to fit, so it says so rather than
+             presenting a rounded figure as the total: $17,991.00 drawn as
+             "$18.0k" is off by nine dollars, and the only way to find that out
+             was to add the invoices up by hand. The exact figure is in the
+             tooltip beside it.
 
-              <p className="t-meta mt-1.5">
-                {t.openExceptions === 0
-                  ? "Nothing is blocked. Every invoice cleared the rules or was ruled on."
-                  : t.valueHeld > 0
-                    ? `${money(t.valueHeld)} of spend is held pending a decision.`
-                    : "Amounts could not be read on the held invoices."}
-              </p>
-
-              {t.openExceptions > 0 && (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="mt-3 w-full"
-                  onClick={() => onNavigate("invoices", { exceptionsOnly: true })}
-                  icon={<IconChevronRight size={13} />}
-                >
-                  Open review queue
-                </Button>
-              )}
-            </Panel>
-          )}
-
-          {loading ? (
-            <Skeleton className="h-[132px]" />
-          ) : (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <Stat
-                label="Straight through"
-                value={formatPercent(t.straightThroughRate)}
-                caption={`${t.approved} of ${t.runs} untouched`}
-                icon={<IconArrowUp size={12} />}
-                tone="ok"
-                hint="Share of all invoices the rules approved on their own. Runs a person accepted are excluded — a success, but not automation."
-                spark={days.map((d) => d.approved)}
-                sparkTone="var(--ok-vivid)"
-              />
-              {/* The tile is shortened to fit, so it says so rather than
-                  presenting a rounded figure as the total: $17,991.00 drawn
-                  as "$18.0k" is off by nine dollars, and the only way to
-                  find that out was to add the invoices up by hand. The exact
-                  figure is in the tooltip beside it.
-
-                  The hint names the OTHER approximation too. This sum adds
-                  `total` across runs whatever currency each invoice is in
-                  (lib/metrics.ts `totals()`), so a USD invoice and an AUD one
-                  land in the same number — a volume indicator, not a
-                  bookkeeping total. The Analytics screen does not repeat it;
-                  the server reports value in a bucket per currency. */}
-              <Stat
-                label="Value processed"
-                value={`${valueIsRounded ? "≈" : ""}${compactMoney(t.valueProcessed)}`}
-                caption={`${money(t.valueApproved)} approved`}
-                icon={<IconInvoice size={12} />}
-                hint={`Shortened to fit. The exact figure is ${money(
-                  t.valueProcessed
-                )}. It adds invoice totals together across currencies, so read it as processed volume rather than as a bookkeeping total.`}
-                spark={days.map((d) => d.total)}
-              />
-              <Stat
-                label="Average run time"
-                value={formatDuration(t.avgProcessingMs)}
-                caption="Extraction through decision"
-                icon={<IconClock size={12} />}
-                hint="Mean of the summed stage timings the pipeline recorded per run."
-              />
-              {/* Completes the outcome picture: the hero above counts what
-                  is HELD, "Straight through" counts what cleared, and this
-                  counts what a hard rule stopped outright. Without it the
-                  strip reported two of the three verdicts the process can
-                  reach. */}
-              <Stat
-                label="Rejected outright"
-                value={String(t.rejected)}
-                caption={
-                  t.runs > 0 ? `${formatPercent(t.rejected / t.runs)} of volume` : "None yet"
-                }
-                icon={<IconX size={12} />}
-                tone={t.rejected > 0 ? "bad" : undefined}
-                hint="Invoices a hard rule stopped — a duplicate, an unapproved vendor, a document that is not an invoice, or a currency-code error. These never reach a reviewer."
-                spark={days.map((d) => d.rejected)}
-                sparkTone="var(--bad-vivid)"
-              />
-            </div>
-          )}
-        </div>
+             The hint names the OTHER approximation too. This sum adds `total`
+             across runs whatever currency each invoice is in (lib/metrics.ts
+             `totals()`), so a USD invoice and an AUD one land in the same
+             number -- a volume indicator, not a bookkeeping total. The
+             Analytics screen does not repeat it; the server reports value in a
+             bucket per currency. */
+          <Stat
+            label="Value processed"
+            value={`${valueIsRounded ? "≈" : ""}${compactMoney(t.valueProcessed)}`}
+            caption={`${money(t.valueApproved)} approved`}
+            icon={<IconInvoice size={12} />}
+            hint={`Shortened to fit. The exact figure is ${money(
+              t.valueProcessed
+            )}. It adds invoice totals together across currencies, so read it as processed volume rather than as a bookkeeping total.`}
+            spark={days.map((d) => d.total)}
+          />
+        )}
 
         {/* ------------------------------------------------------ volume + why */}
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
@@ -566,13 +475,13 @@ function Stat({
           <div className="t-metric tnum">{value}</div>
           <p className="t-meta mt-1 text-[12px] leading-snug">{caption}</p>
         </div>
-        {/* The sparkline is supporting detail, and it is the first thing to
-            go when the cell narrows: at four cells across a laptop viewport it
-            was overlapping the caption it sits beside. Shown only from 2xl,
-            where the cells are wide enough to carry both. */}
+        {/* The sparkline used to be hidden below 2xl: with four cards across
+            a laptop viewport the cell narrowed until the line overlapped the
+            caption beside it. The strip is one full-width card now, so there
+            is room for it at every width, and it can be drawn wider. */}
         {spark && spark.some((v) => v > 0) && (
-          <div className="hidden shrink-0 2xl:block">
-            <Sparkline values={spark} tone={sparkTone ?? "var(--accent)"} width={56} />
+          <div className="hidden shrink-0 sm:block">
+            <Sparkline values={spark} tone={sparkTone ?? "var(--accent)"} width={96} />
           </div>
         )}
       </div>
