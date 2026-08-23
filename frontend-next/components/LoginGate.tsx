@@ -300,12 +300,7 @@ export default function LoginGate() {
           <div className="grid w-full max-w-[1140px] items-center gap-12 lg:grid-cols-[1.1fr_minmax(380px,0.9fr)] lg:gap-16">
             {/* ----------------------------------------------------- hero */}
             <section className="text-center lg:text-left">
-              <span className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/[0.04] px-3 py-1 text-[11.5px] font-medium text-white/60">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                {t("login.eyebrow")}
-              </span>
-
-              <h1 className="mt-5 text-[38px] leading-[1.05] font-semibold tracking-[-0.03em] sm:text-[52px] lg:text-[58px]">
+              <h1 className="text-[38px] leading-[1.05] font-semibold tracking-[-0.03em] sm:text-[52px] lg:text-[58px]">
                 {t("login.hero.title")}
               </h1>
 
