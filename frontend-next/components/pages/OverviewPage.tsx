@@ -15,7 +15,6 @@ import { amount, money, whenCompact } from "@/lib/format";
 import {
   byDay,
   compactMoney,
-  compactMoneyIsRounded,
   poUsage,
   totals,
 } from "@/lib/metrics";
@@ -91,7 +90,6 @@ export default function OverviewPage({
   const rows = useMemo(() => runs.data ?? [], [runs.data]);
   const t = useMemo(() => totals(rows), [rows]);
   const days = useMemo(() => byDay(rows), [rows]);
-  const valueIsRounded = compactMoneyIsRounded(t.valueProcessed);
   const pos = useMemo(
     () =>
       [...poUsage(rows, reference.data?.purchase_orders ?? [])].sort((a, b) => b.pct - a.pct),
@@ -231,7 +229,6 @@ export default function OverviewPage({
 
               <div className="mt-3">
                 <div className="t-display tnum">
-                  {valueIsRounded ? "≈" : ""}
                   {compactMoney(t.valueProcessed)}
                 </div>
                 <p className="t-meta mt-1.5">{money(t.valueApproved)} approved</p>
