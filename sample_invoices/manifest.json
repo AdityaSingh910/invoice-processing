@@ -74,14 +74,18 @@
   },
   "12_concurrency_race_keyboard_a.pdf": {
     "label": "Concurrency race — 1 of 2",
-    "note": "$4,000 against an untouched PO-7000-CONC; leaves $3,000",
+    "note": "$4,000 against a $7,000 PO that the invoice below also claims. Run both at once: the PO row lock decides which one wins, and it is genuinely either.",
     "expect": "APPROVED",
-    "order": 13
+    "order": 13,
+    "outcome": "race",
+    "race_group": "PO-7000-CONC"
   },
   "13_concurrency_race_keyboard_b.pdf": {
     "label": "Concurrency race — 2 of 2",
-    "note": "The same $4,000 claim against $3,000 left. Send both at once from two sessions and only one can win",
+    "note": "The same $4,000 claim against the same $7,000 PO. Together they want $8,000, so only one can be approved -- whichever transaction reaches the lock first.",
     "expect": "NEEDS_REVIEW",
-    "order": 14
+    "order": 14,
+    "outcome": "race",
+    "race_group": "PO-7000-CONC"
   }
 }

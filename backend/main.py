@@ -2501,11 +2501,38 @@ def list_sample_invoices(principal: auth.Principal = Security(auth.current_princ
         expect = meta.get("expect")
         if vision and meta.get("expect_with_vision"):
             expect = meta["expect_with_vision"]
+        outcome = meta.get("outcome")
+
+        # A RACE SAMPLE HAS NO PREDICTABLE VERDICT, SO IT IS NOT GIVEN ONE.
+        #
+        # The two concurrency invoices both charge $4,000 to one $7,000 PO.
+        # Which of them is approved is decided by which transaction reaches the
+        # `SELECT ... FOR UPDATE` on the purchase_orders row first
+        # (storage.save_run_checked) -- it is genuinely either, and it really
+        # does come out the other way round depending on scheduling.
+        #
+        # `expect` stays in the manifest because tests/test_samples.py drives
+        # the samples SEQUENTIALLY, and run in order the outcomes really are
+        # APPROVED then NEEDS_REVIEW. That assertion is still true and is not
+        # weakened here. What is wrong is *showing* a sequential outcome to
+        # someone about to run them concurrently: it reads as a prediction, and
+        # when the race goes the other way the badge contradicts the run sitting
+        # next to it -- the exact failure the `vision` branch above exists to
+        # avoid, arriving through a different door.
+        #
+        # Dropped SERVER-SIDE rather than hidden in the component, because not
+        # sending a verdict is a stronger guarantee than remembering not to
+        # render one -- the same reasoning portal.py applies to its projections.
+        if outcome == "race":
+            expect = None
+
         items.append({
             "filename": name,
             "label": meta.get("label"),
             "note": meta.get("note"),
             "expect": expect,
+            "outcome": outcome,
+            "race_group": meta.get("race_group"),
             "order": meta.get("order", 999),
         })
     items.sort(key=lambda i: (i["order"], i["filename"]))

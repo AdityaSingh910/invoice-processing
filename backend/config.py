@@ -181,11 +181,72 @@ FX_RATES = {
 
 # Google Gemini via Google AI Studio -- the VISION route.
 API_KEY_ENV = "GEMINI_API_KEY"
+GEMINI_MODEL_ENV = "GEMINI_MODEL"
 # Pinned to a specific version, not the "gemini-flash-latest" alias: an alias
 # silently changes the model under a running system, and an AP process has to
 # be able to say which model read an invoice that was approved months ago.
-# gemini-2.0-flash was retired -- the API returns 404 for it.
-EXTRACTION_MODEL = "gemini-3.7-flash"
+# gemini-2.0-flash was retired -- the API returns 404 for it, and so is
+# gemini-2.5-flash as of 2026-08.
+EXTRACTION_MODEL = "gemini-3.6-flash"
+
+# ...and the ones to try after it, in order, each pinned just as exactly.
+#
+# THE FALLBACK LIST STRENGTHENS THE PINNING ARGUMENT ABOVE RATHER THAN
+# WEAKENING IT. The objection to `gemini-flash-latest` is that nobody can say
+# afterwards which model read the invoice. That objection is about the ALIAS
+# hiding the answer, not about there being more than one candidate: every entry
+# here is an exact version, only one of them ever answers a given run, and the
+# one that did is recorded on the run (`audit.extraction.model`). An auditor
+# still gets a specific model name for a specific invoice.
+#
+# It exists because a single pinned model is a single point of failure on a
+# route that has no local fallback. The text route degrades to regex when Groq
+# refuses (§3); vision has nothing underneath it, so a 429 or a 503 on the one
+# configured model means a scanned invoice reads as "nothing usable" and lands
+# in the review queue looking like a broken product rather than a busy provider.
+# Measured on 2026-08-24 against 05_scanned_no_text.pdf: 3.7 returned 503
+# "high demand", then 429 once its free-tier daily quota was spent, while 3.6
+# and 3.5 both read the invoice correctly in ~8s. Free-tier quota is per model
+# per day, so three pinned models are three separate budgets.
+#
+# ALL FIVE WERE MEASURED AGAINST THE ACTUAL SCANNED SAMPLE, not assumed from a
+# model card: every one returned the correct vendor, invoice number and total
+# off 05_scanned_no_text.pdf. Reading a rasterised invoice is not a hard task,
+# which is what makes a long chain worth having -- each entry is a genuine
+# fallback rather than a degraded guess.
+#
+# Ordered by CAPABILITY, not by speed. The `-lite` models were the fastest of
+# the eight tested (3.1s against 8.4s) and read this sample perfectly, but this
+# sample is a clean single-column invoice; a dense or messy one is where the
+# fuller models earn their place. Speed is worth having fourth, not first.
+#
+# An ALIAS -- `gemini-flash-latest` -- also works and would never 404. It is
+# deliberately NOT here: an alias records "gemini-flash-latest" in the audit
+# trail, which does not answer "which model read this invoice", and that is the
+# whole property the pinning above exists to preserve. An operator who wants it
+# anyway can set GEMINI_MODEL, which is an explicit, local decision rather than
+# a silent default.
+EXTRACTION_MODEL_FALLBACKS = (
+    "gemini-3.7-flash",         # newest full flash
+    "gemini-3.5-flash",         # previous full flash
+    "gemini-3.5-flash-lite",    # fastest of the eight measured
+    "gemini-3.1-flash-lite",    # oldest still-serving lite
+)
+
+
+def vision_models():
+    """Every Gemini model to try for one extraction, best first.
+
+    Read at CALL time, like every other setting in this file, so `.env` is
+    actually consulted (see the note at the top of the environment section).
+    `GEMINI_MODEL` pins one model and disables the fallback entirely -- an
+    operator who names a model means that model, and quietly reading a
+    different one would be the alias problem wearing a different hat.
+    """
+    override = os.environ.get(GEMINI_MODEL_ENV, "").strip()
+    if override:
+        return (override,)
+    return (EXTRACTION_MODEL,) + EXTRACTION_MODEL_FALLBACKS
 
 # Groq -- the TEXT route.
 GROQ_API_KEY_ENV = "GROQ_API_KEY"
@@ -466,12 +527,26 @@ CONTENT_SECURITY_POLICY = (os.environ.get("CONTENT_SECURITY_POLICY", "").strip()
 # provider -- text drops to regex, scans go to route "none" and therefore to a
 # human. No new decision semantics; the same paths a provider outage takes.
 #
-# Defaults leave real headroom: the vision budget matches the free tier exactly
-# so the breaker trips at the same moment the provider would start refusing,
+# Defaults leave real headroom: the vision budget is sized to the free tier so
+# the breaker trips at roughly the moment the provider would start refusing,
 # and the text budget is generous because Groq is not the scarce one.
+#
+# THE VISION FIGURE WAS 20, MATCHING ONE MODEL'S FREE TIER, AND THAT BECAME THE
+# WRONG NUMBER WHEN THE FALLBACK CHAIN LANDED. Gemini's free-tier daily limit is
+# per MODEL, and vision_models() now names five of them, so the provider keeps
+# serving long after twenty requests -- it just serves them from the next model
+# along. Leaving the breaker at 20 would have made THIS counter the binding
+# limit rather than the provider, which inverts what it is for: it exists to
+# trip when the provider is about to refuse, not before the provider has been
+# meaningfully asked. A scanned invoice would then be held for a human with
+# "the daily budget is spent" while four untouched models sat behind it.
+#
+# 100 is five buckets at the documented 20/day floor. It is a FLOOR rather than
+# a measurement -- some flash-lite models publish considerably more -- so this
+# stays conservative on purpose, and is env-overridable like everything here.
 # --------------------------------------------------------------------------
 DAILY_QUOTA_ENABLED = os.environ.get("DAILY_QUOTA_ENABLED", "1").strip() not in ("0", "false", "False", "")
-DAILY_QUOTA_VISION = int(os.environ.get("DAILY_QUOTA_VISION", "20") or 20)
+DAILY_QUOTA_VISION = int(os.environ.get("DAILY_QUOTA_VISION", "100") or 100)
 DAILY_QUOTA_TEXT = int(os.environ.get("DAILY_QUOTA_TEXT", "500") or 500)
 # The assistant's own daily budget (Phase K2), kept SEPARATE from the text
 # budget above even though both spend Groq. If chat drew on DAILY_QUOTA_TEXT,
@@ -1134,6 +1209,14 @@ def refresh_env_settings():
     global RATE_LIMIT_PORTAL_PER_MINUTE, RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE
     global RATE_LIMIT_NOTIFY_PER_MINUTE
     global DAILY_QUOTA_PORTAL_SUBMISSIONS
+    # The other three daily budgets were bound at import and never rebound --
+    # the same defect this function's docstring describes, still present for
+    # them because Phase K's sweep listed the RATE_LIMIT_* family and the
+    # portal budget but not these. The consequence is the one that matters
+    # most for the scarce route: DAILY_QUOTA_VISION set in .env was silently
+    # ignored, so an operator raising the vision budget after a scanned
+    # invoice was refused would see no change and no explanation.
+    global DAILY_QUOTA_VISION, DAILY_QUOTA_TEXT, DAILY_QUOTA_CHAT
     global TRUST_PROXY_HEADERS, AUTH_ISSUER, AUTH_TOKEN_TTL_MINUTES
     global SECURITY_HEADERS_ENABLED, HSTS_MAX_AGE_SECONDS, CONTENT_SECURITY_POLICY
 
@@ -1160,6 +1243,13 @@ def refresh_env_settings():
     RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE = _int("RATE_LIMIT_PORTAL_SUBMIT_PER_MINUTE", 5)
     RATE_LIMIT_NOTIFY_PER_MINUTE = _int("RATE_LIMIT_NOTIFY_PER_MINUTE", 10)
     DAILY_QUOTA_PORTAL_SUBMISSIONS = _int("DAILY_QUOTA_PORTAL_SUBMISSIONS", 25)
+    # Defaults repeated from the module-level bindings above rather than
+    # referenced, because `_int` falls back to this value when the variable is
+    # absent or unparseable -- passing the current binding would make a bad
+    # value sticky instead of returning it to the documented default.
+    DAILY_QUOTA_VISION = _int("DAILY_QUOTA_VISION", 100)
+    DAILY_QUOTA_TEXT = _int("DAILY_QUOTA_TEXT", 500)
+    DAILY_QUOTA_CHAT = _int("DAILY_QUOTA_CHAT", 300)
     TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "").strip() in (
         "1", "true", "True")
     AUTH_ISSUER = os.environ.get("AUTH_ISSUER", "invoice-processing")

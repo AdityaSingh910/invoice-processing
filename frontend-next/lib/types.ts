@@ -281,7 +281,17 @@ export interface SampleInvoice {
   filename: string;
   label?: string;
   note?: string;
+  /** The verdict this sample is documented to produce — absent when there is
+   *  no single right answer to document. See `outcome`. */
   expect?: Verdict;
+  /** `"race"` marks a sample that CONTENDS with the others in its `raceGroup`
+   *  for one PO's balance. The server sends no `expect` for these, because
+   *  which one wins is decided by whichever transaction reaches the PO row
+   *  lock first — genuinely either, and different between runs. */
+  outcome?: "race";
+  /** Which contended resource this sample races for. Samples sharing a group
+   *  are meant to be started together. */
+  race_group?: string;
 }
 
 /** What language a response was rendered in, and what else is on offer.

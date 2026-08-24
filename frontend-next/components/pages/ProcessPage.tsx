@@ -301,6 +301,71 @@ export default function ProcessPage({
   const processed = new Set((runs?.data ?? []).map((r) => r.filename));
   const alreadyRun = (samples ?? []).filter((s) => processed.has(s.filename)).length;
 
+  /**
+   * The MOST RECENT run per filename — what actually happened, as opposed to
+   * what a sample is documented to do.
+   *
+   * `list_runs` is `ORDER BY id DESC`, so the first row seen for a filename is
+   * its latest run and later ones are earlier attempts. That matters here
+   * specifically because a race can be re-run to get the other outcome: the
+   * card has to show THIS run's verdict, not the first one ever recorded.
+   */
+  const latestByFilename = new Map<string, RunRecord>();
+  for (const r of runs?.data ?? []) {
+    if (!latestByFilename.has(r.filename)) latestByFilename.set(r.filename, r);
+  }
+
+  const pickedSample = (samples ?? []).find((s) => s.filename === picked);
+  const raceGroup = pickedSample?.outcome === "race" ? pickedSample.race_group : undefined;
+  const raceField = (samples ?? []).filter(
+    (s) => s.outcome === "race" && s.race_group && s.race_group === raceGroup
+  );
+
+  /**
+   * Start every invoice in one race group at once.
+   *
+   * This is not a special processing path and it is not a simulation: it is
+   * `startRun` per file, exactly what the single Run button does, dispatched
+   * together so the requests are in flight at the same time. Each lands on its
+   * own worker, runs the same nine stages, and commits through the same
+   * `save_run_checked` — where the loser blocks on the `SELECT ... FOR UPDATE`
+   * held by the winner, re-reads the balance, and is held for review.
+   *
+   * Nothing here decides the outcome, and nothing here can: this function does
+   * not know which invoice is which, and both requests are identical in kind.
+   * The winner is whichever transaction reaches the PO row lock first.
+   *
+   * The main panel follows the FIRST job so the stage list has something to
+   * show; both verdicts arrive on the sample cards from the register, which
+   * `onRan()` refreshes when the followed job settles.
+   */
+  async function runRace() {
+    if (!raceField.length || running) return;
+    setRunning(true);
+    setError(null);
+    setStages([]);
+    setResult(null);
+    try {
+      const files = await Promise.all(
+        raceField.map(async (s) => {
+          const res = await apiFetch(`/api/sample-invoices/${encodeURIComponent(s.filename)}`);
+          if (!res.ok) throw new Error(`${s.label || s.filename} could not be loaded.`);
+          return new File([await res.blob()], s.filename, { type: "application/pdf" });
+        })
+      );
+      // Dispatched together, deliberately: awaiting them in sequence would put
+      // a full round trip between the two uploads and the second would very
+      // often find the first already committed, which is not a race.
+      const jobs = await Promise.all(files.map((f) => startRun(f)));
+      jobs.forEach((j) => startedHere.current.add(j.job_id));
+      rememberJob(jobs[0].job_id);
+      setJobId(jobs[0].job_id);
+    } catch (e) {
+      setRunning(false);
+      setError(e instanceof Error ? e.message : "The race could not be started.");
+    }
+  }
+
   // A rejection whose findings cite an earlier run is the duplicate rule
   // firing, which for a sample almost always means it has simply been run
   // before. Detected from the reasons the engine emitted, never guessed.
@@ -529,6 +594,29 @@ export default function ProcessPage({
                   >
                     {running ? "Processing" : file ? "Run the process" : "Choose a file to begin"}
                   </Button>
+
+                  {/* Only when a contended sample is selected. Running one of a
+                      race on its own is a legitimate thing to do — it is just
+                      an ordinary partial invoice — so this is offered beside
+                      the normal button rather than replacing it. */}
+                  {raceField.length > 1 && (
+                    <>
+                      <Button
+                        variant="secondary"
+                        className="mt-2 h-9 w-full"
+                        onClick={runRace}
+                        disabled={running}
+                      >
+                        {`Run both at once — race for ${raceGroup}`}
+                      </Button>
+                      <p className="t-meta mt-2 text-[12px] leading-snug">
+                        Sends {raceField.length} invoices in the same instant. Both charge $4,000
+                        to a $7,000 order, so only one can be approved — the winner is whichever
+                        transaction reaches the PO row lock first, and it is genuinely either.
+                        Run it again to see it go the other way.
+                      </p>
+                    </>
+                  )}
                 </Panel>
               </div>
 
@@ -582,6 +670,12 @@ export default function ProcessPage({
                 {samples?.map((s) => {
                   const active = picked === s.filename;
                   const already = processed.has(s.filename);
+                  // A race sample carries no `expect` from the server (see
+                  // list_sample_invoices), so it shows what it ACTUALLY did
+                  // last time, or nothing at all if it has not run yet.
+                  // Everything else keeps the documented badge it always had.
+                  const isRace = s.outcome === "race";
+                  const actual = isRace ? latestByFilename.get(s.filename)?.status : undefined;
                   return (
                     <button
                       key={s.filename}
@@ -605,14 +699,28 @@ export default function ProcessPage({
                                 so the full warning appeared ten times down the
                                 page and stopped meaning anything. The panel
                                 description below explains the marker once. */}
-                          {already && (
+                          {/* A race sample is MEANT to be run more than once —
+                              re-running is how you get the other outcome — so
+                              the duplicate warning would be wrong on it. Its
+                              two invoices carry different invoice numbers and
+                              charge the same PO, so a second pass is a fresh
+                              race, not a resubmission. */}
+                          {already && !isRace && (
                             <span
                               title="Already processed — running it again will be rejected as a duplicate"
                               aria-label="Already processed"
                               className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn-vivid"
                             />
                           )}
-                          {s.expect && <StatusBadge status={s.expect} />}
+                          {isRace ? (
+                            actual ? (
+                              <StatusBadge status={actual} />
+                            ) : (
+                              <Badge tone="neutral">Ready to run</Badge>
+                            )
+                          ) : (
+                            s.expect && <StatusBadge status={s.expect} />
+                          )}
                         </span>
                       </span>
                       {/* Clamped to two lines. These notes explain a scenario in

@@ -1222,6 +1222,13 @@ def build_audit(status, checks, reasons, extract_info, po_match, extracted=None,
         "extraction": {
             "route": info.get("route"),
             "provider": info.get("provider"),
+            # WHICH pinned model actually answered. The provider offers several
+            # (config.vision_models()) and falls through to the next when one is
+            # retired, throttled or overloaded, so "the configured model" and
+            # "the model that read this invoice" are no longer the same
+            # question. Recording the answer is what lets the fallback exist
+            # without weakening the pinning argument in config.py.
+            "model": info.get("model"),
             "method": extracted.get("extraction_method"),
             "notes": list(info.get("notes") or []),
             # What language the document was read AS (Phase L). Recorded so an

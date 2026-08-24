@@ -324,6 +324,69 @@ def _invoice_from_payload(data: dict, raw_text: str, method: str, page_label: st
     )
 
 
+def _status_code(exc: Exception):
+    """The HTTP status behind a provider exception, or None.
+
+    Factored out of `describe_api_error` because the model fallback needs the
+    same answer for a different purpose, and two copies of "how do we get a
+    status code out of this" would drift the moment one provider changed its
+    exception shape.
+    """
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code is None:
+        m = re.search(r"\b([45]\d{2})\b", str(exc)[:200])
+        code = int(m.group(1)) if m else None
+    return code
+
+
+# Statuses where a DIFFERENT model may well succeed, so trying the next pinned
+# one is worth a few seconds.
+#
+#   404  this model is retired -- the next one may not be
+#   429  this model's free-tier daily quota is spent; quota is per model
+#   500  provider-side error
+#   503  this model is overloaded ("high demand"), which is transient and,
+#        importantly, model-specific
+#
+# Everything else stops the loop immediately and is reported as-is. 401 and 403
+# are about the KEY, not the model, so every fallback would fail identically and
+# looping would just turn one clear error into a slow one. A malformed response
+# is a parse failure, not a provider failure, and the same document will parse
+# the same way on the next model.
+_RETRY_ON_NEXT_MODEL = frozenset({404, 429, 500, 503})
+
+
+def _generate_with_fallback(contents, info: dict = None):
+    """Run one generation against each pinned model until one answers.
+
+    Returns `(response, model)` so the caller can record WHICH model produced
+    the fields -- the property `config.EXTRACTION_MODEL`'s pinning comment
+    exists to protect, and the reason this returns the name rather than leaving
+    the caller to assume the first one.
+
+    `info`, when given, collects a note per model that declined, so an operator
+    reading a run can see that the primary was skipped and why, rather than
+    wondering why the audit trail names a model they did not configure.
+    """
+    models = config.vision_models()
+    last = None
+    for i, model in enumerate(models):
+        try:
+            client = _client()   # local reference -- see llm_extract_text
+            return client.models.generate_content(
+                model=model, contents=contents, config=_json_config()), model
+        except Exception as exc:
+            last = exc
+            code = _status_code(exc)
+            if code not in _RETRY_ON_NEXT_MODEL or i == len(models) - 1:
+                raise
+            if info is not None:
+                info.setdefault("notes", []).append(
+                    "%s declined (%s); trying %s."
+                    % (model, describe_api_error(exc, "gemini"), models[i + 1]))
+    raise last   # unreachable while `models` is non-empty; explicit beats implicit
+
+
 def describe_api_error(exc: Exception, provider: str = "gemini") -> str:
     """A short, safe description of why an API call failed.
 
@@ -336,10 +399,7 @@ def describe_api_error(exc: Exception, provider: str = "gemini") -> str:
     Only the status code and a fixed label are surfaced. The exception text can
     echo request content, so it is never included.
     """
-    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-    if code is None:
-        m = re.search(r"\b([45]\d{2})\b", str(exc)[:200])
-        code = int(m.group(1)) if m else None
+    code = _status_code(exc)
     # Name the setting the operator actually has to go and check. Two providers
     # now fail independently, and "check GEMINI_API_KEY" is actively misleading
     # when it was the Groq call that returned 401.
@@ -442,28 +502,40 @@ def _page_label(page_count: int) -> str:
 
 
 def llm_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 1,
-                     language: str = None) -> ExtractedInvoice:
-    """Route 1: read the fields out of an embedded text layer."""
-    # Hold the client in a local. `_client().models.generate_content(...)` leaves
-    # the Client itself unreferenced, and google-genai closes its HTTP transport
-    # when the Client is collected -- which can happen before the call completes,
-    # surfacing as "Cannot send a request, as the client has been closed."
-    client = _client()
-    resp = client.models.generate_content(
-        model=config.EXTRACTION_MODEL,
-        contents=[prompt, wrap_untrusted(text[:60000])],
-        config=_json_config(),
-    )
+                     language: str = None, info: dict = None) -> ExtractedInvoice:
+    """Route 1: read the fields out of an embedded text layer.
+
+    This is the Gemini text route, reached only when GEMINI_API_KEY is set and
+    GROQ_API_KEY is not -- Groq owns the text route otherwise (§3). It shares
+    the vision route's model fallback: the same model is being asked, so the
+    same 429 and 503 apply, and there is no reason for one route to survive a
+    busy model while the other does not.
+    """
+    # The client is held in a local inside `_generate_with_fallback`.
+    # `_client().models.generate_content(...)` leaves the Client itself
+    # unreferenced, and google-genai closes its HTTP transport when the Client
+    # is collected -- which can happen before the call completes, surfacing as
+    # "Cannot send a request, as the client has been closed."
+    resp, model = _generate_with_fallback(
+        [prompt, wrap_untrusted(text[:60000])], info)
+    if info is not None:
+        info["model"] = model
     return _invoice_from_payload(_parse_llm_json(resp.text), text, "gemini (text)",
                                  page_label=_page_label(page_count), language=language)
 
 
-def llm_extract_vision(png_bytes, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoice:
+def llm_extract_vision(png_bytes, prompt: str = SCHEMA_PROMPT,
+                       info: dict = None) -> ExtractedInvoice:
     """Route 2: read the fields off rasterised page images.
 
     `png_bytes` takes either one PNG or a list of them, so the caller can keep
     sending the first `MAX_PAGES_VISION` pages of a multi-page scan rather than
     silently losing everything after page one.
+
+    `info` is the route dict the pipeline is already assembling; when given, the
+    model that actually answered is recorded on it. This route has NO local
+    fallback underneath it -- unlike the text route, which degrades to regex --
+    so it is the one that most needs to survive a busy or exhausted model.
     """
     from google.genai import types
 
@@ -478,12 +550,9 @@ def llm_extract_vision(png_bytes, prompt: str = SCHEMA_PROMPT) -> ExtractedInvoi
     contents.append(f"</{DOC_TAG}>")
     contents.append("Transcribe the invoice fields from the page image(s) above.")
 
-    client = _client()   # local reference -- see llm_extract_text
-    resp = client.models.generate_content(
-        model=config.EXTRACTION_MODEL,
-        contents=contents,
-        config=_json_config(),
-    )
+    resp, model = _generate_with_fallback(contents, info)
+    if info is not None:
+        info["model"] = model
     # Vision genuinely knows which image(s) it read -- a single page image is
     # honestly "page 1", the same way the text route is when there is only one
     # page to be flattened into.
@@ -1143,7 +1212,8 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
             # No Groq configured, but Gemini is: keep the pre-Groq behaviour
             # rather than silently downgrading an existing install to regex.
             try:
-                inv = llm_extract_text(text, page_count=page_count, language=language)
+                inv = llm_extract_text(text, page_count=page_count, language=language,
+                                       info=info)
                 info["route"] = "gemini-text"
                 info["provider"] = "gemini"
                 return inv, info
@@ -1169,7 +1239,7 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
         try:
             images = render_pages_png(pdf_bytes, config.MAX_PAGES_VISION)
             if images:
-                inv = llm_extract_vision(images)
+                inv = llm_extract_vision(images, info=info)
                 info["route"] = "gemini-vision"
                 info["provider"] = "gemini"
                 info["vision_used"] = True
