@@ -581,8 +581,56 @@ def _groq_client():
     return Groq(api_key=config.groq_api_key())
 
 
+def _groq_complete_with_fallback(messages: list, info: dict = None, **create_kwargs):
+    """Run one Groq chat completion against each pinned model until one answers.
+
+    The text route's own version of `_generate_with_fallback` above -- same
+    status-code list (`_RETRY_ON_NEXT_MODEL`), same "record which model actually
+    answered" contract, same underlying reason: `config.GROQ_MODEL_DEFAULT`'s
+    daily token budget is shared across every invoice this deployment processes,
+    and it DOES run out mid-day. Measured, not assumed: on 2026-08-24,
+    `openai/gpt-oss-120b` returned 429 -- "Used 199914" of a 200,000 TPD limit --
+    partway through an ordinary demo session, and every text invoice for the
+    rest of that day would otherwise have dropped straight to regex.
+
+    Unlike the vision route, text already has regex underneath it (§3) -- so
+    this does not remove that fallback, it just gives the LLM route a second
+    model to try before regex becomes the answer. A second model is materially
+    stronger than regex, which is why trying it first is worth the extra call.
+
+    Takes the finished `messages` list rather than a fixed system/user pair, and
+    forwards `**create_kwargs` straight to `chat.completions.create` unchanged,
+    so this one loop serves both callers: extraction's two-message,
+    `response_format=json_object`, temperature-0 shape, and the assistant's
+    (`chat.py`) multi-turn history with its own temperature and token cap. Both
+    need the identical model chain and the identical "which one answered"
+    bookkeeping -- only the messages and the generation parameters differ.
+
+    Returns `(response, model)`, exactly as `_generate_with_fallback` does, so
+    the caller can record which model produced the fields.
+    """
+    models = config.text_models()
+    last = None
+    for i, model in enumerate(models):
+        try:
+            client = _groq_client()
+            resp = client.chat.completions.create(
+                model=model, messages=messages, **create_kwargs)
+            return resp, model
+        except Exception as exc:
+            last = exc
+            code = _status_code(exc)
+            if code not in _RETRY_ON_NEXT_MODEL or i == len(models) - 1:
+                raise
+            if info is not None:
+                info.setdefault("notes", []).append(
+                    "%s declined (%s); trying %s."
+                    % (model, describe_api_error(exc, "groq"), models[i + 1]))
+    raise last   # unreachable while `models` is non-empty; explicit beats implicit
+
+
 def groq_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 1,
-                      language: str = None) -> ExtractedInvoice:
+                      language: str = None, info: dict = None) -> ExtractedInvoice:
     """Route 1: read the fields out of an embedded text layer, using Groq.
 
     Note the difference from the Gemini path, because it matters for the
@@ -594,17 +642,24 @@ def groq_extract_text(text: str, prompt: str = SCHEMA_PROMPT, page_count: int = 
     model into emitting {"status": "APPROVED"} still produces an ExtractedInvoice
     with no such field, and nothing downstream ever sees it. The blast radius
     stays what it has always been: wrong numbers, never a wrong decision.
+
+    Tries `config.text_models()` in order before giving up -- see
+    `_groq_complete_with_fallback`. `info`, when given, records which model
+    answered (`info["model"]`) and a note for each one that declined along the
+    way, the same contract `llm_extract_text` already keeps for the Gemini
+    routes.
     """
-    client = _groq_client()
-    resp = client.chat.completions.create(
-        model=config.groq_model(),
-        messages=[
+    resp, model = _groq_complete_with_fallback(
+        [
             {"role": "system", "content": prompt},
             {"role": "user", "content": wrap_untrusted(text[:60000])},
         ],
+        info,
         response_format={"type": "json_object"},
         temperature=0,
     )
+    if info is not None:
+        info["model"] = model
     payload = _parse_llm_json(resp.choices[0].message.content or "")
     return _invoice_from_payload(payload, text, "groq (text)",
                                  page_label=_page_label(page_count), language=language)
@@ -1196,16 +1251,20 @@ def _extract_invoice(pdf_bytes: bytes, pre: Optional[Tuple[str, int, bool]] = No
             use_groq = False
         if use_groq:
             try:
-                inv = groq_extract_text(text, page_count=page_count, language=language)
+                inv = groq_extract_text(text, page_count=page_count, language=language,
+                                        info=info)
                 info["route"] = "groq-text"
                 info["provider"] = "groq"
                 return inv, info
             except Exception as exc:
-                # Deliberately NOT falling through to Gemini here. Gemini's free
-                # tier is 20 requests per day and it is the only thing that can
-                # read a scanned invoice; spending it on text PDFs that already
-                # have a working regex fallback would trade a strong fallback for
-                # a weak one and leave nothing for the route with no alternative.
+                # Reached only once EVERY pinned Groq model in config.text_models()
+                # has declined (_groq_complete_with_fallback already tried the
+                # rest). Deliberately still NOT falling through to Gemini here.
+                # Gemini's free tier is the scarce budget that reads scanned
+                # invoices with nothing else behind it; spending it on a text PDF
+                # that already has a working regex fallback would trade a strong
+                # fallback for a weak one and leave nothing for the route with no
+                # alternative.
                 info["notes"].append("Groq text extraction failed - %s. Used regex instead."
                                      % describe_api_error(exc, "groq"))
         elif use_vision:

@@ -263,6 +263,61 @@ GROQ_MODEL_ENV = "GROQ_MODEL"
 # model, so it wins on both robustness and demo speed.
 GROQ_MODEL_DEFAULT = "openai/gpt-oss-120b"
 
+# ...and the ones to try after it, in order -- the text route's own version of
+# `EXTRACTION_MODEL_FALLBACKS` above, for the identical reason: a single pinned
+# model is a single point of failure, and 120b's free-tier daily token budget
+# (200,000 TPD) is shared across every invoice this deployment processes, not
+# per document. It WAS observed exhausted, not assumed: on 2026-08-24,
+# `openai/gpt-oss-120b` returned 429 "Rate limit reached ... on tokens per day
+# (TPD): Limit 200000, Used 199914" against this account, mid-demo, with every
+# invoice for the rest of the day otherwise dropping straight to regex.
+#
+# `openai/gpt-oss-20b` is the only other candidate on this account's model list
+# that is actually fit for this job, and that was measured the same way the
+# rest of this file insists on rather than assumed from a model card:
+#   - `openai/gpt-oss-20b`      -- correct on all three re-tested samples
+#     (happy-path, multi-PO with two references, line-item mismatch),
+#     1.4-2.0s each. A SEPARATE per-model daily budget, so it is still fresh
+#     when 120b's is not.
+#   - `qwen/qwen3.6-27b`        -- rejected. Returns HTTP 400
+#     "Failed to validate JSON. Please adjust your prompt" under this exact
+#     prompt and `response_format=json_object` -- it cannot complete this
+#     route at all, not merely slower or weaker.
+#   - `groq/compound` / `-mini` -- rejected. Both are agentic systems that
+#     proxy to `llama-3.3-70b-versatile` under the hood, which the comment
+#     above already established is not available on this account; confirmed
+#     again live (429 naming that exact underlying model).
+#   - `allam-2-7b`              -- rejected. Reads vendor_name, invoice_number
+#     and currency correctly but returned `total: None` on the happy-path
+#     sample -- silently dropping the one field the tolerance check cannot do
+#     without. A fallback that degrades a decision-bearing field is worse than
+#     no fallback: the run would look extracted while being unusable.
+# `openai/gpt-oss-safeguard-20b` and the `whisper`/`orpheus`/`prompt-guard`
+# models on this account are moderation, speech and audio models respectively
+# -- not general chat completion, so they were never candidates.
+#
+# ONE ENTRY, NOT FOUR, because only one survived measurement -- the same
+# "genuine fallback rather than a degraded guess" standard `EXTRACTION_MODEL_
+# FALLBACKS` documents. A shorter, honest chain beats a longer one padded with
+# entries already known to fail or to lose data.
+GROQ_MODEL_FALLBACKS = (
+    "openai/gpt-oss-20b",
+)
+
+
+def text_models():
+    """Every Groq model to try for one text extraction, best first.
+
+    Read at CALL time, like every other setting in this file (`.env` is
+    consulted here, not at import). `GROQ_MODEL` pins one model and disables
+    the fallback entirely, mirroring `vision_models()`'s GEMINI_MODEL override
+    for the identical reason: an operator who names a model means that model.
+    """
+    override = os.environ.get(GROQ_MODEL_ENV, "").strip()
+    if override:
+        return (override,)
+    return (GROQ_MODEL_DEFAULT,) + GROQ_MODEL_FALLBACKS
+
 
 # --------------------------------------------------------------------------
 # API security

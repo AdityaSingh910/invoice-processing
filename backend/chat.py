@@ -964,8 +964,17 @@ def compose(question: str, facts: dict, history: list, locale: str = None) -> st
     route that can read a SCANNED invoice. Spending it on conversation would
     mean a chatty afternoon leaves the pipeline unable to read a scan -- paying
     for chat in the one currency this application cannot replace.
+
+    Tries `config.text_models()` in order via `extraction._groq_complete_with_
+    fallback` -- the same chain and the same "which model actually answered"
+    bookkeeping the extraction route uses, reused rather than duplicated because
+    both callers are asking the identical question ("is any pinned Groq model
+    currently willing to answer"). `answer()` already wraps this call in a
+    broad except and degrades to the structured, un-phrased facts on ANY
+    failure (§7f.1) -- this only means that degradation is reached after every
+    pinned model has declined, not after the first one that happens to be busy
+    or out of its own daily budget.
     """
-    client = extraction._groq_client()
     messages = [{"role": "system", "content": system_prompt(locale)}]
     for turn in history:
         messages.append({"role": turn["role"], "content": turn["content"]})
@@ -975,12 +984,8 @@ def compose(question: str, facts: dict, history: list, locale: str = None) -> st
                     f"Facts retrieved from the application for this question:\n"
                     f"{_facts_block(facts)}"),
     })
-    resp = client.chat.completions.create(
-        model=config.groq_model(),
-        messages=messages,
-        temperature=0.2,
-        max_tokens=700,
-    )
+    resp, _model = extraction._groq_complete_with_fallback(
+        messages, temperature=0.2, max_tokens=700)
     text = (resp.choices[0].message.content or "").strip()
     if not text:
         raise ValueError("empty completion")

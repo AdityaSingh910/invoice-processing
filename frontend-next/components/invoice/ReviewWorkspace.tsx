@@ -24,7 +24,6 @@ import { MatchTable, PoBudget } from "./PoMatchPanel";
 import AuditTrail from "./AuditTrail";
 import StageList from "./StageList";
 import AuditExportButtons from "./AuditExportButtons";
-import RejectionNotice from "./RejectionNotice";
 import ReviewBar from "./ReviewBar";
 import DocumentPreview from "./DocumentPreview";
 import type { ResolvedDocument } from "./DocumentPreview";
@@ -146,15 +145,13 @@ export function ReviewWorkspaceBody({
         </div>
 
         {/* The nine stages, exactly as they streamed, directly under the
-            verdict -- above the rejection notice and the reviewer's brief
-            rather than below them.
+            verdict -- above the reviewer's brief rather than below it.
 
             The reader has just watched these arrive and the verdict land on
             top of them, so this is where they look next, whichever way the run
             went. It answers "what did it actually do", which is a different
             question from the audit trail's "what was the decision computed
-            from"; the detail of WHY a rejected invoice was rejected follows
-            immediately after. */}
+            from". */}
         {showPipeline && (
           <Panel>
             <PanelHeader
@@ -174,8 +171,6 @@ export function ReviewWorkspaceBody({
             </div>
           </Panel>
         )}
-
-        {run.status === "REJECTED" && <RejectionNotice runId={run.id} />}
 
         {run.audit && run.audit.automated_decision !== "APPROVED" && (
           <Panel>
