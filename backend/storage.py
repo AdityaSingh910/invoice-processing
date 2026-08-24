@@ -1599,16 +1599,29 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
     This is optimistic concurrency with an authoritative final check: lock
     exactly the purchase_orders row(s) this invoice charges with `SELECT ... FOR
     UPDATE`, re-read the consumed total, and if the invoice no longer fits,
-    downgrade APPROVED to NEEDS_REVIEW *before* inserting. Two concurrent
-    invoices for one PO can no longer both approve past the balance -- whichever
-    commits second sees the first and is held for a human. Invoices against
-    DIFFERENT POs never contend for this lock at all.
+    REJECT it *before* inserting. Two concurrent invoices for one PO can no
+    longer both approve past the balance -- whichever commits second sees the
+    first and is rejected outright: its own amount, checked against the live
+    balance under lock, exceeds what the PO has left. This is deliberately
+    NOT the same outcome as an ordinary over-tolerance invoice discovered at
+    evaluation time (still NEEDS_REVIEW, decided in `rules.decide()` before
+    this function is ever called, §3's "Tolerance is one-sided"): a race
+    loser was correctly APPROVED against the balance it saw, and lost only
+    because another invoice consumed that balance first, under the one lock
+    that makes such a loss decidable at all. There is nothing left to
+    recover by review -- the PO genuinely does not have the money -- so this
+    is treated as final rather than queued for a person to reach the same
+    conclusion. Invoices against DIFFERENT POs never contend for this lock
+    at all.
 
     PHASE J adds a SECOND reason this function may downgrade an APPROVED run,
     and it is deliberately implemented here rather than anywhere else.
     `client_vendor_mismatch` says the caller was an authenticated external
     client submitting through the portal, and the vendor the extractor read
-    off the document is NOT one this client represents.
+    off the document is NOT one this client represents. THIS ONE STILL GOES
+    TO NEEDS_REVIEW, not REJECTED -- unlike a stale balance, "we are not sure
+    who sent this" is exactly the kind of thing a person should confirm
+    rather than a terminal call the system makes on its own.
 
     That combination has to be stopped before the ledger sees it. Until Phase
     J only employees could upload, so "the document names a vendor" and "we
@@ -1620,11 +1633,11 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
     and already correct: this is the one place that holds the PO rows locked,
     has the decision in hand, and has not yet inserted. Downgrading here means
     no allocation is ever counted (consumption joins to status='APPROVED', so
-    a run inserted as NEEDS_REVIEW consumes nothing), there is no window in
-    which the run is briefly approved, and no second status-transition path is
-    invented. `automated_decision` still records what the rules concluded --
-    it is written from `status` below, after both downgrades, exactly as the
-    balance re-check has always worked.
+    a run inserted as NEEDS_REVIEW or REJECTED consumes nothing), there is no
+    window in which the run is briefly approved, and no second
+    status-transition path is invented. `automated_decision` still records
+    what the rules concluded -- it is written from `status` below, after both
+    downgrades, exactly as the balance re-check has always worked.
 
     Returns (run_id, final_status, extra_reason_or_None).
     """
@@ -1672,9 +1685,24 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
 
             # Re-check EVERY PO this invoice charges, not just the primary one. A
             # multi-PO invoice can be raced on any of them, and one that no longer
-            # fits is enough to hold the whole invoice -- the allocations are a
+            # fits is enough to reject the whole invoice -- the allocations are a
             # package, and committing part of a split would charge a PO for an
             # invoice that was not approved.
+            #
+            # THIS BRANCH REJECTS RATHER THAN HOLDS, and that is deliberate and
+            # narrow. It fires only when `status` arrived here as APPROVED --
+            # i.e. `rules.decide()` looked at the balance it could see and
+            # correctly approved against it -- and the balance underneath it
+            # changed before this transaction got the lock, because another
+            # invoice against the SAME PO committed first. That is not a
+            # correctable defect on the invoice (a missing field, a bad scan,
+            # an ordinary over-tolerance amount all still go to NEEDS_REVIEW,
+            # exactly as before, from `rules.decide()` -- this loop never even
+            # runs for those, since `status` is not APPROVED going in). It is
+            # a fact the ledger now knows for certain, under the one lock that
+            # makes it certain: the PO does not have this invoice's amount
+            # left. There is nothing for a reviewer to adjudicate that the
+            # numbers do not already settle.
             if status == "APPROVED" and total is not None:
                 for alloc in allocations:
                     # FOR UPDATE locks this PO row until the transaction ends, so a
@@ -1693,15 +1721,16 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
                     if round(alloc["amount"] - remaining, 2) <= tol:
                         continue
 
-                    status = "NEEDS_REVIEW"
+                    status = "REJECTED"
                     downgraded_on_balance = True
                     extra = {
                         "text": (
                             f"Balance changed while this invoice was being processed: "
                             f"${remaining:.2f} remained on {alloc['po_number']} at commit time, "
                             f"against ${alloc['amount']:.2f} charged to it by this invoice. "
-                            f"Another invoice consumed the PO first, so this one was held rather "
-                            f"than approved past the authorised amount."
+                            f"Another invoice consumed the PO first, so this one is rejected: "
+                            f"its amount exceeds what now remains authorised on the purchase "
+                            f"order, verified under a row lock at commit time."
                         ),
                         "level": "fail",
                     }
@@ -1715,8 +1744,8 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
 
             # Keep the trail consistent with what was actually committed. If the
             # balance re-check above downgraded this run, the audit must say so --
-            # a trail that still reads APPROVED beside a NEEDS_REVIEW row is worse
-            # than no trail.
+            # a trail that still reads APPROVED beside a REJECTED or NEEDS_REVIEW
+            # row is worse than no trail.
             if audit is not None and extra is not None:
                 audit = dict(audit)
                 audit["automated_decision"] = status

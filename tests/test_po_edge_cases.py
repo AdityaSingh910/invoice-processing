@@ -291,12 +291,16 @@ def test_tolerance_reads_from_config(db):
 # 5. atomicity -- the documented race
 # --------------------------------------------------------------------------
 
-def test_stale_approval_is_downgraded_at_commit(db):
+def test_stale_approval_is_rejected_at_commit(db):
     """Two invoices decided against the same balance must not both approve.
 
     Simulates the race directly: compute a verdict for the second invoice while
     the balance still looks free, let the first one commit, then commit the
-    second. The re-check under BEGIN IMMEDIATE must catch it.
+    second. The re-check under BEGIN IMMEDIATE must catch it -- and, since B
+    was correctly APPROVED against the balance it saw and lost only because A
+    consumed it first, the loser is REJECTED outright rather than held: the
+    PO genuinely no longer has the money, so there is nothing left for a
+    reviewer to decide.
     """
     extracted_b = {"vendor_name": VENDOR, "invoice_number": "INV-B",
                    "total": 700_000.00, "po_references": [BIG_PO], "currency": "USD"}
@@ -317,8 +321,10 @@ def test_stale_approval_is_downgraded_at_commit(db):
         "INV-B.pdf", status_b, extracted_b, po_match_b, [], reasons_b,
         tolerance_for=matching.tolerance_for)
 
-    assert final_b == "NEEDS_REVIEW", "stale approval overspent the PO"
+    assert final_b == "REJECTED", "stale approval overspent the PO"
     assert extra and "Balance changed" in extra["text"]
+    assert "duplicate" not in extra["text"].lower(), \
+        "this must be a balance rejection, not a duplicate finding"
     assert remaining() == 400_000.00, "the PO must not be overspent"
 
 
@@ -341,6 +347,12 @@ def test_concurrent_invoices_cannot_overspend_a_po(db):
     occasions (a deadlock across multiple locked rows, a statement timeout) --
     this asserts the OUTCOME (never over $10,000, exactly five approved), not
     the mechanism by which each thread got there.
+
+    A thread that loses is REJECTED, not held. It was correctly APPROVED
+    against the balance it saw and lost only because five other invoices
+    against the same PO committed first, under the same lock -- the PO does
+    not have $2,000 left for it, full stop, so there is nothing left for a
+    human to adjudicate.
     """
     import threading
 
@@ -383,5 +395,75 @@ def test_concurrent_invoices_cannot_overspend_a_po(db):
     consumed = storage.consumed_amount_for_po("PO-RACE")
     assert consumed <= 10_000.0, f"PO overspent: ${consumed:,.2f} committed against $10,000"
     assert results.count("APPROVED") == 5
-    assert results.count("NEEDS_REVIEW") == 3
+    assert results.count("REJECTED") == 3
+    assert results.count("NEEDS_REVIEW") == 0
     assert storage.remaining_for_po("PO-RACE") == 0.00
+
+
+def test_concurrency_demo_two_invoices_one_rejected(db):
+    """The exact scenario the concurrency demo fixtures (`PO-7000-CONC`,
+    `sample_invoices/12_concurrency_race_keyboard_a.pdf` / `_b.pdf`, see
+    CLAUDE.md sec7o) are built to show in a browser: two INDIVIDUALLY VALID
+    $4,000 invoices racing a single $7,000 PO, submitted at the same instant
+    with real threads, not a simulated ordering.
+
+    Exactly one must be APPROVED and exactly one REJECTED -- never both
+    APPROVED (which would overspend the PO by $1,000), never both held, and
+    never NEEDS_REVIEW at all: the loser was correctly approved against the
+    balance it saw and only lost because the other invoice consumed the PO
+    first, which this ledger can now express directly as a rejection rather
+    than a hold. Either invoice may win; this test does not, and must not,
+    force an ordering.
+    """
+    import threading
+
+    conn = storage.get_conn()
+    conn.execute("""INSERT INTO purchase_orders
+           (po_number, vendor, amount, currency, issued_date, status, description)
+           VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                 ("PO-7000-DEMO", VENDOR, 7_000.0, "USD", "2026-01-01", "open", "concurrency demo"))
+    conn.commit()
+    conn.close()
+
+    results, lock, barrier = [], threading.Lock(), threading.Barrier(2)
+
+    def worker(label):
+        extracted = {"vendor_name": VENDOR, "invoice_number": f"INV-CONC-4000-{label}",
+                     "total": 4_000.0, "po_references": ["PO-7000-DEMO"], "currency": "USD"}
+        po_match = matching.match_po(extracted)          # both read the same $7,000...
+        status, reasons = rules.decide({"route": "regex", "notes": [], "security_flags": []},
+                                       [], True, "ok", None, "no dup", po_match)
+        assert status == "APPROVED", "each $4,000 invoice is individually valid on its own"
+        barrier.wait()                                   # ...then both commit together
+        for attempt in range(20):
+            try:
+                _, final, extra = storage.save_run_checked(
+                    f"conc-{label}.pdf", status, extracted, po_match, [], reasons,
+                    tolerance_for=matching.tolerance_for)
+                break
+            except Exception as exc:
+                if "locked" not in str(exc).lower() or attempt == 19:
+                    raise
+        with lock:
+            results.append((label, final, extra))
+
+    threads = [threading.Thread(target=worker, args=(label,)) for label in ("A", "B")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    outcomes = {label: final for label, final, _ in results}
+    assert sorted(outcomes.values()) == ["APPROVED", "REJECTED"], (
+        f"expected exactly one APPROVED and one REJECTED, got {outcomes}"
+    )
+
+    loser_label = next(label for label, final, _ in results if final == "REJECTED")
+    loser_extra = next(extra for label, final, extra in results if final == "REJECTED")
+    assert loser_extra is not None
+    assert "duplicate" not in loser_extra["text"].lower(), \
+        "the loser must be rejected for the PO balance, never for looking like a duplicate"
+    assert "balance" in loser_extra["text"].lower() or "exceeds" in loser_extra["text"].lower()
+
+    assert storage.consumed_amount_for_po("PO-7000-DEMO") == 4_000.0
+    assert storage.remaining_for_po("PO-7000-DEMO") == 3_000.0

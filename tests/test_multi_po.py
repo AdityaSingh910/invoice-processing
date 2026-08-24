@@ -319,10 +319,14 @@ def test_freeing_budget_never_auto_approves_a_multi_po_invoice(db):
     assert storage.get_run(run_id)["status"] == "NEEDS_REVIEW"
 
 
-def test_a_raced_secondary_po_holds_the_whole_invoice(db):
+def test_a_raced_secondary_po_rejects_the_whole_invoice(db):
     """The commit-time re-check covers every PO, not only the primary. A split
     is a package -- committing part of it would charge a PO for an invoice that
-    was not approved."""
+    was not approved. Losing this race rejects the invoice outright (it was
+    correctly APPROVED against the balance it saw, and only lost because
+    another invoice against PO-1002 committed first under the same lock), not
+    just PO-1001's own allocation -- consuming half of a split whose other
+    half cannot be charged would be worse than charging neither."""
     ext = invoice(6240.00, ["PO-1001", "PO-1002"])
     pm = matching.match_po(ext)
 
@@ -332,7 +336,7 @@ def test_a_raced_secondary_po_holds_the_whole_invoice(db):
 
     run_id, final = commit(ext, pm, "APPROVED", [])
 
-    assert final == "NEEDS_REVIEW"
+    assert final == "REJECTED"
     assert storage.remaining_for_po("PO-1001") == 1240.0
 
 

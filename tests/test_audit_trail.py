@@ -294,8 +294,9 @@ def test_audit_is_stored_with_the_run_and_read_back(db):
 
 
 def test_stored_audit_follows_a_commit_time_downgrade(db):
-    """`save_run_checked` can downgrade APPROVED under the write lock when another
-    invoice took the balance first. The trail must describe what was COMMITTED."""
+    """`save_run_checked` can reject an APPROVED run under the write lock when
+    another invoice took the balance first. The trail must describe what was
+    COMMITTED, not what was originally decided."""
     s1, a1, e1, p1, r1 = evaluate(3000.00, invoice_number="INV-A")
     commit(s1, e1, p1, r1, a1, "a.pdf")
 
@@ -307,12 +308,13 @@ def test_stored_audit_follows_a_commit_time_downgrade(db):
     commit(s3, e3, p3, r3, a3, "c.pdf")
 
     run_id, final_status, extra = commit(s2, e2, p2, r2, a2, "b.pdf")
-    assert final_status == "NEEDS_REVIEW" and extra is not None
+    assert final_status == "REJECTED" and extra is not None
 
     stored = storage.get_run(run_id)["audit"]
-    assert stored["automated_decision"] == "NEEDS_REVIEW"
+    assert stored["automated_decision"] == "REJECTED"
     assert "PO remaining check" in stored["rules_failed"]
     assert "Balance changed" in stored["reason"]
+    assert "duplicate" not in stored["reason"].lower()
 
 
 def test_a_run_without_an_audit_hydrates_to_none(db):

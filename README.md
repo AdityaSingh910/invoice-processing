@@ -21,7 +21,7 @@ suite is green.**
 | Sample invoices | 14 / 14 matching the manifest, driven through the real pipeline |
 | UI | **Next.js 15 + React 19 + Tailwind v4**, seven sections, light-first enterprise design with an explicit dark-mode toggle — plus a separate **supplier portal** shell for external clients |
 | Extraction | **Groq** for text PDFs, **Gemini Vision** for scans |
-| Automated tests | **2,015 collected** across 33 files, no live API calls (the live-provider cases are the documented exception — see Known problems) |
+| Automated tests | **2,016 collected** across 33 files, no live API calls (the live-provider cases are the documented exception — see Known problems) |
 | Audit trail | Structured, deterministic, emitted by the rule engine itself |
 | Human review | Accept / reject on NEEDS_REVIEW, recorded beside the automated decision |
 | Review collaboration | Claimable review queue (database-enforced, leased), full activity history per invoice |
@@ -368,13 +368,22 @@ pair meant to be run at the SAME time.** Each is an ordinary $4,000 partial
 invoice against `PO-7000-CONC`; together they claim $8,000 of a $7,000 order.
 Nothing in either document is wrong, so nothing in extraction or the rules can
 separate them — only the ledger can. Open the app in two browser sessions and
-press Run within a second of each other: exactly one is approved, the other is
-held, and the order is left with $3,000. Either one may win, which is the
-point. Run sequentially they do the same thing in slow motion, which is the
-useful way to show what the balance check does before showing that it holds
-under a race. The purchase order itself is in `sample-data/concurrency/` as a
-document to read — deliberately not in the sample list, because a purchase
-order is not an invoice and the pipeline would hold it as a malformed one.
+press Run within a second of each other: exactly one is approved, **the other
+is rejected** (it was correctly approved against the balance it saw, and lost
+only because the other invoice against the same PO committed first under the
+same lock — the PO genuinely no longer has its amount left, so there is
+nothing left to hold for review), and the order is left with $3,000. Either
+one may win, which is the point. Run **sequentially**, they behave
+differently rather than "the same thing in slow motion": the second one is
+decided NEEDS_REVIEW when it is first evaluated, because by then the balance
+it actually sees is already $3,000 short — that is an ordinary over-tolerance
+invoice, not a race, and is still held for review exactly as any other
+over-budget invoice is. Only a genuine, simultaneous race — where both were
+decided against the same still-available balance and one commits after the
+other — produces the rejection. The purchase order itself is in
+`sample-data/concurrency/` as a document to read — deliberately not in the
+sample list, because a purchase order is not an invoice and the pipeline
+would hold it as a malformed one.
 
 ---
 

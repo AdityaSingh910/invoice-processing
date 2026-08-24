@@ -46,7 +46,7 @@ vendor binding no token can assert (§7g).
 - **`data/`** — seed POs, vendors, demo users (JSON, tracked in git,
   reloaded into Postgres on every startup) plus gitignored runtime state
   (`documents/`).
-- **`tests/`** — 2,015 tests, 33 files, real (schema-isolated) PostgreSQL, both
+- **`tests/`** — 2,016 tests, 33 files, real (schema-isolated) PostgreSQL, both
   LLM providers mocked, and Google mocked at the two functions that open a
   socket. See §10.
 
@@ -221,16 +221,33 @@ aliased, so which model read a given invoice is always answerable.
 
 - **REJECTED** — never auto-overridden: duplicates, vendor on file but not
   approved, document is not an invoice, invoice states the PO's own number
-  under a different currency (a same-digits currency collision).
+  under a different currency (a same-digits currency collision), **and an
+  invoice that lost a real concurrency race for a PO's remaining balance**
+  (below).
 - **NEEDS_REVIEW** — recoverable: missing fields, low extraction confidence
-  on a field central to the decision, unreadable scan, over tolerance, no PO
-  match, currency mismatch with no pinned rate (or still over tolerance
-  after conversion), bad arithmetic, invalid total, inferred PO, multi-PO
-  invoice with no stated split, injection-shaped text in the document.
+  on a field central to the decision, unreadable scan, over tolerance *at
+  the time it was first evaluated*, no PO match, currency mismatch with no
+  pinned rate (or still over tolerance after conversion), bad arithmetic,
+  invalid total, inferred PO, multi-PO invoice with no stated split,
+  injection-shaped text in the document, a portal submission whose document
+  names a vendor the submitting client does not represent (§7g.7).
 - **APPROVED** — everything passed, including a currency mismatch a pinned
   FX rate resolves within tolerance.
 
 Reject wins over review when both fire.
+
+**A race-loss rejection is a fifth, narrower kind of REJECTED, decided in
+`storage.save_run_checked()` rather than in `rules.decide()`.** It fires only
+when an invoice was *correctly* APPROVED against the balance it saw and, by
+the time its commit takes the PO's row lock, another invoice against the
+*same* PO has already committed and consumed that balance first. This is
+different from an ordinary over-tolerance invoice (still NEEDS_REVIEW,
+decided by `rules.decide()` before this function is ever reached — see
+"Tolerance is one-sided" below, which is unchanged): a race loser was not
+wrong when it was evaluated, and the PO genuinely does not have its amount
+left by the time anyone could act on it, so there is nothing left for a
+human to adjudicate. See §4's concurrency section and §7o for the demo
+fixtures this is built to make visible in a browser.
 
 ### Tolerance is one-sided
 
@@ -501,9 +518,19 @@ mechanism per feature:
 
 - **`purchase_orders` row** — locked in `save_run_checked()` while
   committing a new run, so two invoices racing the same PO cannot both read
-  the same remaining balance and both approve past it.
+  the same remaining balance and both approve past it. The loser of that
+  race is **rejected**, not held: it was correctly approved against the
+  balance it saw, and lost only because another invoice against the same PO
+  committed first under the same lock, so the PO genuinely does not have its
+  amount left and there is nothing left for a human to decide. This is
+  distinct from an ordinary over-tolerance invoice, which is still held for
+  review exactly as before (§3).
   (`test_concurrent_invoices_cannot_overspend_a_po`: 8 threads racing a
-  $10,000 PO with $2,000 invoices resolve to exactly 5 approved / 3 held.)
+  $10,000 PO with $2,000 invoices resolve to exactly 5 approved / 3 rejected.
+  `test_concurrency_demo_two_invoices_one_rejected`: the exact two-invoice,
+  $4,000-each-against-$7,000 scenario the demo fixtures in §7o use, under a
+  real 2-thread race — exactly one APPROVED, one REJECTED, PO left at
+  $3,000, whichever invoice wins.)
 - **`extraction_quota` row** — same pattern in `quota.try_consume()`, for
   the same reason (a read-then-increment needs a row lock once the
   database-wide SQLite lock is gone).
@@ -5380,14 +5407,19 @@ frontend test suite (§11.4), so that is the whole gate.
 ## 7o. The concurrency demo fixtures (not a lettered phase)
 
 **Status: implemented, verified against a real running pipeline, committed
-(`df999b9`, `7c6f820`, `8ace8d8`).**
+(`df999b9`, `7c6f820`, `8ace8d8`). UPDATED IN A LATER SESSION — the losing
+invoice's outcome changed from NEEDS_REVIEW to REJECTED; see the callout in
+§7o.6 and the corrected §7o.8 item 2. That later change is a real edit to
+`storage.save_run_checked()`'s decision logic (§3, §4) — it did not exist
+when this section was first written, and the paragraph below describes only
+the original fixture-only session.**
 
 **NOT A NEW PHASE IN THE A–M TRACK** — the same designation §7b.13/§7b.14/§7j/
-§7l/§7m/§7n use for targeted work between lettered phases. **No backend,
-frontend, schema, rule, scope or concurrency logic was touched.** What this
-adds is three PDFs, two seed rows and two manifest entries, so that the row
-lock `save_run_checked()` has always taken can be *shown* to somebody rather
-than described to them.
+§7l/§7m/§7n use for targeted work between lettered phases. **In the original
+session, no backend, frontend, schema, rule, scope or concurrency logic was
+touched** — it added three PDFs, two seed rows and two manifest entries, so
+that the row lock `save_run_checked()` has always taken could be *shown* to
+somebody rather than described to them.
 
 ### 7o.1 What it is
 
@@ -5517,11 +5549,26 @@ history):
 | Run | Result |
 |---|---|
 | Sequential, A then B | A **APPROVED**, B **NEEDS_REVIEW**, `PO-7000-CONC` left at **$3,000** |
-| Both at once, two threads through one `threading.Barrier` | **B approved, A held**, balance still **$3,000** |
+| Both at once, two threads through one `threading.Barrier` | **B approved, A held**, balance still **$3,000** *(true at the time of this run — see below)* |
 
 Either may win — the point is that exactly one did, and the ledger is right
 afterwards. **Both runs happened on the regex route**, because Groq was
 429-ing, which is precisely the case §7o.3's rename was made to survive.
+
+**UPDATED IN A LATER SESSION: the concurrent-race row above is now stale.**
+`storage.save_run_checked()`'s commit-time balance re-check was changed so
+that a run which loses this exact race — it was correctly APPROVED against
+the balance it saw, and lost only because the other invoice against the same
+PO committed first under the same row lock — is **REJECTED**, not held. The
+sequential row is unaffected: a sequential B is decided NEEDS_REVIEW by
+`rules.decide()` before `save_run_checked()` is even reached, because the
+balance it sees at evaluation time is already $3,000 short, and that is not
+a race at all (§3, §4). Re-run with the dedicated test
+`test_concurrency_demo_two_invoices_one_rejected`
+(`tests/test_po_edge_cases.py`) rather than the "both at once" row above: two
+real threads race `PO-7000-DEMO` with the same $4,000-against-$7,000 shape,
+and the result is now **exactly one APPROVED, one REJECTED**, PO left at
+$3,000, whichever invoice wins.
 
 Suites re-run afterwards, against a local Postgres: `test_audit_trail`,
 `test_vendor_matching`, `test_line_items`, `test_allocations`,
@@ -5548,10 +5595,22 @@ appears in zero files under `frontend-next/out/`.
    invoices at once; the demonstration is a person on two devices, or two
    browser profiles, pressing Run within a second of each other. The
    verification script that proved it lives in a scratchpad, not in the repo.
-2. **Whichever invoice loses is held, not rejected** — `NEEDS_REVIEW`, because
-   billing over a remaining balance is recoverable and tolerance is one-sided
-   (§3). Anyone expecting the word REJECTED on the losing run is expecting the
-   wrong verdict.
+2. **UPDATED — whichever invoice loses the CONCURRENT race is now REJECTED,
+   not held.** This item originally said the opposite; it was true when this
+   section was written and is no longer, after a later, deliberate change to
+   `storage.save_run_checked()`'s commit-time balance re-check (§3, §4). The
+   reasoning still holds for the *ordinary, non-racing* case — billing over a
+   remaining balance, discovered when the invoice is first evaluated and
+   nothing else is contending for the same PO, is still recoverable and still
+   `NEEDS_REVIEW`, because tolerance is one-sided (§3) and nothing about that
+   path changed. What changed is narrower: an invoice that was *correctly*
+   APPROVED against the balance it saw, and only loses because another
+   invoice against the *same* PO committed first under the same row lock, has
+   nothing left for a reviewer to decide — the PO genuinely does not have its
+   amount left — so it is rejected outright instead of queued. Run the two
+   concurrency-demo invoices against each other in a real race (not the
+   sequential sample manifest, which never hits this path at all — see the
+   callout in §7o.6) and the loser now reads REJECTED.
 3. **The two invoices are not history-independent**, exactly like the split-PO
    trio: run them twice without `.\reset-demo.ps1` and the second pass meets a
    drained PO, so both are held and the race cannot happen. The manifest notes
@@ -5824,9 +5883,11 @@ matter more than they did when every caller was an employee (§7g.12).
 
 ## 10. Testing
 
-**2,015 tests, 33 files** (measured with `--collect-only` on 2026-08-24; every
-figure recorded here before that was already stale by more than the two cases
-§7o added). Both Groq and Gemini mocked at the HTTP transport
+**2,016 tests, 33 files** (measured with `--collect-only` on 2026-08-24, after
+adding `test_concurrency_demo_two_invoices_one_rejected` to
+`test_po_edge_cases.py`; every figure recorded here before that was already
+stale by more than the cases §7o and this addition brought in). Both Groq
+and Gemini mocked at the HTTP transport
 boundary — the suite needs no API key, no network, no quota, only a reachable
 PostgreSQL (`DATABASE_URL`). `test_samples.py` is the deliberate exception:
 it honours a live key and exercises the real routes end-to-end.
@@ -5868,7 +5929,7 @@ signature verified, an actual signature actually verified.
 | `test_document_type.py` | 19 | the not-an-invoice check |
 | `test_allocations.py` | 13 | the allocation ledger, migration, idempotence |
 | `test_inferred_po.py` | 13 | distance cap, ambiguity guard |
-| `test_po_edge_cases.py` | 12 | split-PO, idempotency, reversal, PO-lock concurrency |
+| `test_po_edge_cases.py` | 13 | split-PO, idempotency, reversal, PO-lock concurrency (loser REJECTED, not held) |
 | `test_reset_demo.py` | 11 | who may clear run history, what survives it |
 | `test_samples.py` | 14 | every sample end to end, in manifest order — including the two concurrency invoices §7o added |
 
@@ -6594,7 +6655,7 @@ is already configured.
 
 ```powershell
 .\start.ps1                 # installs deps, generates samples, starts server, opens browser
-.\venv\Scripts\python.exe -m pytest tests\ -q      # 2,015 tests, no key/network needed
+.\venv\Scripts\python.exe -m pytest tests\ -q      # 2,016 tests, no key/network needed
 .\reset-demo.ps1             # clear run history (samples are order-dependent)
 .\reset-demo.ps1 -Replay     # clear, then drive all 10 samples through the API
 ```
