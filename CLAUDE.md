@@ -531,6 +531,14 @@ mechanism per feature:
   $4,000-each-against-$7,000 scenario the demo fixtures in §7o use, under a
   real 2-thread race — exactly one APPROVED, one REJECTED, PO left at
   $3,000, whichever invoice wins.)
+- **the invoice IDENTITY** — not a row at all, because the thing being
+  protected is the ABSENCE of a matching run. `save_run_checked()` takes a
+  transaction-scoped `pg_advisory_xact_lock` on a stable digest of the invoice
+  number and total, and re-reads the duplicate query under it, so two
+  concurrent submissions of ONE invoice cannot both read "no earlier run
+  matches" and both be written. The loser is REJECTED as a duplicate. Taken
+  BEFORE any `purchase_orders` lock, which fixes one lock order for that
+  function; two DIFFERENT invoices never contend for it. See §7q.
 - **`extraction_quota` row** — same pattern in `quota.try_consume()`, for
   the same reason (a read-then-increment needs a row lock once the
   database-wide SQLite lock is gone).
@@ -5628,6 +5636,281 @@ appears in zero files under `frontend-next/out/`.
 
 ---
 
+## 7p. Restoring the Gmail integration (not a lettered phase)
+
+**Status: restored, guarded, tested (5 new tests in `tests/test_gmail_oauth.py`,
+mutation-checked), verified against the live deployment. NOT A NEW PHASE** —
+the same designation §7b.13/§7b.14/§7j/§7l/§7m/§7n/§7o use.
+
+### 7p.1 What was actually broken — three separate things
+
+The backend was never broken. All four `/api/email/oauth/gmail/*` routes, the
+provider, the poller, the encryption and the quarantine gate were intact and
+their 144 tests passed throughout.
+
+1. **No UI.** `d8512d6` and `0d9ffff` deleted both admin screens, so there was
+   nowhere to press Connect and nowhere to Release a held invoice.
+2. **`GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI` are not set on
+   Railway.** Confirmed by calling the deployed status endpoint:
+   `"oauth_configured": false`.
+3. **THE STORED CREDENTIAL WAS ENCRYPTED UNDER A KEY THAT NO LONGER EXISTS.**
+   The deployed connection reads `REVOKED` with
+   *"the stored credential could not be decrypted; AUTH_SECRET has most likely
+   changed"*. It has not been rotated — it was never involved.
+
+### 7p.2 The mechanism behind (3), which is the interesting one
+
+`oauth_google._fernet()` derives its key from `auth.signing_secret()`, and that
+function falls back to an **ephemeral per-process key** when `AUTH_SECRET` is
+unset. For a JWT that is harmless: the session ends, somebody signs in again.
+A refresh token is not a JWT — Google issues it once, it cannot be recomputed
+(§7h.4), and it is written to a row that **outlives the process**.
+
+The local `.env` had `AUTH_SECRET` written **twice**: an empty one, then the
+real one. **python-dotenv keeps the FIRST occurrence**, so the empty line won
+and the whole application ran on an ephemeral key. Reproduced directly: encrypt,
+clear `auth._RUNTIME_SECRET` to simulate a restart, decrypt — and the failure
+is the exact error string the deployment reports.
+
+That same `.env` also points `DATABASE_URL` at the **Supabase instance
+production uses**, so connecting Gmail locally wrote the credential into the
+production row, encrypted with a key that existed only in that one local
+process. `UNIQUE(provider)` means it replaced the production connection rather
+than sitting beside it.
+
+### 7p.3 The fix: refuse, rather than report it better afterwards
+
+A mailbox that reads Connected now and Revoked after the next restart is worse
+than one that plainly did not connect — and it sends an administrator to Google
+looking for a grant Google never withdrew. So this is refused, in exactly the
+shape §7h.6 already refuses a grant that arrives with no refresh token:
+
+* `auth.signing_secret_is_ephemeral()` — true when `AUTH_SECRET` is unset.
+* `oauth_google.token_storage_is_durable()` — its negation, named for what the
+  caller actually needs to know.
+* `/authorize` answers **409** naming the variable, **before** the round trip,
+  so nobody walks the consent screen to earn a credential we must hand back.
+* The **callback re-checks before writing** — the two requests are minutes
+  apart and only this one stores anything — and revokes the grant at Google
+  rather than storing it. New closed-set result word: `ephemeral_secret`.
+* `/status` reports `token_storage_durable`, so the screen names the remedy.
+  It is a **THIRD** state beside `oauth_configured`, with a third remedy, kept
+  distinct for the reason §7h.10 keeps the first two distinct.
+
+No schema change, no new scope, no new dependency, no new route. The `.env`
+defect itself was fixed by deleting the shadowing empty line.
+
+### 7p.4 What was verified
+
+* 149 tests in `test_gmail_oauth.py` (144 existing + 5 new), plus 217 across
+  the two email files, 309 across security/production/portal.
+* **Full suite: 2,020 passed, 2 failed** — the same two §10 already documents
+  as pre-existing (`frontend/app.js` deleted in `fcac22a`, and the open
+  `doclang.normalise_date` English-date bug). Neither is touched by this work.
+* Mutation: forcing `token_storage_is_durable()` to `True` breaks exactly the
+  four tests that assert the guard, and nothing else. The pre-existing
+  parametrised redirect sweep picked up `ephemeral_secret` automatically.
+* Driven against a real local server: `/authorize` produces a correct Google
+  URL (`gmail.readonly` only, `access_type=offline`, `prompt=consent`, PKCE
+  S256, no client secret); with `AUTH_SECRET` cleared it answers 409 and
+  records no pending row; the callback redirects to `FRONTEND_ORIGIN` when set
+  and stays relative when not.
+* Against the live deployment: `FRONTEND_ORIGIN` **is** correctly set (to the
+  custom domain `https://www.adityasingh.tech`), `vercel.json` proxies
+  `/api/*` to Railway and passes the callback's 303 through unchanged, and
+  `NEXT_PUBLIC_API_BASE_URL` is **not** set — so the browser stays on one
+  origin for the whole flow and no CORS is involved.
+
+### 7p.5 What still needs a human
+
+1. Set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` and
+   `GOOGLE_OAUTH_REDIRECT_URI` on Railway, and register that exact redirect URI
+   in Google Cloud. Then **redeploy Railway by hand** (§2: it does not
+   auto-deploy).
+2. **Disconnect, then Connect, from the DEPLOYED app** — never locally while
+   `DATABASE_URL` names the production database.
+3. `GMAIL_BACKFILL_DAYS` defaults to **0**, so connecting starts reading from
+   that moment. Mail already sitting in the inbox is not collected.
+4. Verify `DOCUMENT_STORE_BACKEND` is `postgres` or `s3` (§7k.9 item 1). It
+   matters more here than anywhere else: a quarantined attachment's PDF is held
+   in the DocumentStore until a human releases it, which can be days, and on a
+   container filesystem it does not survive a redeploy.
+
+---
+
+## 7q. The duplicate check under a lock (not a lettered phase)
+
+**Status: implemented, tested (6 new tests in `tests/test_po_edge_cases.py`),
+mutation-checked. NOT A NEW PHASE** — the same designation §7b.13/§7b.14/§7j/
+§7l/§7m/§7n/§7o/§7p use.
+
+Reported as *"I ran the happy path in two tabs at once and both were
+accepted"*. Reproducing it turned up **two different things**, only one of
+which was a bug. Both are recorded, because the one that was not a bug is the
+one the reporter actually saw.
+
+### 7q.1 What the reporter saw: one job wearing two tabs
+
+Two tabs, one account, the same PDF, submitted together. `POST /api/runs`
+scopes its idempotency key to the content, the submitter and the door
+(§7m.5), so the second submission was a **duplicate job** — it returned the
+first one's `job_id` with `duplicate: true`, and both tabs then polled that
+single job and rendered its single APPROVED verdict.
+
+**Nothing was processed twice and nothing was double-charged.** Measured on a
+throwaway schema: one job, one run, `PO-1001` correctly left at $5.72. The
+dedupe did exactly what §7m.5 built it to do.
+
+**But the API said so and the UI did not**, and that silence is the whole
+complaint: two tabs each showing "Approved" is indistinguishable from two
+invoices having been approved. `ProcessPage.tsx` now reads the `duplicate`
+flag that `lib/types.ts` has carried since §7m and says plainly that this
+submission joined work already in flight, that the verdict below belongs to
+one invoice, and that seeing two invoices genuinely contend means running two
+**different** ones against the same PO. `runRace()` — the "Run both at once"
+button that appears when a concurrency sample is picked — is exactly that, and
+it was already there.
+
+### 7q.2 What the reproduction found underneath: a real race
+
+The dedupe key is scoped to the submitter, so **two different people**
+submitting one invoice at the same moment create two jobs, two workers and two
+runs. `rules.duplicate_check` is a plain `SELECT` taken outside any
+transaction (`storage.find_duplicate`, its own connection, seconds before the
+commit), so both read *"no earlier run matches"* before either writes.
+
+The `purchase_orders` row lock catches that **only by accident** — when the two
+amounts happen not to fit the same PO. Driven end to end over HTTP:
+
+| Same invoice, twice, concurrently | Before | After |
+|---|---|---|
+| $1,234.28 against a $1,240 PO | APPROVED + REJECTED (the balance lock caught it) | unchanged |
+| **$2,000 against a $15,400 PO** | **APPROVED + APPROVED, $4,000 consumed** | APPROVED + REJECTED, $2,000 consumed |
+
+The second row is a genuine double-charge: one invoice, paid twice, with a
+clean audit trail on both runs saying the duplicate check passed.
+
+### 7q.3 The fix, and why the lock is an advisory one
+
+`save_run_checked()` already re-checks the PO balance under a lock, for
+exactly this reason — the verdict is computed outside any transaction and can
+be stale by the time it commits. The duplicate is now re-checked the same way,
+in the same transaction, on the same cursor.
+
+**It cannot be a row lock, because there is no row.** What needs protecting is
+the *absence* of a matching run, and there is nothing to lock for something
+that does not exist yet. **A unique index on `runs` would be wrong rather than
+merely awkward**: a rejected duplicate is itself recorded as a run, on
+purpose, so several rows legitimately share one invoice number and the
+database has to keep accepting them.
+
+So the lock is taken on the invoice's **identity** —
+`storage.duplicate_lock_key()`, a stable 63-bit blake2b digest of the invoice
+number and the total in cents — through `pg_advisory_xact_lock`. It is held
+until the transaction ends and released by commit or rollback exactly like a
+row lock, needs no schema change, and contends only with another invoice
+claiming to be the *same* one. Two different invoices never wait on each
+other, which is the "scoped to the contended thing, never the database"
+property the `purchase_orders` lock already has.
+
+The key is derived in Python rather than by Postgres's `hashtext` because that
+function is undocumented and its value has changed across major versions; a
+key that shifted under a server upgrade would silently stop serialising, and
+nothing would report it.
+
+**THE VENDOR IS DELIBERATELY NOT IN THE KEY**, even though it *is* part of the
+identity `find_duplicate` compares. That predicate is
+`vendor_name=%s OR vendor_name IS NULL`, so a run whose vendor could not be
+read is a duplicate of an invoice from **any** vendor — and a key including the
+vendor would put those two on different keys and let exactly the pair the query
+does match slip past the lock. Keying on number and total alone serialises a
+superset: two invoices sharing a number and a total from genuinely different
+vendors wait for each other briefly and are then both written, since neither
+matches the other's query. A rare coincidence costing one short wait, against a
+hole that costs a double payment.
+
+**No invoice number means no key and no lock.** `find_duplicate` already
+declines to match without one, so there is no absence to protect — and such a
+run is held for a person regardless, because a missing invoice number fails
+the required-fields check.
+
+### 7q.4 Two orderings, both deliberate
+
+The re-check runs **first**, before Phase J's vendor-identity hold and before
+the balance loop:
+
+- it is the only one of the three that **rejects**, and §3's hierarchy is that
+  reject wins over review when both fire, so it has to settle the verdict
+  before a branch that would only hold;
+- taking the advisory lock before any `purchase_orders` row lock fixes **one**
+  global lock order for this function, which is what rules out a deadlock
+  between two invoices contending on both.
+
+The re-read is issued **on the transaction's own cursor**, not through
+`storage.find_duplicate()` — that opens a second connection and could see a
+different snapshot than the insert that follows, the same trap §7.2 records
+for `record_human_review()`'s claim check.
+
+The audit fix-up gains its **third** cause. `rules.decide()` recorded
+"Duplicate check" as passing, correctly, for the instant it asked; when the
+re-check rejects, that entry is flipped to failed — the same treatment the
+balance downgrade already gives "PO remaining check". No new rule name was
+invented: `"Duplicate check"` is the existing fixed vocabulary, already
+grouped by analytics (§7c.11) and already translated by the portal (§7g.6).
+
+### 7q.5 What did NOT change
+
+No schema — **no table, no column, no index**. No new scope, no new endpoint,
+no new dependency, no new rule name. `rules.duplicate_check` is untouched and
+still runs where it always did: it is what produces the reason a reviewer
+reads in the ordinary, non-racing case, and re-checking at commit does not
+make the first check redundant any more than the balance re-check makes
+`rules.decide()`'s PO check redundant.
+
+**The duplicate RULE is unchanged in every sequential case**, which is what
+keeps `06_duplicate_of_01.pdf` and `reset-demo.ps1 -Replay` behaving exactly as
+documented.
+
+### 7q.6 Tests
+
+Six in `tests/test_po_edge_cases.py`, beside the PO-lock race tests they
+mirror: the two-thread roomy-PO case charging the PO once, the audit fix-up,
+the no-invoice-number case proving nothing is serialised without an identity,
+the key's stability and identity-scoping, and — separately — a test that
+**holds the advisory lock from another connection and asserts
+`save_run_checked` waits for it**.
+
+That last one exists because the thread test does not prove what it looks like
+it proves: both of its submissions also contend on the `purchase_orders` row,
+which serialises them incidentally, and the thread test **passed with the
+advisory lock removed**. That is recorded rather than quietly patched over —
+it is the same class of hole §7h.12 records for a test that stubbed the
+function whose effect it was asserting.
+
+| Mutation | Broke | Correct? |
+|---|---|---|
+| the commit-time duplicate re-check is disabled | 2 (the roomy-PO race, the audit fix-up) | ✅ |
+| the re-check kept, the advisory lock removed | 1 (the lock test) — **0 at first**, see above | ✅ after |
+
+A sixth test covers the vendor case above: a run committed with an unreadable
+vendor name, then the same invoice arriving with its vendor read — and the
+second is rejected as a duplicate of the first.
+
+### 7q.7 Known limitations
+
+1. **Identity is vendor + invoice number + total**, matching `find_duplicate`.
+   A vendor who reissues the same invoice number for a different amount is two
+   identities and will not contend — that is the existing duplicate rule's
+   definition, not a new limitation.
+2. **The lock is held in the database, so it works across uvicorn workers and
+   processes** — unlike the rate limiters (§7e.8). It does not span two
+   separate databases, which is not a topology this application has.
+3. **A duplicate arriving after the first has settled is still caught by
+   `rules.duplicate_check`**, exactly as before; this only covers the window
+   in which neither had committed.
+
+---
+
 ## 8. Authentication, authorization
 
 - **OAuth 2.0 resource-server pattern.** `Authorization: Bearer <JWT>`,
@@ -5883,10 +6166,11 @@ matter more than they did when every caller was an employee (§7g.12).
 
 ## 10. Testing
 
-**2,016 tests, 33 files** (measured with `--collect-only` on 2026-08-24, after
-adding `test_concurrency_demo_two_invoices_one_rejected` to
-`test_po_edge_cases.py`; every figure recorded here before that was already
-stale by more than the cases §7o and this addition brought in). Both Groq
+**2,028 tests, 33 files** (measured with `--collect-only` on 2026-08-25, after
+adding §7q's six duplicate-lock tests to `test_po_edge_cases.py`. Note the
+arithmetic does NOT close against the 2,016 recorded the day before: this
+addition is six cases, so that figure was already stale by six when it was
+written, exactly as the line it replaced warned. Count, do not subtract.) Both Groq
 and Gemini mocked at the HTTP transport
 boundary — the suite needs no API key, no network, no quota, only a reachable
 PostgreSQL (`DATABASE_URL`). `test_samples.py` is the deliberate exception:
@@ -5929,7 +6213,7 @@ signature verified, an actual signature actually verified.
 | `test_document_type.py` | 19 | the not-an-invoice check |
 | `test_allocations.py` | 13 | the allocation ledger, migration, idempotence |
 | `test_inferred_po.py` | 13 | distance cap, ambiguity guard |
-| `test_po_edge_cases.py` | 13 | split-PO, idempotency, reversal, PO-lock concurrency (loser REJECTED, not held) |
+| `test_po_edge_cases.py` | 19 | split-PO, idempotency, reversal, PO-lock concurrency (loser REJECTED, not held), and the commit-time duplicate re-check under its advisory identity lock (§7q) |
 | `test_reset_demo.py` | 11 | who may clear run history, what survives it |
 | `test_samples.py` | 14 | every sample end to end, in manifest order — including the two concurrency invoices §7o added |
 
@@ -6553,7 +6837,9 @@ OPERATIONS   Overview            performance, and what is blocked on a person
              Process invoice     upload and run                [invoice:process]
              Invoices            the full register
              Review queue        the same section, filtered     (badge = open holds)
-ADMIN        Email queue         held/released messages,       [invoice:read]
+ADMIN        Email integration   connect/disconnect Gmail      [invoice:admin]
+                                 (§7h.10)
+             Email queue         held/released messages,       [invoice:read]
                                  release/discard/process        (§7b.14)
 REPORTING    Analytics           Phase H KPIs and trends
              Assistant           Phase K2, ask about your invoices
@@ -6561,14 +6847,31 @@ REFERENCE    Purchase orders     the same section, orders tab
              Approved vendors    the same section, vendors tab
 ```
 
-**THE "EMAIL INTEGRATION" ROW AND ITS SCREEN ARE GONE** (`d8512d6`).
-`components/pages/SettingsPage.tsx` was deleted, along with the `settings`
-section, its entry in the `Section`/`NavId` unions, the `?gmail=` landing
-redirect, `IconSettings`, the `nav.settings` labels in all seven catalogues and
-the five Gmail/ingestion interfaces in `lib/types.ts`. **No backend file was
-touched** — `/api/email/oauth/gmail/*` still exists and still requires
-`invoice:admin`. Restoring the feature means restoring one component and its
-four wiring points. §7h.10 describes that screen as it WAS; read it as history.
+**BOTH ADMIN SCREENS WERE REMOVED AND HAVE NOW BEEN RESTORED.** `d8512d6`
+deleted `SettingsPage.tsx` (the mailbox connection) and `0d9ffff` deleted
+`EmailQueuePage.tsx` (the held-message queue), in both cases leaving the
+backend untouched. A later session restored both from those commits, together
+with their wiring: the `settings`/`email-queue` members of the `Section` and
+`NavId` unions, the Administration nav group, the `?gmail=` landing redirect,
+`IconSettings`, the `nav.group.admin`/`nav.settings`/`nav.emailQueue` labels in
+all seven catalogues, and the Gmail/ingestion/email-queue interfaces in
+`lib/types.ts`. §7h.10 and §7b.14 describe these screens and are current again.
+
+Three things changed on the way back in rather than being restored verbatim,
+and each is deliberate:
+
+* `SettingsPage`'s `replaceState` **preserves the URL hash** when it clears
+  `?gmail=`. It predates hash-based navigation (§11.-1), and rebuilding the URL
+  from pathname + query alone dropped the reader back on Overview at the next
+  reload, immediately after returning from Google.
+* `page.tsx` gained `landingNavId()`, which lets `?gmail=` win over the hash —
+  the query describes something that has JUST happened, the hash only records
+  where this browser last was.
+* The nav rows carry no `hintKey`, because the current `GROUPS` table has no
+  such field; adding the `*.hint` keys back would have been dead strings.
+
+**A NEW SERVER-SIDE GUARD CAME WITH THE RESTORE, AND IT IS THE ACTUAL BUG FIX —
+see §7p.**
 
 **The sign-in screen's demo-account panel is hidden on any split deployment**
 (`0c468f4`), gated on `NEXT_PUBLIC_API_BASE_URL` read straight from
@@ -7038,9 +7341,12 @@ the code, verify against the code directly rather than trusting either.
      creates and drops its own schema over the network — and `test_reset_demo.py`
      and `test_extraction_routing.py` have no schema fixture at all, so they run
      against whatever `public` the URL names. On a hosted URL that is real data.
-   * **Gmail is deliberately absent from the UI** and its backend is
-     deliberately intact. Do not "fix" one to match the other without being
-     asked. See §11.1 and §7k.9.
+   * **Gmail is back in the UI** (§11.1, §7p). What broke it was never the
+     backend: a mailbox connected while `AUTH_SECRET` was unset — or connected
+     from a LOCAL process pointing at the DEPLOYED database — stores a refresh
+     token encrypted under a key the deployed app does not have, and the
+     mailbox then reads "Access revoked". Connecting is now refused in that
+     state rather than silently producing it.
    * **The frontend has two build modes and they differ in what they SHIP**, not
      just what they render: with `NEXT_PUBLIC_API_BASE_URL` set, the demo
      credentials are dead-code-eliminated. Check with a grep of `out/`, not by

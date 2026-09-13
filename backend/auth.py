@@ -399,6 +399,24 @@ def signing_secret() -> str:
     return _RUNTIME_SECRET
 
 
+def signing_secret_is_ephemeral() -> bool:
+    """Whether the signing secret dies with this process.
+
+    True exactly when AUTH_SECRET is not set, so `signing_secret()` fell back
+    to a per-process key. Sessions surviving a restart is the familiar cost of
+    that; the reason this needs to be ASKABLE is anything that encrypts data
+    AT REST under a key derived from the same secret.
+
+    A JWT signed with an ephemeral key expires harmlessly. A Gmail refresh
+    token encrypted with one is a long-lived credential written to a database
+    that NOTHING will be able to read again after the next restart -- and,
+    because the row survives, the failure surfaces later as an apparently
+    revoked mailbox rather than as the configuration mistake it actually is.
+    See oauth_google.token_storage_is_durable().
+    """
+    return not os.environ.get(config.AUTH_SECRET_ENV, "").strip()
+
+
 def create_access_token(user: dict) -> dict:
     now = int(time.time())
     ttl = config.AUTH_TOKEN_TTL_MINUTES * 60

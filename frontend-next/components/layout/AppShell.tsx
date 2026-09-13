@@ -18,6 +18,7 @@ import {
   IconAnalytics,
   IconInvoice,
   IconLedger,
+  IconMail,
   IconMenu,
   IconMoon,
   IconOverview,
@@ -25,6 +26,7 @@ import {
   IconSignOut,
   IconSun,
   IconChat,
+  IconSettings,
   IconUpload,
   IconX,
 } from "@/components/ui/icons";
@@ -35,7 +37,9 @@ export type Section =
   | "assistant"
   | "process"
   | "invoices"
-  | "reference";
+  | "reference"
+  | "settings"
+  | "email-queue";
 
 /**
  * Which sidebar ROW is lit.
@@ -58,7 +62,9 @@ export type NavId =
   | "invoices"
   | "review-queue"
   | "purchase-orders"
-  | "approved-vendors";
+  | "approved-vendors"
+  | "settings"
+  | "email-queue";
 
 /** `exceptionsOnly` lets a caller (Overview's exception card, or the "Review
  *  queue" nav item) send the reviewer straight to the pre-filtered queue
@@ -122,6 +128,32 @@ const GROUPS: {
         icon: IconShield,
         exceptionsOnly: true,
         badge: true,
+      },
+    ],
+  },
+  {
+    labelKey: "nav.group.admin",
+    items: [
+      {
+        // Scoped to invoice:admin, so it does not render for anyone who would
+        // only get a 403 from it. That is a courtesy, not a control -- every
+        // endpoint behind it re-checks the scope server-side.
+        id: "settings",
+        key: "settings",
+        labelKey: "nav.settings",
+        icon: IconSettings,
+        scope: "invoice:admin",
+      },
+      {
+        // Reading the queue is `invoice:read`, same as everything else here,
+        // but nobody without `invoice:review` can act on a row -- gated on
+        // `invoice:read` so a viewer can at least see what is held, matching
+        // how the endpoints themselves are scoped (§7a.9/§7b.10).
+        id: "email-queue",
+        key: "email-queue",
+        labelKey: "nav.emailQueue",
+        icon: IconMail,
+        scope: "invoice:read",
       },
     ],
   },

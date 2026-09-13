@@ -25,10 +25,12 @@ import AppShell, {
 } from "@/components/layout/AppShell";
 import AnalyticsPage from "@/components/pages/AnalyticsPage";
 import AssistantPage from "@/components/pages/AssistantPage";
+import EmailQueuePage from "@/components/pages/EmailQueuePage";
 import OverviewPage from "@/components/pages/OverviewPage";
 import ProcessPage from "@/components/pages/ProcessPage";
 import InvoicesPage from "@/components/pages/InvoicesPage";
 import PortalApp from "@/components/portal/PortalApp";
+import SettingsPage from "@/components/pages/SettingsPage";
 import ReferencePage from "@/components/pages/ReferencePage";
 import { Spinner } from "@/components/ui";
 
@@ -61,6 +63,8 @@ const NAV_IDS: NavId[] = [
   "review-queue",
   "purchase-orders",
   "approved-vendors",
+  "settings",
+  "email-queue",
 ];
 
 type Destination = {
@@ -93,12 +97,40 @@ function navIdFromHash(): NavId | null {
   return (NAV_IDS as string[]).includes(raw) ? (raw as NavId) : null;
 }
 
+/**
+ * The row to open on first render.
+ *
+ * Normally whatever the hash names, so a reload keeps your place. THE ONE
+ * EXCEPTION IS THE GMAIL OAUTH ROUND TRIP (Phase G2): Google redirects the
+ * browser back to `/?gmail=<result>`, and the person making that trip left
+ * from the Email integration screen. Landing them on Overview would drop them
+ * somewhere that says nothing about what just happened, with the outcome
+ * sitting unread in the address bar -- including the failure results, which
+ * are the ones that most need to be seen.
+ *
+ * The query parameter wins over the hash because it describes something that
+ * has JUST happened, while the hash only records where this browser last was.
+ * Only its PRESENCE is read here; the value is a closed vocabulary the server
+ * controls and SettingsPage is what renders it.
+ *
+ * Lazily evaluated and guarded, because this is a static export: there is no
+ * `window` during prerender.
+ */
+function landingNavId(): NavId {
+  if (typeof window === "undefined") return "overview";
+  if (new URLSearchParams(window.location.search).has("gmail")) return "settings";
+  return navIdFromHash() ?? "overview";
+}
+
 export default function Home() {
   const { user, ready, can } = useAuth();
   // Lazy initialiser, so the hash is read on the very first render and the
   // restored screen is the first thing painted -- seeding to "overview" and
   // correcting it in an effect would flash the landing screen every reload.
-  const [initial] = useState(() => destinationFor(navIdFromHash() ?? "overview"));
+  const [initialNav] = useState<NavId>(landingNavId);
+  // Pure switch over a value that never changes -- cheaper to recompute than
+  // to hold in state, and it cannot drift from `initialNav`.
+  const initial = destinationFor(initialNav);
   const [section, setSection] = useState<Section>(() => initial.section);
   // Set only by a navigation that promised a filtered view (Overview's "Open
   // review queue", or the sidebar's own "Review queue" item); consumed once
@@ -115,7 +147,7 @@ export default function Home() {
   // Which sidebar ROW is lit. Seven rows share five sections, so the section
   // alone cannot say — see NavId in AppShell. Derived from the same options
   // the caller already passes, so navigate()'s signature is unchanged.
-  const [navId, setNavId] = useState<NavId>(() => navIdFromHash() ?? "overview");
+  const [navId, setNavId] = useState<NavId>(initialNav);
   // Bumped when a run finishes or a review lands, so every view refetches.
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -212,6 +244,13 @@ export default function Home() {
       {section === "assistant" && <AssistantPage />}
       {section === "process" && <ProcessPage runs={runs} onRan={refresh} />}
       {section === "invoices" && <InvoicesPage runs={runs} initialFilter={invoicesFilter} />}
+      {/* Email integration (Phase G2). Fetches its own status: it is about the
+          server's mailbox connection rather than about invoice rows, so there
+          is nothing in the shared run/reference data to hand down. */}
+      {section === "settings" && <SettingsPage />}
+      {/* Email review queue: fetches its own data, same reason as Settings --
+          it is about held messages, not about the shared run/reference data. */}
+      {section === "email-queue" && <EmailQueuePage />}
       {/* Email review queue: fetches its own data, same reason as Settings --
           it is about held messages, not about the shared run/reference data. */}
       {section === "reference" && (

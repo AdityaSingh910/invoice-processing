@@ -1627,3 +1627,83 @@ def test_expired_pending_authorizations_are_cleared_lazily(oauth_env):
     finally:
         conn.close()
     assert remaining == {"fresh"}
+
+
+# ==========================================================================
+# 14. A credential is never stored under a key that dies with the process
+#
+# THE FAILURE THIS PREVENTS, WHICH ACTUALLY HAPPENED IN THIS DEPLOYMENT.
+# `_fernet()` derives its key from `auth.signing_secret()`, which falls back to
+# an EPHEMERAL per-process key when AUTH_SECRET is unset. Signing a JWT with
+# such a key is harmless -- the session ends and somebody signs in again. A
+# refresh token is not a JWT: Google issues it once, it cannot be recomputed,
+# and it is written to a row that OUTLIVES the process. So the mailbox read
+# "Connected" until the next restart and "Access revoked" afterwards, sending
+# an administrator to look at Google for a grant Google never withdrew.
+#
+# The remedy is refusal, not a better error message later.
+# ==========================================================================
+def test_token_storage_is_durable_only_when_a_real_secret_is_set(oauth_env, monkeypatch):
+    assert oauth_google.token_storage_is_durable() is True
+    monkeypatch.setenv("AUTH_SECRET", "")
+    assert oauth_google.token_storage_is_durable() is False
+
+
+def test_authorize_is_refused_when_the_signing_secret_is_ephemeral(client, monkeypatch):
+    """Refused BEFORE the round trip, so nobody earns a grant we must hand back."""
+    monkeypatch.delenv("AUTH_SECRET", raising=False)
+    response = client.post("/api/email/oauth/gmail/authorize", headers=auth_headers("admin"))
+    assert response.status_code == 409
+    # Names the variable to set, the way the not-configured refusal does.
+    assert config.AUTH_SECRET_ENV in response.json()["detail"]
+    # And nothing was recorded to be completed later.
+    conn = storage.get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) AS n FROM oauth_pending_authorizations")
+            assert cur.fetchone()["n"] == 0
+    finally:
+        conn.close()
+
+
+def test_the_callback_refuses_to_store_a_credential_it_could_not_read_back(client, monkeypatch):
+    """Re-checked at the WRITE, because /authorize and /callback are minutes apart.
+
+    The grant is handed back to Google rather than left live against a
+    connection this deployment could not have kept.
+    """
+    started = client.post("/api/email/oauth/gmail/authorize", headers=auth_headers("admin"))
+    assert started.status_code == 200
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(started.json()["authorization_url"]).query))["state"]
+
+    # The secret disappears between the two requests.
+    monkeypatch.delenv("AUTH_SECRET", raising=False)
+    response = client.get("/api/email/oauth/gmail/callback",
+                          params={"code": "auth-code-1", "state": state},
+                          follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "gmail=ephemeral_secret" in response.headers["location"]
+    # NOTHING was stored -- not a REVOKED row, not a half-written one.
+    assert connected_row() is None
+
+
+def test_the_status_endpoint_reports_whether_storage_is_durable(client, monkeypatch):
+    """A THIRD question with a third remedy, beside oauth_configured."""
+    body = client.get("/api/email/oauth/gmail/status",
+                      headers=auth_headers("admin")).json()
+    assert body["token_storage_durable"] is True
+
+    monkeypatch.delenv("AUTH_SECRET", raising=False)
+    body = client.get("/api/email/oauth/gmail/status",
+                      headers=auth_headers("admin")).json()
+    assert body["token_storage_durable"] is False
+    # Still a separate fact from whether an OAuth client exists.
+    assert body["oauth_configured"] is True
+
+
+def test_ephemeral_secret_is_in_the_closed_set_of_callback_results(oauth_env):
+    """Nothing Google says can reach the address bar; this word is ours."""
+    import main
+    assert "ephemeral_secret" in main._GMAIL_CALLBACK_RESULTS

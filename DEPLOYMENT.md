@@ -347,6 +347,42 @@ To reconnect: sign in as an administrator → **Email integration** →
 **Disconnect**, then **Connect**. The consent screen will list whichever scopes
 `GMAIL_OAUTH_SCOPES` names.
 
+### 4.1 Two ways to connect a mailbox that LOOKS fine and is already broken
+
+Both of these produced a mailbox reading **Connected**, then **Access revoked**
+after the next restart, with `last_error` saying the credential could not be
+decrypted — which sends whoever reads it to Google looking for a grant Google
+never withdrew. The cause is local in both cases.
+
+**1. Connecting while `AUTH_SECRET` is unset.** The stored refresh token is
+encrypted under a key derived from `AUTH_SECRET` (§7h.4). With none set,
+`auth.signing_secret()` generates an **ephemeral per-process key** — fine for a
+JWT, which merely expires, and fatal for a credential written to a row that
+outlives the process. **The application now refuses this**: `/authorize` answers
+409 naming the variable, the callback re-checks before writing and hands the
+grant back to Google, and the Email integration screen says so instead of
+offering a Connect button that cannot work. Set `AUTH_SECRET` and restart first.
+
+Watch for a **duplicate `AUTH_SECRET` in `.env`**: python-dotenv keeps the
+**first** occurrence, so an empty `AUTH_SECRET=` earlier in the file silently
+beats a real value later in it. That is what happened here.
+
+**2. Connecting from a LOCAL process that points at the DEPLOYED database.**
+If your local `DATABASE_URL` names the production (Supabase) instance, clicking
+Connect locally writes the encrypted credential into the **production** row —
+encrypted with your **local** `AUTH_SECRET`, which Railway does not have. The
+deployed app then cannot decrypt it, and the mailbox reads as revoked there
+while appearing to have connected successfully here.
+
+**Connect the mailbox from the deployed application, signed in to the deployed
+URL.** There is one connection row per provider (`UNIQUE(provider)`), so a local
+connect does not sit beside the production one — it replaces it.
+
+If a connection is already in this state, **Disconnect** then **Connect** from
+the deployed app. Disconnect works on an undecryptable credential by design;
+Google may not confirm the revocation, in which case the screen tells you to
+remove the app at `myaccount.google.com/permissions`.
+
 ---
 
 ## 5. Environment variables, by where they live

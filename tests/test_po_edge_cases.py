@@ -467,3 +467,221 @@ def test_concurrency_demo_two_invoices_one_rejected(db):
 
     assert storage.consumed_amount_for_po("PO-7000-DEMO") == 4_000.0
     assert storage.remaining_for_po("PO-7000-DEMO") == 3_000.0
+
+
+def test_the_same_invoice_submitted_twice_at_once_is_charged_once(db):
+    """Two concurrent submissions of ONE invoice, against a PO with room for
+    both. Exactly one is APPROVED and the PO is charged once.
+
+    This is the case the PO-balance lock cannot reach, and the reason
+    save_run_checked re-checks the duplicate under an advisory lock as well.
+    `rules.duplicate_check` is a plain SELECT taken outside any transaction, so
+    two submissions racing each other both read "no earlier run matches" before
+    either commits. When their amounts happen not to fit the same PO the
+    balance re-check catches the second by accident; when the order is roomy
+    -- $2,000 twice against $15,000 -- nothing did, and one invoice was paid
+    twice.
+
+    Either submission may win, and this test does not force an ordering.
+    """
+    import threading
+
+    conn = storage.get_conn()
+    conn.execute("""INSERT INTO purchase_orders
+           (po_number, vendor, amount, currency, issued_date, status, description)
+           VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                 ("PO-ROOMY", VENDOR, 15_000.0, "USD", "2026-01-01", "open", "room for both"))
+    conn.commit()
+    conn.close()
+
+    results, lock, barrier = [], threading.Lock(), threading.Barrier(2)
+
+    def worker(label):
+        # IDENTICAL vendor, invoice number and total -- one invoice, sent twice.
+        extracted = {"vendor_name": VENDOR, "invoice_number": "INV-SAME-2000",
+                     "total": 2_000.0, "po_references": ["PO-ROOMY"], "currency": "USD"}
+        po_match = matching.match_po(extracted)
+        dup_row, dup_detail = rules.duplicate_check(extracted)   # both read "none"...
+        status, reasons = rules.decide({"route": "regex", "notes": [], "security_flags": []},
+                                       [], True, "ok", dup_row, dup_detail, po_match)
+        assert status == "APPROVED", "on its own this invoice is valid"
+        barrier.wait()                                           # ...then both commit
+        _, final, extra = storage.save_run_checked(
+            f"same-{label}.pdf", status, extracted, po_match, [], reasons,
+            tolerance_for=matching.tolerance_for,
+            audit={"rules": [{"name": "Duplicate check", "passed": True,
+                              "detail": "No earlier run matches this invoice"}]})
+        with lock:
+            results.append((label, final, extra))
+
+    threads = [threading.Thread(target=worker, args=(label,)) for label in ("A", "B")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    outcomes = sorted(final for _, final, _ in results)
+    assert outcomes == ["APPROVED", "REJECTED"], (
+        f"expected exactly one APPROVED and one REJECTED, got {outcomes}"
+    )
+
+    # The point of the whole test: the PO paid for this invoice once.
+    assert storage.consumed_amount_for_po("PO-ROOMY") == 2_000.0
+    assert storage.remaining_for_po("PO-ROOMY") == 13_000.0
+
+    # The loser is rejected as a DUPLICATE, not for the balance -- there was
+    # $13,000 left, so a balance reason would be untrue as well as unhelpful.
+    loser = next(extra for _, final, extra in results if final == "REJECTED")
+    assert loser is not None
+    assert "matches run #" in loser["text"], loser["text"]
+    assert "balance changed" not in loser["text"].lower()
+
+
+def test_the_duplicate_rejection_marks_the_duplicate_rule_failed(db):
+    """The audit trail has to say what was actually committed.
+
+    `rules.decide()` recorded "Duplicate check" as PASSING, correctly, for the
+    instant it asked. When the commit-time re-check then rejects the run, the
+    stored trail must not still read that the duplicate check passed -- the
+    same fix-up the PO-balance downgrade already applies to "PO remaining
+    check".
+    """
+    extracted = {"vendor_name": VENDOR, "invoice_number": "INV-AUDIT-1",
+                 "total": 500.0, "po_references": [], "currency": "USD"}
+    po_match = matching.match_po(extracted)
+    audit = {"automated_decision": "APPROVED", "reason": "clean",
+             "rules": [{"name": "Duplicate check", "passed": True,
+                        "detail": "No earlier run matches this invoice"},
+                       {"name": "Vendor approved", "passed": True, "detail": "ok"}]}
+
+    first_id, first_status, _ = storage.save_run_checked(
+        "a.pdf", "APPROVED", extracted, po_match, [], [],
+        tolerance_for=matching.tolerance_for, audit=dict(audit))
+    assert first_status == "APPROVED"
+
+    second_id, second_status, extra = storage.save_run_checked(
+        "b.pdf", "APPROVED", extracted, po_match, [], [],
+        tolerance_for=matching.tolerance_for, audit=dict(audit))
+    assert second_status == "REJECTED"
+    assert extra is not None and f"matches run #{first_id}" in extra["text"]
+
+    stored = storage.get_run(second_id)
+    trail = stored["audit"]
+    assert trail["automated_decision"] == "REJECTED"
+    assert "Duplicate check" in trail["rules_failed"]
+    assert "Duplicate check" not in trail["rules_passed"]
+    # An unrelated rule that really did pass is left alone.
+    assert "Vendor approved" in trail["rules_passed"]
+
+
+def test_an_invoice_with_no_number_is_not_serialised_on_a_duplicate_lock(db):
+    """No invoice number, no identity, no lock, no behaviour change.
+
+    `find_duplicate` already declines to match without an invoice number, so
+    there is no absence to protect. Two such runs must both be written --
+    they are held for a person anyway, because a missing invoice number fails
+    the required-fields check.
+    """
+    assert storage.duplicate_lock_key(None, 100.0) is None
+    assert storage.duplicate_lock_key("", 100.0) is None
+
+    extracted = {"vendor_name": VENDOR, "invoice_number": None, "total": 100.0,
+                 "po_references": [], "currency": "USD"}
+    po_match = matching.match_po(extracted)
+    ids = [storage.save_run_checked(f"n{i}.pdf", "NEEDS_REVIEW", extracted, po_match, [], [],
+                                    tolerance_for=matching.tolerance_for)[1]
+           for i in range(2)]
+    assert ids == ["NEEDS_REVIEW", "NEEDS_REVIEW"]
+
+
+def test_the_duplicate_lock_key_is_stable_and_identity_scoped(db):
+    """One identity, one key -- and a different invoice never waits on it."""
+    k = storage.duplicate_lock_key("INV-1", 100.0)
+    assert k == storage.duplicate_lock_key("INV-1", 100.0)
+    assert 0 <= k < 2 ** 63
+    # Float representation must not split one identity across two keys.
+    assert k == storage.duplicate_lock_key("INV-1", 100.00000000001)
+    # A different number or a different amount is a different key, so two
+    # unrelated invoices never wait on each other.
+    assert k != storage.duplicate_lock_key("INV-2", 100.0)
+    assert k != storage.duplicate_lock_key("INV-1", 200.0)
+
+
+def test_the_duplicate_recheck_really_waits_on_the_lock(db):
+    """The advisory lock is taken, on this invoice's identity, and it BLOCKS.
+
+    The thread test above states the outcome end to end, but it does not prove
+    the lock is what produces it: both of its submissions also contend on the
+    purchase_orders row, which serialises them incidentally. An invoice with no
+    PO reference has no such row, and neither would two duplicates whose commit
+    windows overlap before the PO loop is reached -- so the guarantee has to
+    come from the advisory lock, and that is what this asserts directly.
+
+    Another connection holds the lock for this identity; save_run_checked must
+    wait for it rather than reading past it.
+    """
+    import threading
+    import time
+
+    key = storage.duplicate_lock_key("INV-LOCKED-1", 700.0)
+    assert key is not None
+
+    holding = threading.Event()
+    HOLD_FOR = 0.75
+
+    def holder():
+        with storage.write_txn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (key,))
+            holding.set()
+            time.sleep(HOLD_FOR)      # the lock is released when this txn ends
+
+    t = threading.Thread(target=holder)
+    t.start()
+    assert holding.wait(timeout=5), "the holder never took the lock"
+
+    extracted = {"vendor_name": VENDOR, "invoice_number": "INV-LOCKED-1",
+                 "total": 700.0, "po_references": [], "currency": "USD"}
+    po_match = matching.match_po(extracted)
+    started = time.monotonic()
+    storage.save_run_checked("locked.pdf", "NEEDS_REVIEW", extracted, po_match, [], [],
+                             tolerance_for=matching.tolerance_for)
+    waited = time.monotonic() - started
+    t.join()
+
+    assert waited >= HOLD_FOR * 0.6, (
+        f"the commit did not wait for the identity lock (returned in {waited:.2f}s "
+        f"while it was held for {HOLD_FOR}s)"
+    )
+
+    # A DIFFERENT invoice must not wait on that lock at all -- the whole point
+    # of keying it on identity rather than locking something global.
+    other_key = storage.duplicate_lock_key("INV-OTHER-1", 700.0)
+    assert other_key != key
+
+
+def test_an_unreadable_vendor_does_not_slip_past_the_identity_lock(db):
+    """`find_duplicate` matches `vendor_name=%s OR vendor_name IS NULL`, so a
+    run whose vendor could not be read is a duplicate of an invoice from ANY
+    vendor. The lock key therefore must NOT include the vendor -- if it did,
+    exactly the pair the query does match would be on two different keys and
+    would sail past the lock.
+    """
+    assert (storage.duplicate_lock_key("INV-NOVENDOR", 900.0)
+            == storage.duplicate_lock_key("INV-NOVENDOR", 900.0))
+
+    # A run committed with no readable vendor name...
+    blind = {"vendor_name": None, "invoice_number": "INV-NOVENDOR", "total": 900.0,
+             "po_references": [], "currency": "USD"}
+    first_id, first_status, _ = storage.save_run_checked(
+        "blind.pdf", "NEEDS_REVIEW", blind, matching.match_po(blind), [], [],
+        tolerance_for=matching.tolerance_for)
+    assert first_status == "NEEDS_REVIEW"
+
+    # ...is matched by the same invoice arriving with its vendor read.
+    named = dict(blind, vendor_name=VENDOR)
+    _, second_status, extra = storage.save_run_checked(
+        "named.pdf", "APPROVED", named, matching.match_po(named), [], [],
+        tolerance_for=matching.tolerance_for)
+    assert second_status == "REJECTED"
+    assert f"matches run #{first_id}" in extra["text"]

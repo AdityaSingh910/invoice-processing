@@ -1692,6 +1692,10 @@ def process_email_message(email_id: int,
 _GMAIL_CALLBACK_RESULTS = (
     "connected", "denied", "invalid_state", "exchange_failed",
     "insufficient_scope", "no_refresh_token", "not_configured",
+    # AUTH_SECRET is unset, so the key that would encrypt this credential dies
+    # with the process. Refused rather than stored -- see
+    # oauth_google.token_storage_is_durable().
+    "ephemeral_secret",
 )
 
 
@@ -1741,6 +1745,11 @@ def gmail_oauth_status(principal: auth.Principal = Security(auth.current_princip
         # while a configured-but-unconnected one just needs somebody to click
         # Connect. Collapsing them would send an administrator to the wrong fix.
         "oauth_configured": config.google_oauth_configured(),
+        # A THIRD question, with a third remedy (set AUTH_SECRET and restart).
+        # False means a credential stored now becomes unreadable at the next
+        # restart, which presents later as a revoked mailbox rather than as the
+        # configuration mistake it is.
+        "token_storage_durable": oauth_google.token_storage_is_durable(),
         "redirect_uri": config.google_oauth_redirect_uri() or None,
         "scopes_requested": email_ingest.requested_scopes(),
         "connection": storage.public_oauth_connection("gmail"),
@@ -1777,6 +1786,18 @@ def gmail_oauth_authorize(principal: auth.Principal = Security(auth.current_prin
                     f"{config.GOOGLE_OAUTH_CLIENT_ID_ENV}, "
                     f"{config.GOOGLE_OAUTH_CLIENT_SECRET_ENV} and "
                     f"{config.GOOGLE_OAUTH_REDIRECT_URI_ENV}."))
+
+    if not oauth_google.token_storage_is_durable():
+        # Refused BEFORE the round trip, not after it: walking the consent
+        # screen and then being told the result had to be thrown away is a
+        # worse experience than being told now, and it leaves a live grant at
+        # Google that has to be handed back.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(f"{config.AUTH_SECRET_ENV} is not set, so the stored Gmail "
+                    f"credential would be encrypted with a key that dies with this "
+                    f"process and could not be read after a restart. Set "
+                    f"{config.AUTH_SECRET_ENV} and restart before connecting a mailbox."))
 
     state = oauth_google.new_state()
     verifier = oauth_google.new_code_verifier()
@@ -1855,6 +1876,15 @@ def gmail_oauth_callback(request: Request, code: str = None, state: str = None,
         print("[oauth] gmail authorization returned no refresh token", file=sys.stderr)
         oauth_google.revoke(payload.get("access_token"))
         return _gmail_redirect("no_refresh_token")
+
+    if not oauth_google.token_storage_is_durable():
+        # Re-checked here because /authorize and /callback are separate
+        # requests minutes apart, and this is the one that WRITES. Storing it
+        # anyway would produce a mailbox that reads Connected now and Revoked
+        # after the next restart, so the grant goes back to Google instead.
+        print("[oauth] gmail connection refused: no durable signing secret", file=sys.stderr)
+        oauth_google.revoke(refresh_token)
+        return _gmail_redirect("ephemeral_secret")
 
     access_token = payload.get("access_token")
     address = oauth_google.mailbox_address(access_token)

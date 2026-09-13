@@ -135,6 +135,31 @@ def _fernet():
     return Fernet(base64.urlsafe_b64encode(okm))
 
 
+def token_storage_is_durable() -> bool:
+    """Whether a token encrypted now can still be read after a restart.
+
+    THE ONE CASE THIS EXISTS FOR. `_fernet()` derives its key from
+    `auth.signing_secret()`, and that function falls back to an EPHEMERAL
+    per-process key when AUTH_SECRET is unset (development only -- production
+    refuses to start). Signing a JWT with such a key is harmless: the token
+    simply stops working, and the person signs in again.
+
+    A refresh token is not a JWT. Google issues it once, it cannot be
+    recomputed from anything on file (§7h.4), and it is written to a database
+    ROW THAT OUTLIVES THE PROCESS. Encrypt it under a key that dies with the
+    process and the mailbox reads as CONNECTED until the next restart, then as
+    REVOKED with "the stored credential could not be decrypted" -- which sends
+    an administrator looking at Google for a grant Google never withdrew.
+
+    So this is asked BEFORE a connection is stored, and the answer being False
+    refuses the connection rather than creating one that is already doomed.
+    Same posture §7h.6 takes for a grant that arrives with no refresh token:
+    refuse now, while there is a person to tell.
+    """
+    import auth   # deferred, for the reason _fernet() gives
+    return not auth.signing_secret_is_ephemeral()
+
+
 def encrypt_token(token: str) -> str:
     """Ciphertext for storage. `None` in, `None` out -- an absent token is not
     an empty one, and a column of encrypted empty strings would hide that."""

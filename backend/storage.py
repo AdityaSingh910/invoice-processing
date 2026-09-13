@@ -39,6 +39,7 @@ function signature, every return shape. The `users` table does not exist here
 before or after this migration -- authentication reads `data/users.json`
 directly (see auth.py) and was never part of this database.
 """
+import hashlib
 import json
 import os
 import re
@@ -1576,6 +1577,66 @@ def find_duplicate(vendor_name, invoice_number, total):
         conn.close()
 
 
+# The lock key for "is this invoice already on file", used by
+# save_run_checked() below.
+#
+# WHY AN ADVISORY LOCK RATHER THAN A ROW LOCK
+#
+# Every other contended check in this module locks the row it is about:
+# `purchase_orders` for a balance, `runs` for a review, `processing_jobs` for a
+# claim. A duplicate has no such row. What needs protecting is the ABSENCE of a
+# matching run -- and there is no row to lock for something that does not exist
+# yet, which is exactly why two concurrent submissions of one invoice could
+# both read "no duplicate" and both write one.
+#
+# A UNIQUE INDEX ON runs WOULD BE WRONG, not merely awkward: a rejected
+# duplicate is itself recorded as a run, deliberately, so several rows really
+# do share one invoice number and the database has to keep accepting them.
+#
+# So the lock is taken on the invoice's IDENTITY instead. pg_advisory_xact_lock
+# is held until the transaction ends and released by commit or rollback exactly
+# like a row lock, needs no schema, and contends only with another invoice
+# claiming to be the SAME one -- two different invoices never wait on each
+# other, which is the same "scoped to the contended thing, never the database"
+# property the purchase_orders lock has.
+#
+# The key is derived here rather than by Postgres's `hashtext` because that
+# function is undocumented and its value has changed across major versions; a
+# key that shifted under a server upgrade would silently stop serialising, and
+# nothing would report it.
+def duplicate_lock_key(invoice_number, total):
+    """A stable 63-bit key for one invoice identity, or None if there isn't one.
+
+    None when the invoice carries no number -- `find_duplicate` already
+    declines to match without one, so there is no absence to protect and
+    nothing to serialise. Such a run is held for a person regardless, because
+    a missing invoice number fails the required-fields check.
+
+    THE VENDOR IS DELIBERATELY NOT PART OF THE KEY, even though it IS part of
+    the identity find_duplicate compares. That predicate is
+    `vendor_name=%s OR vendor_name IS NULL`, so a run whose vendor could not be
+    read matches an incoming invoice from ANY vendor -- and a key that included
+    the vendor would put those two on different keys and let exactly the pair
+    the query does match slip past the lock. Keying on number and total alone
+    serialises a superset: two invoices with the same number and the same total
+    from genuinely different vendors will wait for each other briefly and then
+    both be written, since neither matches the other's query. That is a rare
+    coincidence costing one short wait, against a hole that costs a double
+    payment.
+
+    The total is quantised to cents so float representation cannot put two
+    genuinely identical invoices on two different keys.
+    """
+    if not invoice_number:
+        return None
+    cents = "" if total is None else str(int(round(float(total) * 100)))
+    raw = "".join([str(invoice_number), cents])
+    digest = hashlib.blake2b(raw.encode("utf-8"), digest_size=8).digest()
+    # Postgres advisory locks take a signed bigint; masking to 63 bits keeps
+    # the value positive and always in range.
+    return int.from_bytes(digest, "big") & 0x7FFFFFFFFFFFFFFF
+
+
 # The name a portal vendor-identity hold is recorded under in
 # audit_json.rules_failed. A NAMED constant because three separate places have
 # to agree on the exact string: the audit fix-up in save_run_checked() below
@@ -1589,7 +1650,15 @@ PORTAL_VENDOR_IDENTITY_RULE = "Portal vendor identity"
 def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: list,
                      reasons: list, tolerance_for=None, audit=None, uploaded_by=None,
                      client_id=None, client_vendor_mismatch=False):
-    """Persist a run, re-verifying the PO balance under a row lock first.
+    """Persist a run, re-verifying under lock what could have changed since.
+
+    TWO of this function's checks are re-checks rather than checks: the
+    duplicate and the PO balance were both already decided by `rules.decide()`,
+    outside any transaction, and both can be stale by the time the run commits.
+    They are re-asked here, under a lock, because this is the last moment at
+    which the answer is still allowed to change anything. The third downgrade
+    (Phase J's vendor identity) is not a re-check -- it is the only place that
+    question is asked at all.
 
     The pipeline computes its verdict outside any transaction -- it has to, since
     extraction can take seconds and holding a write lock across a model call
@@ -1648,10 +1717,65 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
     # down, which rewrites the PO-balance rule specifically and must not
     # attribute a vendor-identity hold to it.
     downgraded_on_balance = False
+    downgraded_on_duplicate = False
     allocations = allocations_from_match(po_match, total)
 
     with write_txn() as conn:
         with conn.cursor() as cur:
+            # THE DUPLICATE RE-CHECK, under a lock, for the same reason the
+            # balance re-check below exists: `rules.decide()` asked this
+            # question outside any transaction, seconds ago, and the answer can
+            # have changed since.
+            #
+            # `rules.duplicate_check` is a plain SELECT with no lock, so two
+            # concurrent submissions of one invoice both read "no earlier run
+            # matches" before either writes, and both are then written. The
+            # purchase_orders lock further down catches that only by accident
+            # -- when the two amounts happen not to fit the same PO. Against a
+            # PO with room for both (a $2,000 invoice twice against a $15,400
+            # order) nothing stopped it, and the ledger was charged twice for
+            # one invoice.
+            #
+            # IT RUNS FIRST, before the vendor-identity hold and before the
+            # balance loop, and the ordering is a decision twice over. It is
+            # the only one of the three that REJECTS, and §3's hierarchy is
+            # that reject wins over review when both fire -- so it has to
+            # settle the verdict before a branch that would only hold. And
+            # taking the advisory lock before any purchase_orders row lock
+            # fixes one global lock order for this function, which is what
+            # rules out a deadlock between two invoices that contend on both.
+            dup_key = duplicate_lock_key(extracted.get("invoice_number"), total)
+            if dup_key is not None and status != "REJECTED":
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (dup_key,))
+                # Re-read on THIS cursor, inside THIS transaction. Calling
+                # storage.find_duplicate() would open a second connection and
+                # could see a different snapshot than the insert that follows
+                # -- the same trap §7.2 records for record_human_review()'s
+                # claim check.
+                cur.execute(
+                    """SELECT id, created_at, status FROM runs
+                       WHERE invoice_number=%s AND ABS(COALESCE(total,-1) - %s) < 0.01
+                         AND (vendor_name=%s OR vendor_name IS NULL)
+                       ORDER BY created_at ASC LIMIT 1""",
+                    (extracted.get("invoice_number"),
+                     total if total is not None else -999999,
+                     extracted.get("vendor_name")))
+                dup = cur.fetchone()
+                if dup is not None:
+                    status = "REJECTED"
+                    downgraded_on_duplicate = True
+                    extra = {
+                        "text": (
+                            f"Invoice #{extracted.get('invoice_number')} for "
+                            f"{extracted.get('total')} from {extracted.get('vendor_name')} "
+                            f"matches run #{dup['id']} processed on {dup['created_at'][:10]} "
+                            f"(status {dup['status']}). That run was committed while this "
+                            f"invoice was still being read, so the duplicate check did not "
+                            f"see it; confirmed under a lock at commit time."
+                        ),
+                        "level": "fail",
+                    }
+                    reasons = list(reasons) + [extra]
             # A portal submission whose document names a vendor this client
             # does not represent is held for a person, whatever the rules
             # concluded about the document itself.
@@ -1761,6 +1885,20 @@ def save_run_checked(filename, status, extracted: dict, po_match: dict, stages: 
                              detail="PO balance changed before commit; re-checked under a row lock",
                              reason="Invoice total exceeds PO remaining amount.")
                         if c.get("name") == "PO remaining check" else c
+                        for c in (audit.get("rules") or [])
+                    ]
+                elif downgraded_on_duplicate:
+                    # Flip the check rules.decide() recorded as passing, the
+                    # same way the balance branch above does. It asked the
+                    # right question and got the right answer for the instant
+                    # it asked; the trail has to end up saying what was
+                    # actually committed.
+                    audit["rules"] = [
+                        dict(c, passed=False,
+                             detail="An identical invoice was committed before this one; "
+                                    "re-checked under a lock at commit time",
+                             reason="Invoice duplicates an earlier submission.")
+                        if c.get("name") == "Duplicate check" else c
                         for c in (audit.get("rules") or [])
                     ]
                 else:

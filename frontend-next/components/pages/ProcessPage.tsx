@@ -92,6 +92,15 @@ export default function ProcessPage({
   // The job this screen is watching. Everything shown about a run is derived
   // from what the server says about this id.
   const [jobId, setJobId] = useState<string | null>(null);
+  /**
+   * This upload JOINED work that was already running rather than starting its
+   * own. The server decides it (`duplicate: true`, against a live-job index)
+   * and it is worth saying out loud, because the silent version is genuinely
+   * misleading: two tabs submitting the same PDF at the same moment both end
+   * up watching one job and both report the same verdict, which reads as two
+   * invoices having been approved when only one was ever processed.
+   */
+  const [joinedExisting, setJoinedExisting] = useState(false);
   // Settled once, not once per poll: the register refresh and the toast are
   // both one-shot.
   const settled = useRef<Set<string>>(new Set());
@@ -274,10 +283,12 @@ export default function ProcessPage({
     setError(null);
     setStages([]);
     setResult(null);
+    setJoinedExisting(false);
     try {
       const job = await startRun(file);
       startedHere.current.add(job.job_id);
       rememberJob(job.job_id);
+      setJoinedExisting(Boolean(job.duplicate));
       setJobId(job.job_id);
     } catch (e) {
       setRunning(false);
@@ -291,6 +302,7 @@ export default function ProcessPage({
     setStages([]);
     setResult(null);
     setError(null);
+    setJoinedExisting(false);
     // Stop following the job and drop the bookmark. The job itself is
     // untouched -- it is finished, and its run is in the register.
     rememberJob(null);
@@ -345,6 +357,7 @@ export default function ProcessPage({
     setError(null);
     setStages([]);
     setResult(null);
+    setJoinedExisting(false);
     try {
       const files = await Promise.all(
         raceField.map(async (s) => {
@@ -358,6 +371,7 @@ export default function ProcessPage({
       // often find the first already committed, which is not a race.
       const jobs = await Promise.all(files.map((f) => startRun(f)));
       jobs.forEach((j) => startedHere.current.add(j.job_id));
+      setJoinedExisting(jobs.some((j) => j.duplicate));
       rememberJob(jobs[0].job_id);
       setJobId(jobs[0].job_id);
     } catch (e) {
@@ -397,6 +411,16 @@ export default function ProcessPage({
         {error && (
           <Callout tone="bad" icon={<IconAlert size={13} />} title="Could not process">
             {error}
+          </Callout>
+        )}
+
+        {joinedExisting && (
+          <Callout tone="warn" icon={<IconAlert size={13} />} title="Already being processed">
+            This exact PDF was already in flight for your account, so this submission is
+            following that run rather than starting a second one. The verdict below belongs to
+            that single invoice — nothing was read twice, and the register will show one run,
+            not two. To see two invoices genuinely contend, run two <em>different</em> ones
+            against the same purchase order.
           </Callout>
         )}
 
