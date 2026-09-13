@@ -37,7 +37,7 @@
  * the other is "nothing could be checked", which is the ordinary condition
  * of consumer webmail and is never printed as an accusation.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { apiFetch, apiJson, ApiError } from "@/lib/api";
 import { when } from "@/lib/format";
@@ -48,7 +48,6 @@ import type {
   EmailMessageSummary,
   EmailProcessResult,
   EmailReleaseResult,
-  EmailStatus,
 } from "@/lib/types";
 import {
   Badge,
@@ -62,7 +61,6 @@ import {
   KeyValues,
   Panel,
   PanelHeader,
-  Segmented,
   Spinner,
   StatusBadge,
   TD,
@@ -73,27 +71,15 @@ import Modal from "@/components/ui/Modal";
 import { IconMail } from "@/components/ui/icons";
 
 /**
- * The tabs a reviewer actually works, which are NOT one-per-database-status.
+ * ONE LIST, NO FILTER TABS.
  *
- * `ADMITTED` and `RELEASED` are two ways of reaching one outcome -- the
- * message was allowed to become an invoice, either by policy at ingestion or
- * by a person afterwards -- so they are one tab. Splitting them would ask the
- * reader to care about which door a message came through before they can find
- * it, which is a fact about our plumbing rather than about their work.
- *
- * `BLOCKED` is `QUARANTINED` renamed. With auto-admission on (see
- * `EMAIL_AUTO_ADMIT_UNVERIFIED`), an unauthenticated message no longer waits
- * here, so the only things left are real findings: a signature that did not
- * verify, or a structurally spoofed sender. "Held for review" undersold that
- * and made the ordinary case sound alarming; "Blocked" says what it is.
+ * With invoices admitted on arrival, this page answers a single question --
+ * "what has the mailbox received, and what did each one become" -- and the
+ * answer is most useful undivided. Tabs split a ten-row table into four
+ * shorter ones and make the reader pick a bucket before they can see
+ * anything; the Status and Invoice columns already say which bucket every
+ * row is in, and they say it while the rows sit next to each other.
  */
-type Filter = "ADMITTED" | "DISCARDED" | "BLOCKED" | "ALL";
-
-const FILTER_MATCHES: Record<Exclude<Filter, "ALL">, readonly EmailStatus[]> = {
-  ADMITTED: ["ADMITTED", "RELEASED"],
-  DISCARDED: ["DISCARDED"],
-  BLOCKED: ["QUARANTINED"],
-};
 
 const CLASSIFICATION_TONE: Record<string, Tone> = {
   VERIFIED: "ok",
@@ -118,7 +104,7 @@ const STATUS_TONE: Record<string, Tone> = {
 
 const STATUS_WORD: Record<string, string> = {
   ADMITTED: "Admitted",
-  RELEASED: "Admitted (released by a person)",
+  RELEASED: "Released",
   QUARANTINED: "Blocked",
   DISCARDED: "Discarded",
 };
@@ -159,20 +145,15 @@ export default function EmailQueuePage({
   onRunCreated?: () => void;
 }) {
   const { user, can } = useAuth();
-  const [filter, setFilter] = useState<Filter>("ADMITTED");
-  const [all, setAll] = useState<EmailMessageSummary[] | null>(null);
+  const [messages, setMessages] = useState<EmailMessageSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
-  /** One fetch, grouped in the browser. A tab here is several statuses (see
-   *  FILTER_MATCHES), which `?status_filter=` takes one of -- and at this
-   *  volume the whole list is one small response, so switching tabs costs
-   *  nothing and cannot show a half-stale mix of two fetches. */
   const load = useCallback(async () => {
     setError(null);
     try {
-      setAll(await apiJson<EmailMessageSummary[]>("/api/email/messages"));
+      setMessages(await apiJson<EmailMessageSummary[]>("/api/email/messages"));
     } catch {
       setError("Could not load the email queue.");
     } finally {
@@ -184,24 +165,6 @@ export default function EmailQueuePage({
     setLoading(true);
     void load();
   }, [load]);
-
-  const messages = useMemo(() => {
-    if (!all) return null;
-    if (filter === "ALL") return all;
-    const wanted = FILTER_MATCHES[filter];
-    return all.filter((m) => m.status && wanted.includes(m.status as EmailStatus));
-  }, [all, filter]);
-
-  const countFor = useCallback(
-    (f: Filter) =>
-      !all
-        ? 0
-        : f === "ALL"
-          ? all.length
-          : all.filter((m) => m.status && FILTER_MATCHES[f].includes(m.status as EmailStatus))
-              .length,
-    [all]
-  );
 
   const refresh = useCallback(() => {
     void load();
@@ -225,17 +188,9 @@ export default function EmailQueuePage({
 
       <Panel flush>
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
-          <Segmented<Filter>
-            ariaLabel="Filter by status"
-            value={filter}
-            onChange={setFilter}
-            options={[
-              { value: "ADMITTED", label: `Admitted (${countFor("ADMITTED")})` },
-              { value: "DISCARDED", label: `Discarded (${countFor("DISCARDED")})` },
-              { value: "BLOCKED", label: `Blocked (${countFor("BLOCKED")})` },
-              { value: "ALL", label: "All" },
-            ]}
-          />
+          <p className="t-meta">
+            {messages ? `${messages.length} message${messages.length === 1 ? "" : "s"}` : " "}
+          </p>
           <Button size="sm" onClick={refresh} disabled={loading}>
             {loading ? <Spinner size={12} /> : "Refresh"}
           </Button>
@@ -250,16 +205,8 @@ export default function EmailQueuePage({
         ) : !messages || messages.length === 0 ? (
           <EmptyState
             icon={<IconMail size={18} />}
-            title="Nothing here"
-            description={
-              filter === "BLOCKED"
-                ? "Nothing is blocked. A message only lands here when a check actually failed — a signature that did not verify, or a sender that is structurally spoofed."
-                : filter === "ADMITTED"
-                  ? "No message has reached the invoice pipeline yet."
-                  : filter === "DISCARDED"
-                    ? "Nothing has been discarded."
-                    : "No message has been received yet."
-            }
+            title="No mail yet"
+            description="Nothing has arrived in the connected mailbox. Anything invoice-shaped that does will be processed on arrival and listed here with its verdict."
           />
         ) : (
           <DataTable minWidth={820}>
