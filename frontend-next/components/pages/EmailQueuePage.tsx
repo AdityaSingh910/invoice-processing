@@ -110,6 +110,39 @@ const STATUS_WORD: Record<string, string> = {
   DISCARDED: "Discarded",
 };
 
+/**
+ * Say what processing actually did, including when it failed.
+ *
+ * Both callers used to report every outcome as a green "Done", because they
+ * only looked at `runs.length` -- so an attachment that FAILED was announced
+ * as "Processed — no invoice-shaped attachment produced a run", which reads
+ * as "there was nothing to do" rather than "the thing you asked for broke".
+ * A reviewer pressed the button three times on that sentence before asking
+ * why nothing happened. `failed_attachments` was in the payload the whole
+ * time.
+ */
+function describeProcessing(
+  result: EmailProcessResult,
+  prefix = ""
+): { tone: "ok" | "bad"; text: string } {
+  const n = result.runs.length;
+  if (n > 0) {
+    const ran = `${n === 1 ? "Invoice run" : "Invoice runs"} #${result.runs.join(", #")} created.`;
+    return result.failed_attachments > 0
+      ? { tone: "bad", text: `${prefix}${ran} ${result.failed_attachments} other attachment(s) failed.` }
+      : { tone: "ok", text: `${prefix}${ran}` };
+  }
+  if (result.failed_attachments > 0) {
+    return {
+      tone: "bad",
+      text:
+        `${prefix}${result.failed_attachments} attachment(s) could not be processed. ` +
+        "See the attachment list above for the reason.",
+    };
+  }
+  return { tone: "ok", text: `${prefix}No invoice-shaped attachment to process.` };
+}
+
 function dash(v: unknown): React.ReactNode {
   if (v === null || v === undefined || v === "") return <span className="text-faint">—</span>;
   return String(v);
@@ -377,13 +410,7 @@ function MessageDetail({
         return;
       }
       const result = (await res.json()) as EmailProcessResult;
-      setNotice({
-        tone: "ok",
-        text:
-          result.runs.length > 0
-            ? `Processed. ${result.runs.length === 1 ? "Invoice run" : "Invoice runs"} #${result.runs.join(", #")} created.`
-            : "Processed — no invoice-shaped attachment produced a run.",
-      });
+      setNotice(describeProcessing(result));
       await load();
       onChanged();
       if (result.runs.length > 0) onRunCreated?.();
@@ -428,13 +455,7 @@ function MessageDetail({
         return;
       }
       const result = (await res.json()) as EmailProcessResult;
-      setNotice({
-        tone: "ok",
-        text:
-          result.runs.length > 0
-            ? `Released and processed. ${result.runs.length === 1 ? "Invoice run" : "Invoice runs"} #${result.runs.join(", #")} created.`
-            : "Released and processed — no invoice-shaped attachment produced a run.",
-      });
+      setNotice(describeProcessing(result, "Released. "));
       await load();
       onChanged();
       if (result.runs.length > 0) onRunCreated?.();
