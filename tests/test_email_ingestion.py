@@ -1105,49 +1105,75 @@ def test_an_admitted_message_keeps_its_pdf_until_a_run_owns_it(db, auto_admit, m
     assert retried["runs"], "the preserved copy must make the attachment reprocessable"
 
 
-def test_a_reset_does_not_invite_a_retry_it_cannot_serve(db, auto_admit):
-    """After a successful run there is one copy of the PDF, in `documents`,
-    and clear_run_history() deletes it. Marking the attachment PENDING then
-    reads as "ready to process" while every attempt fails on bytes that are
-    not there -- which is exactly what a reviewer hit in practice, twice,
-    before blaming the document store."""
+def test_an_email_invoice_can_be_processed_again_after_a_reset(db, auto_admit):
+    """THE WHOLE POINT, asserted end to end rather than by status string.
+
+    An ingested attachment's holding copy is released once a run owns one, so
+    the run's document row is the last thing pointing at the PDF. A reset used
+    to delete it and then mark the attachment PENDING -- "ready to process",
+    with nothing to process -- so every retry failed, blaming the document
+    store. The bytes are handed back instead, and this drives the replay to a
+    real second run to prove it."""
     result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
                     trusted_senders=[])
-    assert result["runs"], "precondition: the message must have produced a run"
+    first_run = result["runs"][0]
     row = storage.list_email_attachments(result["email_id"])[0]
     assert row["status"] == "PROCESSED"
-    assert not row["storage_key"], "the holding copy is released once a run owns one"
+    assert not row["storage_key"], "precondition: the holding copy is released after a run"
+
+    storage.clear_run_history()
+    assert storage.list_runs() == []
+
+    after = storage.list_email_attachments(result["email_id"])[0]
+    assert after["status"] == "PENDING", "the attachment must be offered again"
+    assert after["storage_key"], "and it must have the bytes to honour that offer"
+    assert after["run_id"] is None
+
+    replay = email_ingest.process_message_attachments(result["email_id"], actor="reviewer")
+    assert replay["runs"], "processing after a reset must actually produce a run"
+    assert replay["runs"][0] != first_run, "a genuinely new run, not the deleted one"
+    assert storage.get_run(replay["runs"][0])["status"] in (
+        "APPROVED", "NEEDS_REVIEW", "REJECTED")
+
+
+def test_a_reset_keeps_the_pdf_rather_than_copying_it(db, auto_admit):
+    """Ownership is transferred, not duplicated: the attachment adopts the very
+    key the run's document held, so a reset costs no extra storage and the
+    next successful run releases it again exactly as before."""
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
+                    trusted_senders=[])
+    run_id = result["runs"][0]
+    doc = storage.get_document_for_run(run_id)
+    assert doc and doc["storage_key"]
+    key_before = doc["storage_key"]
+
+    storage.clear_run_history()
+
+    after = storage.list_email_attachments(result["email_id"])[0]
+    assert after["storage_key"] == key_before, "the same blob, re-owned"
+    assert documents.get_store().exists(key_before), "and it must still be in the store"
+
+
+def test_a_reset_closes_out_an_attachment_whose_pdf_is_really_gone(db, auto_admit):
+    """The other half. If there is no copy anywhere -- the document row was
+    already missing -- the row must not claim to be processable."""
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
+                    trusted_senders=[])
+    # Drop the run's document first, so the transfer above has nothing to give.
+    conn = storage.get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM documents")
+        conn.commit()
+    finally:
+        conn.close()
 
     storage.clear_run_history()
 
     after = storage.list_email_attachments(result["email_id"])[0]
     assert after["status"] != "PENDING", \
-        "a row whose bytes went with the run must not advertise a retry"
-    assert after["run_id"] is None
-    assert "deleted by a demo reset" in (after["skip_reason"] or "")
-
-
-def test_a_reset_still_invites_a_retry_when_the_bytes_are_there(db, trusted):
-    """The other half: a quarantined attachment that never ran still holds its
-    own copy, so a reset leaves it genuinely replayable. Without this the fix
-    above would be indistinguishable from 'never allow a replay'."""
-    result = ingest(invoice_email(), trusted_senders=[])
-    assert result["status"] == "QUARANTINED"
-    storage.set_email_status(result["email_id"], "RELEASED", actor="reviewer")
-    processed = email_ingest.process_message_attachments(result["email_id"],
-                                                         actor="reviewer")
-    assert processed["runs"]
-
-    # Put a holding copy back, standing in for an attachment that has one at
-    # reset time -- which is any that has not yet had a run take ownership.
-    row = storage.list_email_attachments(result["email_id"])[0]
-    key = documents.new_storage_key()
-    documents.get_store().save(key, pdf_bytes())
-    storage.set_attachment_storage(row["id"], config.document_store_backend(), key)
-
-    storage.clear_run_history()
-    after = storage.list_email_attachments(result["email_id"])[0]
-    assert after["status"] == "PENDING", "bytes on file means the replay is real"
+        "with no bytes anywhere, PENDING invites a retry that can only fail"
+    assert "resend" in (after["skip_reason"] or "")
 
 
 def test_the_policy_is_inert_for_every_verdict_except_unverified(auto_admit):

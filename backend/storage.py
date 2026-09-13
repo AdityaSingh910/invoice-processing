@@ -3431,9 +3431,37 @@ def clear_run_history():
     """
     with write_txn() as conn:
         with conn.cursor() as cur:
+            # HAND AN EMAIL ATTACHMENT'S BYTES BACK BEFORE THE RUN'S CLAIM ON
+            # THEM IS DELETED.
+            #
+            # An ingested attachment is held in the DocumentStore until a run
+            # takes ownership, at which point the holding copy is dropped --
+            # so by now the run's `documents` row is the only thing pointing
+            # at that PDF, and deleting it would take the last copy. The row
+            # would then go back to PENDING advertising a replay with nothing
+            # to replay, which is exactly what made "process attachments" fail
+            # after every reset.
+            #
+            # The bytes are still in the store at this moment, so ownership is
+            # simply transferred back: the attachment re-adopts the key, and
+            # the blob is excluded from the deletion sweep below. Nothing is
+            # copied and nothing extra is kept -- the next successful run takes
+            # ownership again and releases this copy exactly as before.
+            cur.execute("""UPDATE email_attachments a
+                              SET storage_backend = d.storage_backend,
+                                  storage_key = d.storage_key
+                             FROM documents d
+                            WHERE d.run_id = a.run_id
+                              AND a.run_id IS NOT NULL
+                              AND a.storage_key IS NULL""")
             # Read what to delete from the store BEFORE the rows are gone --
             # once the transaction commits there is no way back to the keys.
-            cur.execute("SELECT storage_backend, storage_key FROM documents")
+            # Anything an attachment just adopted is left alone; it is no
+            # longer this run's to delete.
+            cur.execute("""SELECT d.storage_backend, d.storage_key
+                             FROM documents d
+                            WHERE NOT EXISTS (SELECT 1 FROM email_attachments a
+                                               WHERE a.storage_key = d.storage_key)""")
             to_delete = [dict(r) for r in cur.fetchall()]
             # Allocations, documents, activity and claims are all rows ABOUT
             # runs, and leaving them behind would charge every PO against
@@ -3465,17 +3493,15 @@ def clear_run_history():
             # is ingestion history, not run history, and survives. Only the
             # pointer to the vanishing run is dropped.
             #
-            # WHETHER IT CAN BE REPLAYED DEPENDS ON WHETHER ITS BYTES SURVIVED,
-            # AND USUALLY THEY DID NOT. A quarantined attachment is held in the
-            # DocumentStore, and that holding copy is deleted the moment a run
-            # owns one of its own -- so after a successful run there is exactly
-            # one copy of the PDF, in `documents`, and the DELETE below takes
-            # it. Putting such a row back to PENDING advertises a retry that
-            # cannot work: it reads as "ready to process", every attempt fails
-            # on bytes that are not there, and the failure blames the document
-            # store. So only a row that still holds its own copy goes back to
-            # PENDING; one whose source went with the run is closed out with a
-            # reason that says exactly that.
+            # WHETHER IT CAN BE REPLAYED DEPENDS ON WHETHER ITS BYTES SURVIVED.
+            # For an attachment that produced a run they now do, because the
+            # transfer above re-adopted the run's copy rather than deleting it
+            # -- so that row goes back to PENDING and processing it really
+            # works. A row with no bytes anywhere (one whose document was
+            # already gone, or that never had one) must NOT say PENDING:
+            # that reads as "ready to process" while every attempt fails on a
+            # file that is not there, and the failure blames the document
+            # store. It is closed out with a reason instead.
             cur.execute("""UPDATE email_attachments
                            SET run_id=NULL, run_status=NULL,
                                status=CASE
@@ -3484,9 +3510,9 @@ def clear_run_history():
                                    ELSE 'SKIPPED' END,
                                skip_reason=CASE
                                    WHEN status = 'PROCESSED' AND storage_key IS NULL
-                                   THEN 'the invoice run this produced was deleted by a demo '
-                                        'reset, and the source PDF went with it. Ask the sender '
-                                        'to resend it, or upload the PDF directly.'
+                                   THEN 'the invoice run this produced was deleted, and no copy '
+                                        'of the source PDF remained. Ask the sender to resend '
+                                        'it, or upload the PDF directly.'
                                    ELSE skip_reason END
                            WHERE run_id IS NOT NULL""")
             cur.execute("""UPDATE email_messages
