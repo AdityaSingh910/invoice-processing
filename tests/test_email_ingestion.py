@@ -1049,17 +1049,18 @@ def test_an_auto_admitted_invoice_is_still_judged_by_every_rule(db, auto_admit):
 
 def test_an_ingested_invoice_is_linked_back_to_its_message(db, auto_admit):
     """`email_messages.run_id` is the join between what could be proven about
-    a sender and what their invoice turned out to be. `link_email_to_run` was
-    written for this moment and nothing ever called it, so the column was NULL
-    for every message ever ingested -- which is why the queue could not show a
-    verdict and a rejection notice could not find an address to reply to."""
+    a sender and what their invoice turned out to be -- it is what lets the
+    queue show a verdict and a rejection notice find an address to reply to.
+
+    Written by `storage.complete_attachment`, in the same transaction that
+    records the attachment's own run, and nowhere else."""
     result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
                     trusted_senders=[])
     assert result["runs"], "precondition: this message must have produced a run"
 
     stored = storage.get_email_message(result["email_id"])
     assert stored["run_id"] == result["runs"][0]
-    assert any(e["event_type"] == "LINKED_TO_RUN" for e in
+    assert any(e["event_type"] == "INVOICE_RUN_CREATED" for e in
                storage.list_email_activity(result["email_id"]))
 
 
@@ -1152,6 +1153,86 @@ def test_a_reset_keeps_the_pdf_rather_than_copying_it(db, auto_admit):
     after = storage.list_email_attachments(result["email_id"])[0]
     assert after["storage_key"] == key_before, "the same blob, re-owned"
     assert documents.get_store().exists(key_before), "and it must still be in the store"
+
+
+def test_an_attachment_with_no_copy_left_is_re_fetched_from_the_mailbox(db, auto_admit,
+                                                                       monkeypatch):
+    """THE RECOVERY PATH. Once the run that owned a PDF is deleted there is no
+    copy left on our side -- the message body is never stored. But the message
+    is usually still in the mailbox it came from, so the retry asks for it
+    again rather than reporting an invoice as unrecoverable while a copy is
+    one API call away."""
+    raw = invoice_email(from_header="Supplier <supplier@gmail.com>")
+    result = ingest(raw, trusted_senders=[])
+    assert result["runs"], "precondition: it processed on arrival"
+
+    # Wipe every trace of the bytes: the run's document AND any holding copy,
+    # which is the state a reset on an older build left behind.
+    storage.clear_run_history()
+    row = storage.list_email_attachments(result["email_id"])[0]
+    if row["storage_key"]:
+        documents.get_store().delete(row["storage_key"])
+        storage.set_attachment_storage(row["id"], None, None)
+    assert not storage.list_email_attachments(result["email_id"])[0]["storage_key"]
+
+    calls = []
+
+    class Mailbox(FakeProvider):
+        name = "fake"
+
+        def fetch_one(self, provider_message_id):
+            calls.append(provider_message_id)
+            return incoming(raw)
+
+    monkeypatch.setattr(email_provider, "get_provider", lambda: Mailbox())
+
+    recovered = email_ingest.process_message_attachments(result["email_id"],
+                                                         actor="reviewer")
+    assert calls, "the mailbox must actually have been asked"
+    assert recovered["runs"], "and the re-read copy must produce a run"
+
+
+def test_the_mailbox_is_not_consulted_when_the_bytes_are_already_here(db, trusted,
+                                                                     monkeypatch):
+    """The recovery path must stay a last resort: an ordinary release has its
+    holding copy and must cost no network at all."""
+    result = ingest(invoice_email(), trusted_senders=[])
+    assert result["status"] == "QUARANTINED"
+    storage.set_email_status(result["email_id"], "RELEASED", actor="reviewer")
+
+    def explode():
+        raise AssertionError("the mailbox must not be consulted")
+
+    monkeypatch.setattr(email_provider, "get_provider", explode)
+    processed = email_ingest.process_message_attachments(result["email_id"],
+                                                         actor="reviewer")
+    assert processed["runs"]
+
+
+def test_a_message_is_never_re_fetched_from_a_different_mailbox(db, auto_admit,
+                                                               monkeypatch):
+    """Re-reading "message 42" from a mailbox other than the one it arrived in
+    would fetch a stranger's message and file it under this record. The origin
+    is checked against the configured provider, and a mismatch recovers
+    nothing."""
+    raw = invoice_email(from_header="Supplier <supplier@gmail.com>")
+    result = ingest(raw, trusted_senders=[])
+    storage.clear_run_history()
+    row = storage.list_email_attachments(result["email_id"])[0]
+    if row["storage_key"]:
+        documents.get_store().delete(row["storage_key"])
+        storage.set_attachment_storage(row["id"], None, None)
+
+    class OtherMailbox(FakeProvider):
+        name = "a-different-provider"
+
+        def fetch_one(self, provider_message_id):
+            raise AssertionError("a foreign mailbox must never be read")
+
+    monkeypatch.setattr(email_provider, "get_provider", lambda: OtherMailbox())
+    out = email_ingest.process_message_attachments(result["email_id"], actor="reviewer")
+    assert not out["runs"]
+    assert out["failed_attachments"] == 1
 
 
 def test_a_reset_closes_out_an_attachment_whose_pdf_is_really_gone(db, auto_admit):

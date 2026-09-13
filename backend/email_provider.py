@@ -100,6 +100,24 @@ class EmailProvider(abc.ABC):
     def fetch(self, limit: int) -> list:
         """Up to `limit` candidate messages. May legitimately return []."""
 
+    def fetch_one(self, provider_message_id: str):
+        """Re-fetch ONE already-known message, or None if that is not possible.
+
+        Ingestion never needs this: `fetch` supplies the bytes, and they are
+        preserved until a run owns them. It exists for the case where those
+        bytes are legitimately gone -- a run that owned them was deleted, or a
+        deployment that was not preserving them at the time -- and the message
+        is still sitting in the mailbox it came from. Re-reading the source
+        beats telling somebody their invoice is unrecoverable while a copy of
+        it is one API call away.
+
+        Optional, and None is a real answer rather than a failure: not every
+        provider can address a single message after the fact, and a caller
+        must treat "cannot" as ordinary. The default says so for every
+        provider that does not override it.
+        """
+        return None
+
     def mark_handled(self, message: IncomingEmail) -> None:
         """Best-effort: stop the next poll seeing this again. Never required
         for correctness -- see the module docstring."""
@@ -538,6 +556,35 @@ class GmailApiEmailProvider(EmailProvider):
                 # far more than an IMAP UID does.
                 id_source="gmail-id"))
         return out
+
+    def fetch_one(self, provider_message_id: str):
+        """One message by its Gmail id, for recovering bytes we no longer hold.
+
+        The same single-message call `fetch` makes, with the same percent-
+        encoding of an id that arrived over the network, and the same
+        oversize ceiling -- reusing it rather than restating it, so a change
+        to how a Gmail message is read cannot apply to the poll and miss this.
+
+        Every failure is None: a deleted message (404), a revoked credential,
+        an unreachable mailbox. The caller is a retry that was already going
+        to report a missing attachment, and "we also could not re-read it"
+        does not need its own exception.
+        """
+        if not provider_message_id:
+            return None
+        try:
+            payload = self._api(
+                f"/messages/{urllib.parse.quote(str(provider_message_id), safe='')}",
+                {"format": "raw"})
+        except Exception:
+            return None
+        raw = self._decode_raw(payload.get("raw"))
+        if not raw or len(raw) > config.email_max_message_bytes():
+            return None
+        return IncomingEmail(
+            self.name, provider_message_id, raw,
+            received_at=self._received_at(payload.get("internalDate")),
+            folder="gmail", handle=payload.get("internalDate"), id_source="gmail-id")
 
     @staticmethod
     def _decode_raw(blob):

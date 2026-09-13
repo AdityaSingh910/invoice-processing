@@ -569,6 +569,47 @@ def _hold_attachments(email_id: int, attachments) -> int:
     return held
 
 
+def _refetch_raw(message) -> bytes:
+    """Read a known message again from the mailbox it arrived from, or b''.
+
+    Guarded three ways, because this is the one place ingestion reaches back
+    out to a provider outside a poll:
+
+    * the message must name the provider it came from, and the configured
+      provider must still be that same one -- re-reading "message 42" from a
+      DIFFERENT mailbox than the one it arrived in would fetch a stranger's
+      message and match it to this record;
+    * the provider must be able to address a single message at all
+      (`fetch_one` returns None by default);
+    * every failure is b''. The caller is already reporting a missing
+      attachment; a mailbox that is unreachable, a credential that has been
+      revoked, or a message the user has since deleted all mean the same
+      thing here -- no bytes -- and none of them should raise into a retry.
+    """
+    provider_message_id = (message or {}).get("provider_message_id")
+    origin = (message or {}).get("provider")
+    if not provider_message_id or not origin:
+        return b""
+    try:
+        provider = email_provider.get_provider()
+    except Exception:
+        return b""
+    try:
+        if getattr(provider, "name", None) != origin:
+            return b""
+        incoming = provider.fetch_one(provider_message_id)
+        return getattr(incoming, "raw", b"") or b""
+    except Exception as exc:
+        print(f"[warn] could not re-fetch {origin}:{provider_message_id} from the "
+              f"mailbox: {exc.__class__.__name__}", file=sys.stderr)
+        return b""
+    finally:
+        try:
+            provider.close()
+        except Exception:
+            pass
+
+
 def _load_held_attachment(row) -> bytes:
     """Read a preserved attachment back, or b'' if it is not retrievable."""
     if not row.get("storage_key"):
@@ -625,6 +666,31 @@ def process_message_attachments(email_id: int, raw: bytes = b"", actor: str = No
                         "is_invoice_candidate": bool(r["is_invoice_candidate"]),
                         "skip_reason": r["skip_reason"], "data": None}
                        for r in rows.values()]
+
+        # LAST RESORT: GO BACK TO THE MAILBOX.
+        #
+        # A candidate with no holding copy is normally unrecoverable -- the
+        # message body is never stored (§7a.7), so once the run that owned the
+        # PDF is gone, so is the PDF. But the message itself is usually still
+        # sitting in the mailbox it arrived from, and re-reading it there is
+        # one API call. Refusing to look, and telling somebody their invoice
+        # cannot be processed while a copy of it is that close, is a worse
+        # answer than asking.
+        #
+        # Only when something is actually missing, so an ordinary release
+        # still costs no network at all. Nothing downstream changes: the
+        # re-fetched bytes go through the same collect_attachments and are
+        # matched to the same rows by the same sha256, so a message whose
+        # content differs from what was recorded simply will not match and is
+        # reported missing exactly as it is now.
+        if any(r.get("is_invoice_candidate") and not r.get("storage_key")
+               for r in rows.values()):
+            recovered = _refetch_raw(message)
+            if recovered:
+                attachments = collect_attachments(recovered)
+                storage.record_attachments(email_id, _metadata_only(attachments))
+                rows = {r["sha256"]: r for r in storage.list_email_attachments(email_id)
+                        if r.get("sha256")}
 
     runs, processed, failed, skipped = [], 0, 0, 0
 
@@ -707,28 +773,12 @@ def process_message_attachments(email_id: int, raw: bytes = b"", actor: str = No
         runs.append(run["run_id"])
         processed += 1
 
-    # THE PHASE G SEAM, FINALLY CALLED. `email_messages.run_id` is the join
-    # between "what could be proven about the sender" and "what the invoice
-    # turned out to be", and `link_email_to_run` was written for exactly this
-    # moment -- but nothing ever called it, so the column has been NULL for
-    # every message ever ingested. Anything reading that link therefore
-    # believed no email had produced an invoice: the queue could not show a
-    # verdict, and `storage.email_for_run()` could not find the address to
-    # send a rejection notice back to.
-    #
-    # The FIRST run, matching what the column has always been documented to
-    # hold -- one email can produce several invoices, and those are joined
-    # through `email_attachments.run_id`, which is already correct. Only set
-    # when the message has no link yet, so re-processing cannot repoint an
-    # existing one, and never fatal: a run that exists and a link that does
-    # not is a worse outcome for nobody than losing the run.
-    if runs and not message.get("run_id"):
-        try:
-            storage.link_email_to_run(email_id, runs[0])
-        except Exception as exc:
-            print(f"[warn] could not link email {email_id} to run {runs[0]}: "
-                  f"{exc.__class__.__name__}", file=sys.stderr)
-
+    # NOTE: `email_messages.run_id` is NOT set here. `storage.complete_attachment`
+    # already does it, under the same transaction that records the attachment's
+    # own run, guarded by `AND run_id IS NULL` so the FIRST run wins. A second
+    # writer here would be two expressions of one rule, free to drift apart --
+    # the thing §7c.8 keeps the ledger's two consumed-amount queries adjacent
+    # to prevent.
     if failed and processed:
         status = "PARTIAL"
     elif failed:
