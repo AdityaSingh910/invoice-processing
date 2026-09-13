@@ -249,10 +249,11 @@ export default function Home() {
           is nothing in the shared run/reference data to hand down. */}
       {section === "settings" && <SettingsPage />}
       {/* Email review queue: fetches its own data, same reason as Settings --
-          it is about held messages, not about the shared run/reference data. */}
-      {section === "email-queue" && <EmailQueuePage />}
-      {/* Email review queue: fetches its own data, same reason as Settings --
-          it is about held messages, not about the shared run/reference data. */}
+          it is about held messages, not about the shared run/reference data.
+          Processing DOES touch the shared run list though, so that one path
+          is wired to the same runs.refresh() every other run-creating action
+          already calls (ProcessPage's onRan, ReviewBar's onReviewed). */}
+      {section === "email-queue" && <EmailQueuePage onRunCreated={runs.refresh} />}
       {section === "reference" && (
         <ReferencePage reference={reference} runs={runs} initialTab={referenceTab} />
       )}

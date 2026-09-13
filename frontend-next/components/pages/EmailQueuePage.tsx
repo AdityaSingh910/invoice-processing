@@ -124,7 +124,18 @@ function EligibilityBadge({ value }: { value: string | null }) {
   );
 }
 
-export default function EmailQueuePage() {
+export default function EmailQueuePage({
+  onRunCreated,
+}: {
+  /** Called after Process/Release & process actually creates a run, so the
+   *  shared run list (Overview, Invoices, the review queue) picks it up
+   *  without waiting for someone to press its own Refresh button. Every
+   *  other door that creates a run already does this (ProcessPage's
+   *  `onRan`, ReviewBar's `onReviewed`); this page's actions were the one
+   *  gap, since its own docstring only reasoned about release/discard,
+   *  which don't touch `runs` at all. */
+  onRunCreated?: () => void;
+}) {
   const { user, can } = useAuth();
   const [filter, setFilter] = useState<Filter>("QUARANTINED");
   const [messages, setMessages] = useState<EmailMessageSummary[] | null>(null);
@@ -202,7 +213,9 @@ export default function EmailQueuePage() {
             description={
               filter === "QUARANTINED"
                 ? "No message is currently held for review."
-                : "No message matches this filter."
+                : filter === "ADMITTED"
+                  ? "No message has ever been auto-admitted. That needs a sender whose signature verifies AND who is on the trusted-sender list — nothing gets there by default, so an empty list here is the expected state until both are configured."
+                  : "No message matches this filter."
             }
           />
         ) : (
@@ -248,6 +261,7 @@ export default function EmailQueuePage() {
           emailId={selectedId}
           onClose={() => setSelectedId(null)}
           onChanged={refresh}
+          onRunCreated={onRunCreated}
           canRelease={can("invoice:review")}
           canProcess={can("invoice:process")}
           viewer={user?.username ?? null}
@@ -263,6 +277,7 @@ function MessageDetail({
   emailId,
   onClose,
   onChanged,
+  onRunCreated,
   canRelease,
   canProcess,
   viewer,
@@ -270,6 +285,7 @@ function MessageDetail({
   emailId: number;
   onClose: () => void;
   onChanged: () => void;
+  onRunCreated?: () => void;
   canRelease: boolean;
   canProcess: boolean;
   viewer: string | null;
@@ -362,6 +378,7 @@ function MessageDetail({
       });
       await load();
       onChanged();
+      if (result.runs.length > 0) onRunCreated?.();
     } finally {
       setBusy(null);
     }
@@ -412,6 +429,7 @@ function MessageDetail({
       });
       await load();
       onChanged();
+      if (result.runs.length > 0) onRunCreated?.();
     } finally {
       setBusy(null);
     }
