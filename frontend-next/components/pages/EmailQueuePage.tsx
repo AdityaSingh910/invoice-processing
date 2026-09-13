@@ -42,6 +42,7 @@ import { useCallback, useEffect, useState } from "react";
 import { apiFetch, apiJson, ApiError } from "@/lib/api";
 import { when } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
+import { useLiveRefresh } from "@/lib/useData";
 import type {
   EmailAttachment,
   EmailMessageDetail,
@@ -169,6 +170,12 @@ export default function EmailQueuePage({
   const refresh = useCallback(() => {
     void load();
   }, [load]);
+
+  // Mail arrives and processes itself with nobody touching the browser, so
+  // this screen goes stale on its own the way Overview does. `load` does not
+  // raise `loading` on a refetch, only on the first one, so a poll here is
+  // already invisible and needs no quiet variant.
+  useLiveRefresh(refresh, true);
 
   const canAct = can("invoice:review") || can("invoice:process");
 

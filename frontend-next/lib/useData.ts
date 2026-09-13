@@ -24,6 +24,19 @@ export interface Async<T> {
   /** Null unless the last attempt failed. Never a raw exception. */
   error: string | null;
   refresh: () => void;
+  /**
+   * Refetch without reporting `loading`, for a refresh nobody asked for.
+   *
+   * A background poll that flips `loading` makes every Refresh button on the
+   * screen say "Refreshing…" and go disabled every few seconds, which reads as
+   * a page that is permanently busy. A poll the user did not initiate should
+   * be invisible until it has something new to show -- so this leaves
+   * `loading` alone and lets the settled data swap itself in.
+   *
+   * It still reports errors, and it still goes through the same in-flight
+   * coalescing `refresh` does, so polls cannot stack up behind a slow request.
+   */
+  refreshQuietly: () => void;
 }
 
 function describe(err: unknown): string {
@@ -95,16 +108,32 @@ function useResource<T>(
    */
   const inFlight = useRef(false);
   const queued = useRef(false);
+  /** Set by `refreshQuietly`, read and cleared by the run it belongs to. A ref
+   *  rather than state because it must not itself cause a render, and because
+   *  the effect below is the only reader. */
+  const quiet = useRef(false);
 
   useEffect(() => {
     if (!enabled) return;
+
+    const isQuiet = quiet.current;
+    quiet.current = false;
 
     const controller = new AbortController();
     inFlight.current = true;
     // Keep previous rows on screen while refetching; blanking a populated table
     // to skeletons on every refresh is disorienting. `loading` still goes true,
     // so a caller that wants to show a quiet refreshing state can.
-    setState((s) => ({ data: s.data, loading: true, error: null }));
+    //
+    // A QUIET refresh with rows already on screen touches nothing at all --
+    // not even to set `loading` -- so a poll is invisible until its data
+    // lands. With no rows yet it falls through to the ordinary path, because
+    // the very first load does need to say it is loading. Returning `s`
+    // unchanged is what makes that free: React bails out of the render rather
+    // than re-running every consumer of this hook on a timer.
+    setState((s) =>
+      isQuiet && s.data !== null ? s : { data: s.data, loading: true, error: null }
+    );
 
     const settle = (next: (s: { data: T | null; loading: boolean; error: string | null }) =>
                     { data: T | null; loading: boolean; error: string | null }) => {
@@ -144,7 +173,54 @@ function useResource<T>(
       }
       setNonce((n) => n + 1);
     }, []),
+    refreshQuietly: useCallback(() => {
+      // A poll that arrives mid-flight is DROPPED rather than queued. That is
+      // the opposite of `refresh`'s rule, and deliberately so: a queued poll
+      // would fire a second request the moment the first settled, for data
+      // that is by then already current, and the next tick is only seconds
+      // away regardless. Nothing is lost by skipping one.
+      if (inFlight.current) return;
+      quiet.current = true;
+      setNonce((n) => n + 1);
+    }, []),
   };
+}
+
+/**
+ * Keep a resource current while the user is watching it.
+ *
+ * WHY THIS IS OPT-IN AND NOT THE DEFAULT. This module's own rule is that
+ * `refresh` is exposed rather than polled, "because a row changing under the
+ * cursor mid-review is worse than a slightly stale list" -- and that is still
+ * right for the Invoices table and the review queue, where the row under the
+ * pointer is the one being acted on.
+ *
+ * A dashboard is the other case. Overview exists to say what is happening
+ * right now, and since invoices can arrive by email and process themselves
+ * with no one touching the browser, "right now" cannot be established by
+ * anything the user does. So polling is offered to the screens where a row
+ * appearing is the point, and withheld from the ones where it is a hazard.
+ *
+ * Two things keep the cost honest: nothing is requested while the tab is in
+ * the background, and a tab coming back to the foreground refreshes at once
+ * instead of waiting out the rest of its interval -- which is the case that
+ * actually matters here, since sending an invoice means leaving this tab for
+ * a mail client and returning.
+ */
+export function useLiveRefresh(refreshQuietly: () => void, active: boolean, everyMs = 15000) {
+  useEffect(() => {
+    if (!active || typeof document === "undefined") return;
+
+    const refreshIfWatching = () => {
+      if (document.visibilityState === "visible") refreshQuietly();
+    };
+    const id = window.setInterval(refreshIfWatching, everyMs);
+    document.addEventListener("visibilitychange", refreshIfWatching);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", refreshIfWatching);
+    };
+  }, [refreshQuietly, active, everyMs]);
 }
 
 export const useRuns = (reloadKey = 0, enabled = true) =>

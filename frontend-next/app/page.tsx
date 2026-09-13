@@ -14,7 +14,7 @@
  */
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
-import { useReference, useRuns } from "@/lib/useData";
+import { useLiveRefresh, useReference, useRuns } from "@/lib/useData";
 import { totals } from "@/lib/metrics";
 import LoginGate from "@/components/LoginGate";
 import AppShell, {
@@ -169,6 +169,15 @@ export default function Home() {
   const internal = !!user && !isPortalClient;
   const runs = useRuns(reloadKey, internal);
   const reference = useReference(internal);
+
+  // Overview is live, the other sections are not. An invoice can now arrive by
+  // email and process itself with nobody touching the browser (see
+  // EMAIL_AUTO_ADMIT_UNVERIFIED), so on the one screen whose whole job is to
+  // say what is happening right now, waiting for someone to press Refresh
+  // means showing them a figure that was true a while ago. Everywhere else the
+  // module's default still holds: rows do not move while they are being worked
+  // on. See useLiveRefresh for why this is opt-in rather than global.
+  useLiveRefresh(runs.refreshQuietly, internal && section === "overview");
 
   // Write the current row into the address bar, and follow it when the reader
   // presses Back or Forward. Only for the internal application: a supplier

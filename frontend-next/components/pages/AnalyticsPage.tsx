@@ -124,6 +124,7 @@ export default function AnalyticsPage() {
     loading: dashboard.loading,
     error: dashboard.error,
     refresh: dashboard.refresh,
+    refreshQuietly: dashboard.refreshQuietly,
   });
 
   const overview = section<AnalyticsOverview>((d) => d.overview);
