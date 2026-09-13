@@ -1047,6 +1047,64 @@ def test_an_auto_admitted_invoice_is_still_judged_by_every_rule(db, auto_admit):
         assert required in names, f"{required} must still run on an auto-admitted invoice"
 
 
+def test_an_ingested_invoice_is_linked_back_to_its_message(db, auto_admit):
+    """`email_messages.run_id` is the join between what could be proven about
+    a sender and what their invoice turned out to be. `link_email_to_run` was
+    written for this moment and nothing ever called it, so the column was NULL
+    for every message ever ingested -- which is why the queue could not show a
+    verdict and a rejection notice could not find an address to reply to."""
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
+                    trusted_senders=[])
+    assert result["runs"], "precondition: this message must have produced a run"
+
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["run_id"] == result["runs"][0]
+    assert any(e["event_type"] == "LINKED_TO_RUN" for e in
+               storage.list_email_activity(result["email_id"]))
+
+
+def test_the_link_survives_reprocessing_and_still_names_the_first_run(db, auto_admit):
+    """Processing again must not repoint an existing link. One email can
+    produce several invoices; the column has always been documented to hold
+    the FIRST, and the rest are joined through email_attachments.run_id."""
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
+                    trusted_senders=[])
+    first = storage.get_email_message(result["email_id"])["run_id"]
+    email_ingest.process_message_attachments(result["email_id"], actor="reviewer")
+    assert storage.get_email_message(result["email_id"])["run_id"] == first
+
+
+def test_an_admitted_message_keeps_its_pdf_until_a_run_owns_it(db, auto_admit, monkeypatch):
+    """A pipeline failure records FAILED to invite a retry, and a retry needs
+    the bytes. The quarantine path always preserved them; the admitted path
+    never did, which only became reachable once a message could be admitted on
+    arrival -- so a single failure was permanently unretryable."""
+    # A flag rather than monkeypatch.undo(): undo() would also revert the `db`
+    # fixture's schema patch and point storage at the developer's real `public`
+    # schema for the rest of the test.
+    real = email_ingest._run_invoice_pipeline
+    failing = {"yes": True}
+
+    def maybe_boom(*a, **k):
+        if failing["yes"]:
+            raise RuntimeError("pipeline exploded")
+        return real(*a, **k)
+
+    monkeypatch.setattr(email_ingest, "_run_invoice_pipeline", maybe_boom)
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
+                    trusted_senders=[])
+    rows = storage.list_email_attachments(result["email_id"])
+    failed = [r for r in rows if r["status"] == "FAILED"]
+    assert failed, "precondition: the pipeline was made to fail"
+    assert failed[0]["storage_key"], \
+        "the PDF must still be held, or the retry this FAILED status invites cannot work"
+
+    # And the retry really works, with no raw message and no held-bytes hint.
+    failing["yes"] = False
+    retried = email_ingest.process_message_attachments(result["email_id"], actor="reviewer")
+    assert retried["runs"], "the preserved copy must make the attachment reprocessable"
+
+
 def test_the_policy_is_inert_for_every_verdict_except_unverified(auto_admit):
     """A pure gate test, the same shape as the sender-context one above: feed
     it the other verdicts and require byte-identical output. This is what

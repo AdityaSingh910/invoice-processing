@@ -472,11 +472,26 @@ def ingest_message(incoming, submitted_by: str = None, trusted_senders=None,
                 "processed_attachments": 0, "runs": []}
 
     if not process:
+        # Admitted but not processed in this call, so the PDFs have to survive
+        # until something does process them -- the raw message is never stored
+        # (§7a.7) and would otherwise be the only copy.
+        _hold_attachments(email_id, attachments)
         return {"ok": True, "duplicate": False, "email_id": email_id,
                 "status": "RECEIVED", "classification": record["classification"],
                 "processed_attachments": 0, "runs": []}
 
     # ---- 7. the existing pipeline
+    #
+    # PRESERVE THE PDFs FIRST, even though this call is about to process them.
+    # The quarantine path has always done this and the admitted path never
+    # did, which was survivable only while nothing could be admitted without
+    # verification. It is not survivable now that a message can be admitted on
+    # arrival: if the pipeline throws, the attachment is recorded FAILED with
+    # its bytes already gone, and the retry the FAILED status exists to invite
+    # can only fail again. `_release_held_bytes` drops each copy the moment
+    # its run owns one, so this costs storage for the length of a run and not
+    # beyond it.
+    _hold_attachments(email_id, attachments)
     outcome = process_message_attachments(email_id, raw, actor=submitted_by,
                                           attachments=attachments, triage=triage,
                                           classification=record["classification"])
@@ -642,9 +657,20 @@ def process_message_attachments(email_id: int, raw: bytes = b"", actor: str = No
             # It WAS a usable PDF and the preserved copy cannot be read back.
             # Recorded as a failure rather than a skip, because that is our
             # problem to fix, not something the sender did.
+            #
+            # The most common way to reach this is not a storage fault at all:
+            # the attachment was processed, its copy was released to the run
+            # that owned it (below), and the run was then deleted by a demo
+            # reset -- which puts this row back to PENDING and invites a retry
+            # that no longer has anything to retry with. Saying so beats
+            # reporting a read failure that sends someone looking at the
+            # document store.
             storage.complete_attachment(
                 row["id"], "FAILED",
-                error="the preserved copy of this attachment could not be read back")
+                error=("the PDF for this attachment is no longer held. It was most "
+                       "likely processed already and its copy released to the invoice "
+                       "run it produced, which has since been deleted. Ask the sender "
+                       "to resend it, or upload the PDF directly."))
             failed += 1
             continue
 
@@ -680,6 +706,28 @@ def process_message_attachments(email_id: int, raw: bytes = b"", actor: str = No
         _release_held_bytes(row)
         runs.append(run["run_id"])
         processed += 1
+
+    # THE PHASE G SEAM, FINALLY CALLED. `email_messages.run_id` is the join
+    # between "what could be proven about the sender" and "what the invoice
+    # turned out to be", and `link_email_to_run` was written for exactly this
+    # moment -- but nothing ever called it, so the column has been NULL for
+    # every message ever ingested. Anything reading that link therefore
+    # believed no email had produced an invoice: the queue could not show a
+    # verdict, and `storage.email_for_run()` could not find the address to
+    # send a rejection notice back to.
+    #
+    # The FIRST run, matching what the column has always been documented to
+    # hold -- one email can produce several invoices, and those are joined
+    # through `email_attachments.run_id`, which is already correct. Only set
+    # when the message has no link yet, so re-processing cannot repoint an
+    # existing one, and never fatal: a run that exists and a link that does
+    # not is a worse outcome for nobody than losing the run.
+    if runs and not message.get("run_id"):
+        try:
+            storage.link_email_to_run(email_id, runs[0])
+        except Exception as exc:
+            print(f"[warn] could not link email {email_id} to run {runs[0]}: "
+                  f"{exc.__class__.__name__}", file=sys.stderr)
 
     if failed and processed:
         status = "PARTIAL"
