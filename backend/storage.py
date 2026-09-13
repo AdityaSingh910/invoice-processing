@@ -3463,12 +3463,31 @@ def clear_run_history():
             # Phase G: same reasoning one level down. The attachment record --
             # what arrived, whether it was a usable PDF, why it was skipped --
             # is ingestion history, not run history, and survives. Only the
-            # pointer to the vanishing run is dropped, and the row is put back
-            # to PENDING so a demo replay can process it again rather than
-            # believing it is already done.
+            # pointer to the vanishing run is dropped.
+            #
+            # WHETHER IT CAN BE REPLAYED DEPENDS ON WHETHER ITS BYTES SURVIVED,
+            # AND USUALLY THEY DID NOT. A quarantined attachment is held in the
+            # DocumentStore, and that holding copy is deleted the moment a run
+            # owns one of its own -- so after a successful run there is exactly
+            # one copy of the PDF, in `documents`, and the DELETE below takes
+            # it. Putting such a row back to PENDING advertises a retry that
+            # cannot work: it reads as "ready to process", every attempt fails
+            # on bytes that are not there, and the failure blames the document
+            # store. So only a row that still holds its own copy goes back to
+            # PENDING; one whose source went with the run is closed out with a
+            # reason that says exactly that.
             cur.execute("""UPDATE email_attachments
                            SET run_id=NULL, run_status=NULL,
-                               status=CASE WHEN status='PROCESSED' THEN 'PENDING' ELSE status END
+                               status=CASE
+                                   WHEN status <> 'PROCESSED' THEN status
+                                   WHEN storage_key IS NOT NULL THEN 'PENDING'
+                                   ELSE 'SKIPPED' END,
+                               skip_reason=CASE
+                                   WHEN status = 'PROCESSED' AND storage_key IS NULL
+                                   THEN 'the invoice run this produced was deleted by a demo '
+                                        'reset, and the source PDF went with it. Ask the sender '
+                                        'to resend it, or upload the PDF directly.'
+                                   ELSE skip_reason END
                            WHERE run_id IS NOT NULL""")
             cur.execute("""UPDATE email_messages
                            SET ingest_status=CASE WHEN ingest_status IN ('PROCESSED','PARTIAL')

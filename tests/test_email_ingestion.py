@@ -1105,6 +1105,51 @@ def test_an_admitted_message_keeps_its_pdf_until_a_run_owns_it(db, auto_admit, m
     assert retried["runs"], "the preserved copy must make the attachment reprocessable"
 
 
+def test_a_reset_does_not_invite_a_retry_it_cannot_serve(db, auto_admit):
+    """After a successful run there is one copy of the PDF, in `documents`,
+    and clear_run_history() deletes it. Marking the attachment PENDING then
+    reads as "ready to process" while every attempt fails on bytes that are
+    not there -- which is exactly what a reviewer hit in practice, twice,
+    before blaming the document store."""
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
+                    trusted_senders=[])
+    assert result["runs"], "precondition: the message must have produced a run"
+    row = storage.list_email_attachments(result["email_id"])[0]
+    assert row["status"] == "PROCESSED"
+    assert not row["storage_key"], "the holding copy is released once a run owns one"
+
+    storage.clear_run_history()
+
+    after = storage.list_email_attachments(result["email_id"])[0]
+    assert after["status"] != "PENDING", \
+        "a row whose bytes went with the run must not advertise a retry"
+    assert after["run_id"] is None
+    assert "deleted by a demo reset" in (after["skip_reason"] or "")
+
+
+def test_a_reset_still_invites_a_retry_when_the_bytes_are_there(db, trusted):
+    """The other half: a quarantined attachment that never ran still holds its
+    own copy, so a reset leaves it genuinely replayable. Without this the fix
+    above would be indistinguishable from 'never allow a replay'."""
+    result = ingest(invoice_email(), trusted_senders=[])
+    assert result["status"] == "QUARANTINED"
+    storage.set_email_status(result["email_id"], "RELEASED", actor="reviewer")
+    processed = email_ingest.process_message_attachments(result["email_id"],
+                                                         actor="reviewer")
+    assert processed["runs"]
+
+    # Put a holding copy back, standing in for an attachment that has one at
+    # reset time -- which is any that has not yet had a run take ownership.
+    row = storage.list_email_attachments(result["email_id"])[0]
+    key = documents.new_storage_key()
+    documents.get_store().save(key, pdf_bytes())
+    storage.set_attachment_storage(row["id"], config.document_store_backend(), key)
+
+    storage.clear_run_history()
+    after = storage.list_email_attachments(result["email_id"])[0]
+    assert after["status"] == "PENDING", "bytes on file means the replay is real"
+
+
 def test_the_policy_is_inert_for_every_verdict_except_unverified(auto_admit):
     """A pure gate test, the same shape as the sender-context one above: feed
     it the other verdicts and require byte-identical output. This is what
@@ -1419,7 +1464,21 @@ def test_reset_demo_keeps_the_ingestion_record(db, client, trusted, dkim):
     assert survivor["run_id"] is None
     rows = storage.list_email_attachments(result["email_id"])
     assert rows and rows[0]["run_id"] is None
-    assert rows[0]["status"] == "PENDING", "a cleared run should leave the attachment replayable"
+    # THIS ASSERTION USED TO READ `status == "PENDING"`, on the reasoning that
+    # "a cleared run should leave the attachment replayable". The intent was
+    # right and the assertion did not test it: PENDING is a label, and a replay
+    # needs BYTES. The holding copy is dropped the moment a run owns one, and
+    # the reset then deletes the run's copy too -- so PENDING here has never
+    # once meant a replay would work, on any path. It now asserts the state is
+    # coherent rather than that it says a particular word.
+    row = rows[0]
+    if row["storage_key"]:
+        assert row["status"] == "PENDING", "with bytes on file, the replay is real"
+    else:
+        assert row["status"] != "PENDING", \
+            "with no bytes anywhere, PENDING invites a retry that can only fail"
+        assert "demo reset" in (row["skip_reason"] or ""), \
+            "and it should say why, rather than failing later on a missing file"
 
 
 def test_the_existing_endpoints_are_unaffected(db, client):
