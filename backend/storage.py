@@ -2697,19 +2697,27 @@ def list_email_messages(limit: int = 200, status: str = None):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            sql = """SELECT id, run_id, sha256, message_id, received_at, submitted_by, source,
-                            from_address, from_domain, from_display_name, subject,
-                            size_bytes, attachment_count, has_pdf_attachment,
-                            spf_result, dkim_result, dmarc_result, dmarc_aligned,
-                            signature_kind, signature_result, trusted_sender,
-                            classification, status, reasons_json,
-                            released_by, released_at, release_note
-                     FROM email_messages"""
+            # LEFT JOIN, not a second query per row: with messages now admitted
+            # automatically, "what did this email become" is the first thing a
+            # reader looks for, and a join costs one plan rather than N calls.
+            # LEFT so a message with no run (blocked, discarded, or nothing
+            # invoice-shaped attached) still lists, with a NULL verdict.
+            sql = """SELECT m.id, m.run_id, m.sha256, m.message_id, m.received_at,
+                            m.submitted_by, m.source,
+                            m.from_address, m.from_domain, m.from_display_name, m.subject,
+                            m.size_bytes, m.attachment_count, m.has_pdf_attachment,
+                            m.spf_result, m.dkim_result, m.dmarc_result, m.dmarc_aligned,
+                            m.signature_kind, m.signature_result, m.trusted_sender,
+                            m.classification, m.status, m.reasons_json,
+                            m.released_by, m.released_at, m.release_note,
+                            r.status AS run_status
+                     FROM email_messages m
+                     LEFT JOIN runs r ON r.id = m.run_id"""
             params = []
             if status:
-                sql += " WHERE status=%s"
+                sql += " WHERE m.status=%s"
                 params.append(status)
-            sql += " ORDER BY id DESC LIMIT %s"
+            sql += " ORDER BY m.id DESC LIMIT %s"
             params.append(limit)
             cur.execute(sql, tuple(params))
             rows = [dict(r) for r in cur.fetchall()]

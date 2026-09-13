@@ -884,6 +884,24 @@ EMAIL_PROVIDER_ENV = "EMAIL_PROVIDER"
 EMAIL_POLL_INTERVAL_ENV = "EMAIL_POLL_SECONDS"
 EMAIL_POLL_BATCH_ENV = "EMAIL_POLL_BATCH"
 
+# Whether a message that could not be AUTHENTICATED AT ALL is admitted to the
+# invoice pipeline instead of being held for a person.
+#
+# Off by default, because the safe default is the one Phase F ships: nothing
+# proceeds until something about it could be proven. Turning it on is a
+# deployment saying "the invoice rules are my control surface, not the mail
+# envelope" -- which is defensible, because every such invoice is still judged
+# by the full deterministic pipeline (vendor approval, PO match, duplicate,
+# tolerance, injection screen) and anything it cannot justify still lands in
+# the human review queue as NEEDS_REVIEW.
+#
+# It applies to UNVERIFIED ONLY -- "nothing could be checked", which is the
+# ordinary condition of consumer webmail. A FAILED verdict (a real signature
+# that did not verify, a structurally spoofed From) and a SUSPICIOUS one
+# (signals that disagree) are findings rather than gaps, and are held exactly
+# as before whatever this is set to.
+EMAIL_AUTO_ADMIT_ENV = "EMAIL_AUTO_ADMIT_UNVERIFIED"
+
 # IMAP connection. Credentials come from the environment ONLY -- never from a
 # file in the repository, never from the database, never logged.
 IMAP_HOST_ENV = "EMAIL_IMAP_HOST"
@@ -955,6 +973,16 @@ EMAIL_INVOICE_SUBJECT_HINTS = (
 
 def email_ingest_enabled() -> bool:
     return os.environ.get(EMAIL_INGEST_ENABLED_ENV, "").strip() in ("1", "true", "True", "yes")
+
+
+def email_auto_admit_unverified() -> bool:
+    """Admit a message nothing could be checked against, rather than holding it.
+
+    Read at call time like every other setting here, so it can be turned off in
+    a running deployment without a code change. See EMAIL_AUTO_ADMIT_ENV above
+    for why this is narrow and what it deliberately does not cover.
+    """
+    return os.environ.get(EMAIL_AUTO_ADMIT_ENV, "").strip() in ("1", "true", "True", "yes")
 
 
 def email_provider() -> str:

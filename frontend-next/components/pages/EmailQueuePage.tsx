@@ -37,7 +37,7 @@
  * the other is "nothing could be checked", which is the ordinary condition
  * of consumer webmail and is never printed as an accusation.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { apiFetch, apiJson, ApiError } from "@/lib/api";
 import { when } from "@/lib/format";
@@ -64,6 +64,7 @@ import {
   PanelHeader,
   Segmented,
   Spinner,
+  StatusBadge,
   TD,
   TH,
   type Tone,
@@ -71,7 +72,28 @@ import {
 import Modal from "@/components/ui/Modal";
 import { IconMail } from "@/components/ui/icons";
 
-type Filter = "ALL" | EmailStatus;
+/**
+ * The tabs a reviewer actually works, which are NOT one-per-database-status.
+ *
+ * `ADMITTED` and `RELEASED` are two ways of reaching one outcome -- the
+ * message was allowed to become an invoice, either by policy at ingestion or
+ * by a person afterwards -- so they are one tab. Splitting them would ask the
+ * reader to care about which door a message came through before they can find
+ * it, which is a fact about our plumbing rather than about their work.
+ *
+ * `BLOCKED` is `QUARANTINED` renamed. With auto-admission on (see
+ * `EMAIL_AUTO_ADMIT_UNVERIFIED`), an unauthenticated message no longer waits
+ * here, so the only things left are real findings: a signature that did not
+ * verify, or a structurally spoofed sender. "Held for review" undersold that
+ * and made the ordinary case sound alarming; "Blocked" says what it is.
+ */
+type Filter = "ADMITTED" | "DISCARDED" | "BLOCKED" | "ALL";
+
+const FILTER_MATCHES: Record<Exclude<Filter, "ALL">, readonly EmailStatus[]> = {
+  ADMITTED: ["ADMITTED", "RELEASED"],
+  DISCARDED: ["DISCARDED"],
+  BLOCKED: ["QUARANTINED"],
+};
 
 const CLASSIFICATION_TONE: Record<string, Tone> = {
   VERIFIED: "ok",
@@ -96,8 +118,8 @@ const STATUS_TONE: Record<string, Tone> = {
 
 const STATUS_WORD: Record<string, string> = {
   ADMITTED: "Admitted",
-  RELEASED: "Released",
-  QUARANTINED: "Held for review",
+  RELEASED: "Admitted (released by a person)",
+  QUARANTINED: "Blocked",
   DISCARDED: "Discarded",
 };
 
@@ -137,29 +159,49 @@ export default function EmailQueuePage({
   onRunCreated?: () => void;
 }) {
   const { user, can } = useAuth();
-  const [filter, setFilter] = useState<Filter>("QUARANTINED");
-  const [messages, setMessages] = useState<EmailMessageSummary[] | null>(null);
+  const [filter, setFilter] = useState<Filter>("ADMITTED");
+  const [all, setAll] = useState<EmailMessageSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
+  /** One fetch, grouped in the browser. A tab here is several statuses (see
+   *  FILTER_MATCHES), which `?status_filter=` takes one of -- and at this
+   *  volume the whole list is one small response, so switching tabs costs
+   *  nothing and cannot show a half-stale mix of two fetches. */
   const load = useCallback(async () => {
     setError(null);
     try {
-      const path =
-        filter === "ALL" ? "/api/email/messages" : `/api/email/messages?status_filter=${filter}`;
-      setMessages(await apiJson<EmailMessageSummary[]>(path));
+      setAll(await apiJson<EmailMessageSummary[]>("/api/email/messages"));
     } catch {
       setError("Could not load the email queue.");
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, []);
 
   useEffect(() => {
     setLoading(true);
     void load();
   }, [load]);
+
+  const messages = useMemo(() => {
+    if (!all) return null;
+    if (filter === "ALL") return all;
+    const wanted = FILTER_MATCHES[filter];
+    return all.filter((m) => m.status && wanted.includes(m.status as EmailStatus));
+  }, [all, filter]);
+
+  const countFor = useCallback(
+    (f: Filter) =>
+      !all
+        ? 0
+        : f === "ALL"
+          ? all.length
+          : all.filter((m) => m.status && FILTER_MATCHES[f].includes(m.status as EmailStatus))
+              .length,
+    [all]
+  );
 
   const refresh = useCallback(() => {
     void load();
@@ -171,7 +213,7 @@ export default function EmailQueuePage({
     <div className="mx-auto flex max-w-[1100px] flex-col gap-4 p-4 sm:p-6">
       <PanelHeader
         title="Email queue"
-        description="Every message a mailbox connection has evaluated — including the ones held pending a person, and why."
+        description="Every message the connected mailbox has evaluated, and what each one became. Invoices are processed on arrival; only a message that failed a security check waits for a person."
       />
 
       {!canAct && (
@@ -188,10 +230,9 @@ export default function EmailQueuePage({
             value={filter}
             onChange={setFilter}
             options={[
-              { value: "QUARANTINED", label: "Held for review" },
-              { value: "RELEASED", label: "Released" },
-              { value: "ADMITTED", label: "Admitted" },
-              { value: "DISCARDED", label: "Discarded" },
+              { value: "ADMITTED", label: `Admitted (${countFor("ADMITTED")})` },
+              { value: "DISCARDED", label: `Discarded (${countFor("DISCARDED")})` },
+              { value: "BLOCKED", label: `Blocked (${countFor("BLOCKED")})` },
               { value: "ALL", label: "All" },
             ]}
           />
@@ -211,11 +252,13 @@ export default function EmailQueuePage({
             icon={<IconMail size={18} />}
             title="Nothing here"
             description={
-              filter === "QUARANTINED"
-                ? "No message is currently held for review."
+              filter === "BLOCKED"
+                ? "Nothing is blocked. A message only lands here when a check actually failed — a signature that did not verify, or a sender that is structurally spoofed."
                 : filter === "ADMITTED"
-                  ? "No message has ever been auto-admitted. That needs a sender whose signature verifies AND who is on the trusted-sender list — nothing gets there by default, so an empty list here is the expected state until both are configured."
-                  : "No message matches this filter."
+                  ? "No message has reached the invoice pipeline yet."
+                  : filter === "DISCARDED"
+                    ? "Nothing has been discarded."
+                    : "No message has been received yet."
             }
           />
         ) : (
@@ -227,7 +270,7 @@ export default function EmailQueuePage({
                 <TH>Subject</TH>
                 <TH>Security</TH>
                 <TH>Status</TH>
-                <TH align="right">PDF</TH>
+                <TH>Invoice</TH>
               </tr>
             </thead>
             <tbody>
@@ -248,7 +291,18 @@ export default function EmailQueuePage({
                   <TD>
                     <EligibilityBadge value={m.status} />
                   </TD>
-                  <TD align="right">{m.has_pdf_attachment ? "Yes" : "No"}</TD>
+                  <TD>
+                    {m.run_id ? (
+                      <span className="flex items-center gap-1.5">
+                        <StatusBadge status={m.run_status} />
+                        <span className="t-meta">#{m.run_id}</span>
+                      </span>
+                    ) : m.has_pdf_attachment ? (
+                      <span className="text-faint">not processed</span>
+                    ) : (
+                      <span className="text-faint">no PDF</span>
+                    )}
+                  </TD>
                 </tr>
               ))}
             </tbody>

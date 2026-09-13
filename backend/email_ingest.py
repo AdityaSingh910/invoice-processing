@@ -253,6 +253,66 @@ def _annotate_unverified_sender_context(record: dict, triage: dict) -> dict:
     return record
 
 
+def _apply_auto_admit_policy(record: dict) -> dict:
+    """Let an UNVERIFIED message through to the pipeline, when configured to.
+
+    WHY THIS IS HERE AND NOT IN email_security.py. Same boundary
+    `_annotate_unverified_sender_context` above observes, for the same reason:
+    Phase F answers "what could be PROVEN about this message" and must keep
+    answering it identically whatever a deployment's appetite for risk is.
+    What to DO about an unprovable message is an operating policy, and policy
+    belongs to the orchestrator. So `classify()` is untouched and still returns
+    exactly what it always did; this decides what happens next.
+
+    WHAT IT DOES NOT DO, BY CONSTRUCTION.
+
+    * Never touches `classification`. The security finding stays UNVERIFIED
+      forever -- an auditor asking "what could we prove about this message"
+      gets the same answer whether or not it was admitted. Only `status`, the
+      PROCESSING state, moves. That is the same split Phase F draws between
+      classification and status, and the same one `runs.automated_decision`
+      vs `runs.status` draws for an invoice.
+    * Never fires for FAILED or SUSPICIOUS. Those are findings, not gaps: a
+      signature that was checked and did not verify, a From that is
+      structurally spoofed, or signals that contradict each other. Nothing
+      here lets one of those through, whatever this is set to.
+    * Never fires for a message that did not reach verification at all. A
+      message filtered out by triage returns long before this runs.
+    * Never widens the gate itself. `process_message_attachments()` still
+      admits only what the DATABASE says is ADMITTED or RELEASED, re-read from
+      the row rather than taken from a caller. This changes what gets written
+      to that column, not who is allowed to read past it.
+    * Never claims the invoice is good. It reaches `rules.decide()` exactly as
+      every other invoice does -- vendor approval, PO match, duplicate check,
+      tolerance, the injection screen -- and anything those cannot justify is
+      still held for a person as NEEDS_REVIEW. The mail envelope stops being
+      the gate; the invoice rules still are one.
+    """
+    if not config.email_auto_admit_unverified():
+        return record
+    if record.get("classification") != "UNVERIFIED":
+        return record
+    if record.get("status") != "QUARANTINED":
+        return record
+    note = (
+        "this deployment admits messages that could not be authenticated "
+        "(EMAIL_AUTO_ADMIT_UNVERIFIED), so it was passed to the invoice pipeline "
+        "rather than held; the invoice itself is still judged by the full "
+        "deterministic rules and is held for a person if they cannot justify it"
+    )
+    record = dict(record)
+    record["status"] = "ADMITTED"
+    record["reasons"] = list(record.get("reasons") or []) + [note]
+    audit = dict(record.get("audit") or {})
+    audit["auto_admitted"] = {
+        "policy": config.EMAIL_AUTO_ADMIT_ENV,
+        "classification_at_admission": "UNVERIFIED",
+        "note": note,
+    }
+    record["audit"] = audit
+    return record
+
+
 # --------------------------------------------------------------------------
 # Ingesting one message
 # --------------------------------------------------------------------------
@@ -369,6 +429,12 @@ def ingest_message(incoming, submitted_by: str = None, trusted_senders=None,
     # storage so an UNVERIFIED record is written once, fully annotated,
     # rather than requiring a second UPDATE.
     record = _annotate_unverified_sender_context(record, triage)
+
+    # Operating policy, applied after the verdict and never to it: an
+    # UNVERIFIED message may be admitted rather than held, when this
+    # deployment has said so. FAILED and SUSPICIOUS are unaffected. See the
+    # function's own docstring for what it will and will not do.
+    record = _apply_auto_admit_policy(record)
 
     ingest_status = "RECEIVED" if record["status"] == "ADMITTED" else "QUARANTINED"
     claim = storage.claim_incoming_message(

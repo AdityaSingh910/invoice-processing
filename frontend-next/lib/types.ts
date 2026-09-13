@@ -786,6 +786,10 @@ export interface EmailSenderContext {
 export interface EmailMessageSummary {
   id: number;
   run_id: number | null;
+  /** The invoice verdict this message produced, joined from `runs` at read
+   *  time. Null when it never became one — blocked, discarded, or nothing
+   *  invoice-shaped was attached. */
+  run_status: Verdict | null;
   sha256: string;
   message_id: string | null;
   received_at: string;

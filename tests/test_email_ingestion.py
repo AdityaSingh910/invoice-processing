@@ -917,6 +917,147 @@ def test_a_quarantined_attachment_is_preserved_in_the_existing_document_store(db
 
 
 # ==========================================================================
+# 8b. Auto-admission of unauthenticated mail (EMAIL_AUTO_ADMIT_UNVERIFIED)
+#
+# A deployment may decide that the mail envelope is not its control surface --
+# that an invoice arriving from ordinary consumer webmail should reach the
+# invoice rules rather than wait for someone to press Release. This section
+# proves the policy added in email_ingest._apply_auto_admit_policy():
+#   - is OFF by default, so Phase F's posture is unchanged unless asked
+#   - moves `status` ONLY, never the `classification` an auditor reads
+#   - fires for UNVERIFIED ("nothing could be checked") and nothing else
+#   - never lets a FAILED or SUSPICIOUS verdict through, at any setting
+#   - does not widen the processing gate itself
+#   - does not exempt the invoice from a single deterministic rule
+# ==========================================================================
+@pytest.fixture
+def auto_admit(monkeypatch):
+    monkeypatch.setenv(config.EMAIL_AUTO_ADMIT_ENV, "1")
+    return True
+
+
+def test_auto_admission_is_off_by_default(db):
+    """The shipped default is Phase F's: nothing proceeds unproven. If this
+    ever fails, a deployment that never opted in has silently changed its
+    security posture."""
+    assert config.email_auto_admit_unverified() is False
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
+                    trusted_senders=[])
+    assert result["status"] == "QUARANTINED"
+
+
+def test_an_unauthenticated_invoice_is_admitted_and_processed_with_no_human(db, auto_admit):
+    """The point of the policy, end to end: a Gmail invoice arrives and becomes
+    a run, with nobody pressing Release and nobody pressing Process."""
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>",
+                                  subject="Invoice INV-9001"),
+                    trusted_senders=[])
+    assert result["status"] != "QUARANTINED"
+    assert result["runs"], "the invoice must have reached the pipeline on arrival"
+
+    run = storage.get_run(result["runs"][0])
+    assert run is not None
+    assert run["status"] in ("APPROVED", "NEEDS_REVIEW", "REJECTED")
+    assert any(r["id"] == run["id"] for r in storage.list_runs()), \
+        "the run must be findable the way Overview and Invoices find every other run"
+
+
+def test_auto_admission_never_rewrites_the_security_finding(db, auto_admit):
+    """`classification` answers 'what could we prove', forever. Admitting a
+    message is a decision about what to DO, and must not edit the evidence --
+    the same split Phase F draws, and the same one automated_decision vs
+    status draws for an invoice."""
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
+                    trusted_senders=[])
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["classification"] == "UNVERIFIED"        # unchanged evidence
+    assert stored["status"] == "ADMITTED"                   # changed disposition only
+    assert stored["audit"]["auto_admitted"]["classification_at_admission"] == "UNVERIFIED"
+    assert stored["audit"]["auto_admitted"]["policy"] == config.EMAIL_AUTO_ADMIT_ENV
+    assert any("could not be authenticated" in r for r in stored["reasons"]), \
+        "the record must say why it was admitted, not quietly look verified"
+
+
+def test_auto_admission_does_not_admit_a_structurally_spoofed_sender(db, auto_admit,
+                                                                     extraction_spy):
+    """A spoof is a FINDING, not a gap. No setting softens it."""
+    raw = invoice_email(from_header="Billing <billing@gmail.com>",
+                        extra_headers=["From: Billing <billing@attacker.test>"])
+    result = ingest(raw, trusted_senders=[])
+    assert result["status"] == "QUARANTINED"
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["classification"] == "FAILED"
+    assert "auto_admitted" not in (stored["audit"] or {})
+    assert extraction_spy == [], "a spoofed sender must never reach extraction"
+
+
+def test_auto_admission_does_not_admit_a_signature_that_did_not_verify(db, auto_admit,
+                                                                      extraction_spy,
+                                                                      monkeypatch):
+    """Real cryptography, deliberately broken: still FAILED, still held, still
+    never extracted -- with the policy switched on."""
+    import email_security
+    from test_email_security import _sign
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    der = key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    txt = "v=DKIM1; k=rsa; p=" + base64.b64encode(der).decode()
+    resolver = email_security.StaticDnsTxtResolver(
+        {f"s1._domainkey.{VENDOR_DOMAIN}": txt})
+    monkeypatch.setattr(email_security, "resolver_from_config", lambda: resolver)
+
+    raw = _sign(invoice_email(), key, domain=VENDOR_DOMAIN, break_signature=True)
+    result = ingest(raw, trusted_senders=[
+        {"sender": VENDOR_DOMAIN, "kind": "domain",
+         "vendor_name": "Acme Office Supplies", "status": "trusted"}])
+    stored = storage.get_email_message(result["email_id"])
+    assert stored["classification"] == "FAILED"
+    assert stored["status"] == "QUARANTINED"
+    assert extraction_spy == []
+
+
+def test_auto_admission_does_not_widen_the_processing_gate(db, auto_admit, extraction_spy):
+    """The gate still reads the STORED status. A message this policy declined
+    to admit cannot be forced through it by calling the function directly --
+    exactly as before, with the policy on."""
+    raw = invoice_email(from_header="Billing <billing@gmail.com>",
+                        extra_headers=["From: Billing <billing@attacker.test>"])
+    result = ingest(raw, trusted_senders=[])
+    assert result["status"] == "QUARANTINED"
+    forced = email_ingest.process_message_attachments(result["email_id"], b"")
+    assert forced["ok"] is False
+    assert "may not be processed" in forced["error"]
+    assert extraction_spy == []
+
+
+def test_an_auto_admitted_invoice_is_still_judged_by_every_rule(db, auto_admit):
+    """Admission decides whether the invoice is READ, never whether it is
+    APPROVED. The deterministic rules run in full, and their verdict is the
+    run's own -- the mail envelope stops being a gate; the rules do not."""
+    result = ingest(invoice_email(from_header="Supplier <supplier@gmail.com>"),
+                    trusted_senders=[])
+    run = storage.get_run(result["runs"][0])
+    audit = run["audit"]
+    assert audit["rules"], "the full rule set must have been evaluated"
+    assert run["automated_decision"] in ("APPROVED", "NEEDS_REVIEW", "REJECTED")
+    names = [r["name"] for r in audit["rules"]]
+    for required in ("Vendor approved", "Duplicate check", "Security screen"):
+        assert required in names, f"{required} must still run on an auto-admitted invoice"
+
+
+def test_the_policy_is_inert_for_every_verdict_except_unverified(auto_admit):
+    """A pure gate test, the same shape as the sender-context one above: feed
+    it the other verdicts and require byte-identical output. This is what
+    stops the policy from ever becoming 'admit everything'."""
+    for classification in ("FAILED", "SUSPICIOUS", "VERIFIED"):
+        record = {"classification": classification, "status": "QUARANTINED",
+                  "reasons": ["original"], "audit": {"classification": classification}}
+        assert email_ingest._apply_auto_admit_policy(record) == record
+
+
+# ==========================================================================
 # 9. Polling and provider failure
 # ==========================================================================
 def test_a_poll_ingests_every_message_it_fetches(db, trusted, dkim):
